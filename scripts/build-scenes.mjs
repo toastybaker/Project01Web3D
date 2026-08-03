@@ -1,0 +1,1971 @@
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import * as THREE from 'three'
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
+import { TessellateModifier } from 'three/examples/jsm/modifiers/TessellateModifier.js'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import { NodeIO } from '@gltf-transform/core'
+import { EXTMeshGPUInstancing } from '@gltf-transform/extensions'
+import { dedup, instance } from '@gltf-transform/functions'
+import { createCanvas, ImageData as CanvasImageData } from '@napi-rs/canvas'
+import sharp from 'sharp'
+
+class NodeFileReader {
+  readAsArrayBuffer(blob) {
+    blob.arrayBuffer().then((value) => {
+      this.result = value
+      this.onloadend?.({ target: this })
+    })
+  }
+
+  readAsDataURL(blob) {
+    blob.arrayBuffer().then((value) => {
+      this.result = `data:${blob.type};base64,${Buffer.from(value).toString('base64')}`
+      this.onloadend?.({ target: this })
+    })
+  }
+}
+
+globalThis.FileReader = NodeFileReader
+globalThis.ImageData = CanvasImageData
+globalThis.OffscreenCanvas = class NodeOffscreenCanvas {
+  constructor(width, height) {
+    this.canvas = createCanvas(width, height)
+  }
+
+  get width() { return this.canvas.width }
+  set width(value) { this.canvas.width = value }
+  get height() { return this.canvas.height }
+  set height(value) { this.canvas.height = value }
+  getContext(type, options) { return this.canvas.getContext(type, options) }
+  async convertToBlob({ type = 'image/png' } = {}) {
+    return new Blob([this.canvas.toBuffer(type)], { type })
+  }
+}
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const out = path.join(root, 'public', 'assets', '3d', 'scenes')
+await mkdir(out, { recursive: true })
+
+const palette = {
+  moss: 0x789a55,
+  fern: 0x3f5a32,
+  darkFern: 0x2f482c,
+  bark: 0x604430,
+  barkLight: 0x76563c,
+  soil: 0x765138,
+  path: 0x876c4b,
+  stone: 0x94826a,
+  stoneDark: 0x6e665d,
+  parchment: 0xf3e4bd,
+  forage: 0x92b85b,
+  farm: 0xd89b4a,
+  mine: 0x6e91a7,
+  fruit: 0xc9643f,
+  fruitGold: 0xe4aa48,
+}
+
+function material(name, color, options = {}) {
+  const value = new THREE.MeshStandardMaterial({
+    color,
+    roughness: options.roughness ?? 0.9,
+    metalness: options.metalness ?? 0,
+    flatShading: options.flatShading ?? true,
+    transparent: options.transparent ?? false,
+    opacity: options.opacity ?? 1,
+    side: options.side ?? THREE.FrontSide,
+  })
+  value.name = name
+  return value
+}
+
+const mats = {
+  ground: material('Ground', palette.moss, { flatShading: false }),
+  path: material('Path', palette.path),
+  bark: material('Bark', palette.bark),
+  barkLight: material('Bark Light', palette.barkLight),
+  leaf: material('Leaf', palette.fern),
+  leafDark: material('Leaf Dark', palette.darkFern),
+  leafFresh: material('Fresh Green Leaf', 0x5f8243),
+  leafSage: material('Sage Green Leaf', 0x769552),
+  leafDeep: material('Deep Green Leaf', 0x3f673b),
+  soil: material('Soil', palette.soil),
+  soilFurrow: material('Tilled Soil Furrow', 0x533a2c),
+  stone: material('Warm Stone', palette.stone),
+  stoneDark: material('Dark Stone', palette.stoneDark),
+  mineGround: material('Mine Ground', 0x77736b, { flatShading: false }),
+  minePath: material('Mine Path', 0x887865, { flatShading: false }),
+  mineWall: material('Mine Wall', 0x6f6b64),
+  mineStrata: material('Mine Strata', 0x57534e),
+  stoneOre: material('Stone Ore Vein', 0xb6aa8d, { roughness: 0.72 }),
+  crystal: material('Blue Crystal', 0x5f91a4, { roughness: 0.55 }),
+  richOre: material('Rich Ore', 0xb78246, { roughness: 0.62, metalness: 0.1 }),
+  caveWater: material('Cave Water', 0x527b82, { transparent: true, opacity: 0.76, roughness: 0.28, side: THREE.DoubleSide, flatShading: false }),
+  parchment: material('Parchment', palette.parchment),
+  glassForage: material('Forage Portal', palette.forage, { transparent: true, opacity: 0.52, side: THREE.DoubleSide, flatShading: false }),
+  glassFarm: material('Farm Portal', palette.farm, { transparent: true, opacity: 0.45, side: THREE.DoubleSide, flatShading: false }),
+  glassMine: material('Mine Portal', palette.mine, { transparent: true, opacity: 0.48, side: THREE.DoubleSide, flatShading: false }),
+  glassHome: material('Home Portal', palette.parchment, { transparent: true, opacity: 0.48, side: THREE.DoubleSide, flatShading: false }),
+  fruit: material('Orchard Fruit', palette.fruit),
+  fruitGold: material('Golden Orchard Fruit', palette.fruitGold),
+  furnaceFire: material('Furnace Fire', 0xe28a32, { roughness: 0.42 }),
+  furnaceSteam: material('Furnace Steam', 0xd9d3c5, { transparent: true, opacity: 0.34, roughness: 1 }),
+}
+mats.furnaceFire.emissive = new THREE.Color(0xd26721)
+mats.furnaceFire.emissiveIntensity = 1.4
+
+const natureRoot = path.join(root, 'source-assets', '3d', 'nature-glb')
+const natureIO = new NodeIO()
+const textureCache = new Map()
+
+async function dataTexture(texture) {
+  if (!texture) return null
+  const cacheKey = texture.getName() || String(texture.getImage()?.byteLength ?? 0)
+  if (textureCache.has(cacheKey)) return textureCache.get(cacheKey)
+  const image = texture.getImage()
+  if (!image) return null
+  const decoded = await sharp(image).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+  const value = new THREE.DataTexture(new Uint8Array(decoded.data), decoded.info.width, decoded.info.height, THREE.RGBAFormat)
+  value.name = cacheKey
+  value.flipY = false
+  value.colorSpace = THREE.SRGBColorSpace
+  value.wrapS = THREE.RepeatWrapping
+  value.wrapT = THREE.RepeatWrapping
+  value.needsUpdate = true
+  textureCache.set(cacheKey, value)
+  return value
+}
+
+async function loadOfflineAsset(name, sourcePath = path.join(natureRoot, `${name}.glb`)) {
+  const document = await natureIO.read(sourcePath)
+  const materialMap = new Map()
+  for (const sourceMaterial of document.getRoot().listMaterials()) {
+    const sourceTexture = await dataTexture(sourceMaterial.getBaseColorTexture())
+    const sourceFactor = sourceMaterial.getBaseColorFactor()
+    const value = new THREE.MeshStandardMaterial({
+      name: sourceMaterial.getName(),
+      color: new THREE.Color(sourceFactor[0], sourceFactor[1], sourceFactor[2]),
+      opacity: sourceFactor[3],
+      map: sourceTexture,
+      roughness: sourceMaterial.getRoughnessFactor(),
+      metalness: sourceMaterial.getMetallicFactor(),
+      transparent: sourceMaterial.getAlphaMode() === 'BLEND',
+      alphaTest: sourceMaterial.getAlphaMode() === 'MASK' ? sourceMaterial.getAlphaCutoff() : 0,
+      side: /Leaves|Grass|Flowers|Bush/.test(sourceMaterial.getName()) ? THREE.DoubleSide : THREE.FrontSide,
+    })
+    materialMap.set(sourceMaterial, value)
+  }
+
+  const buildNode = (sourceNode) => {
+    const group = new THREE.Group()
+    group.name = sourceNode.getName() || name
+    group.position.fromArray(sourceNode.getTranslation())
+    group.quaternion.fromArray(sourceNode.getRotation())
+    group.scale.fromArray(sourceNode.getScale())
+    const sourceMesh = sourceNode.getMesh()
+    if (sourceMesh) {
+      sourceMesh.listPrimitives().forEach((primitive, primitiveIndex) => {
+        const geometry = new THREE.BufferGeometry()
+        const semantics = [
+          ['POSITION', 'position', 3], ['NORMAL', 'normal', 3], ['TEXCOORD_0', 'uv', 2], ['COLOR_0', 'color', 4],
+        ]
+        semantics.forEach(([semantic, attributeName, itemSize]) => {
+          const accessor = primitive.getAttribute(semantic)
+          if (accessor) geometry.setAttribute(attributeName, new THREE.BufferAttribute(accessor.getArray(), itemSize, accessor.getNormalized()))
+        })
+        const indices = primitive.getIndices()
+        if (indices) geometry.setIndex(new THREE.BufferAttribute(indices.getArray(), 1))
+        if (!geometry.attributes.normal) geometry.computeVertexNormals()
+        geometry.computeBoundingBox()
+        geometry.computeBoundingSphere()
+        const child = mesh(geometry, materialMap.get(primitive.getMaterial()) ?? mats.leaf, `${name} ${primitiveIndex + 1}`)
+        group.add(child)
+      })
+    }
+    sourceNode.listChildren().forEach((child) => group.add(buildNode(child)))
+    return group
+  }
+
+  const scene = new THREE.Group()
+  scene.name = name
+  const sourceScene = document.getRoot().listScenes()[0]
+  sourceScene.listChildren().forEach((child) => scene.add(buildNode(child)))
+  scene.updateMatrixWorld(true)
+  const bounds = new THREE.Box3().setFromObject(scene)
+  const center = bounds.getCenter(new THREE.Vector3())
+  scene.position.set(-center.x, -bounds.min.y, -center.z)
+  return scene
+}
+
+const natureModels = {}
+for (const name of [
+  'BirchTree_1', 'BirchTree_2', 'BirchTree_3', 'BirchTree_4', 'BirchTree_5',
+  'MapleTree_1', 'MapleTree_2', 'MapleTree_3', 'MapleTree_4', 'MapleTree_5',
+  'Bush', 'Bush_Large', 'Bush_Small', 'Grass_Large_Extruded', 'Flower_3_Clump',
+]) natureModels[name] = await loadOfflineAsset(name)
+
+function natureAsset(name, position, scale = 1, rotation = 0, colliderRadius = 0) {
+  const group = natureModels[name].clone(true)
+  group.name = name
+  group.position.set(...position)
+  group.scale.setScalar(scale)
+  group.rotation.y = rotation
+  if (colliderRadius > 0) group.userData.colliderRadius = colliderRadius
+  group.traverse((object) => {
+    if (object.isMesh) {
+      object.castShadow = true
+      object.receiveShadow = true
+    }
+  })
+  return group
+}
+
+function natureTree(x, z, scale, rotation, heightAt, variant = 0) {
+  const names = ['BirchTree_1', 'MapleTree_2', 'BirchTree_3', 'MapleTree_4', 'BirchTree_5', 'MapleTree_1', 'MapleTree_3', 'BirchTree_2', 'MapleTree_5', 'BirchTree_4']
+  const value = natureAsset(names[variant % names.length], [x, heightAt(x, z), z], scale, rotation, 0.32)
+  if (variant % 10 < 6) {
+    const green = [mats.leafFresh, mats.leafSage, mats.leafDeep][variant % 3]
+    value.traverse((object) => {
+      if (object.isMesh && /leaves?/i.test(object.material?.name ?? '')) object.material = green
+    })
+  }
+  value.name = names[variant % names.length].startsWith('Maple') ? 'Woodland Maple' : 'Woodland Birch'
+  return value
+}
+
+function natureBush(x, z, scale, rotation, heightAt, variant = 0) {
+  const names = ['Bush', 'Bush_Large', 'Bush_Small']
+  const value = natureAsset(names[variant % names.length], [x, heightAt(x, z), z], scale, rotation)
+  value.name = 'Woodland Understory'
+  return value
+}
+
+function natureGrass(x, z, scale, rotation, heightAt) {
+  const value = natureAsset('Grass_Large_Extruded', [x, heightAt(x, z) + 0.015, z], scale, rotation)
+  value.name = 'Ground Grass Clump'
+  return value
+}
+
+function natureFlowers(x, z, scale, rotation, heightAt) {
+  const value = natureAsset('Flower_3_Clump', [x, heightAt(x, z) + 0.02, z], scale, rotation)
+  value.name = 'Woodland Flower Clump'
+  return value
+}
+
+// These small authored details repeat hundreds of times. Reusing the source
+// geometry keeps the exported GLBs responsive without changing their layout.
+const appleFruitGeometries = [new THREE.IcosahedronGeometry(0.12, 1), new THREE.IcosahedronGeometry(0.135, 1)]
+const berryGeometries = [new THREE.IcosahedronGeometry(0.09, 1), new THREE.IcosahedronGeometry(0.105, 1)]
+const oreRockGeometry = new THREE.DodecahedronGeometry(0.72, 1)
+const oreVeinGeometry = new THREE.OctahedronGeometry(0.15, 0)
+const quarryStoneGeometry = new THREE.DodecahedronGeometry(1, 1)
+const berryClusterGeometry = mergeGeometries(Array.from({ length: 9 }, (_, index) => {
+  const angle = (index / 9) * Math.PI * 2
+  return berryGeometries[index % 2].clone().translate(
+    Math.cos(angle) * (0.36 + (index % 3) * 0.12),
+    0.42 + (index % 3) * 0.16,
+    Math.sin(angle) * (0.34 + ((index + 1) % 3) * 0.1),
+  )
+}))
+const oreClusterGeometry = mergeGeometries([
+  oreRockGeometry.clone().scale(1.25, 0.88, 1.05).rotateX(0.08).translate(0, 0.56, 0),
+  oreVeinGeometry.clone().translate(-0.34, 0.68, 0.58),
+  oreVeinGeometry.clone().scale(1.18, 1.18, 1.18).rotateX(0.31).rotateY(0.67).translate(0.22, 0.88, 0.58),
+], true)
+
+function fruitBirch(id, x, z, scale, rotation, heightAt, golden = false, variant = 0) {
+  const group = natureTree(x, z, scale, rotation, heightAt, variant)
+  group.name = golden ? 'Orange Grove Tree' : 'Apple Orchard Tree'
+  const green = [mats.leafFresh, mats.leafSage, mats.leafDeep][(variant + (golden ? 1 : 0)) % 3]
+  group.traverse((object) => {
+    if (object.isMesh && /leaves?/i.test(object.material?.name ?? '')) object.material = green
+  })
+  const fruitMaterial = golden ? mats.fruitGold : mats.fruit
+  group.updateMatrixWorld(true)
+  const height = Math.max(4.2, new THREE.Box3().setFromObject(group).getSize(new THREE.Vector3()).y / scale)
+  const crownCenter = height * 0.69
+  const crownTop = height * 0.9
+  const spread = Math.min(1.55, height * 0.19)
+  const fruitOffsets = [
+    [-0.78 * spread, crownCenter, 0.58 * spread],
+    [0.48 * spread, crownCenter + (crownTop - crownCenter) * 0.42, 0.66 * spread],
+    [0.82 * spread, crownCenter - 0.08, -0.28 * spread],
+    [-0.16 * spread, crownTop, -0.54 * spread],
+    [-0.86 * spread, crownCenter + 0.26, -0.24 * spread],
+  ]
+  const fruitGeometry = mergeGeometries(fruitOffsets.map(([fx, fy, fz], index) => appleFruitGeometries[index % 2].clone().translate(fx, fy, fz)))
+  const resourceGroup = new THREE.Group()
+  resourceGroup.name = `Resource_${id}`
+  resourceGroup.add(mesh(fruitGeometry, fruitMaterial, golden ? 'Woodland Oranges' : 'Woodland Apples'))
+  group.add(resourceGroup)
+  return group
+}
+
+function trufflePatch(id, x, z, rotation, heightAt) {
+  const group = new THREE.Group()
+  group.name = `Resource_${id}`
+  group.position.set(x, heightAt(x, z), z)
+  group.rotation.y = rotation
+  const soil = mesh(new THREE.CylinderGeometry(0.42, 0.5, 0.08, 9), mats.soil, 'Disturbed Forest Soil')
+  soil.position.y = 0.03
+  const truffle = mesh(new THREE.DodecahedronGeometry(0.28, 1), mats.bark, 'Rare Truffle')
+  truffle.position.set(0.03, 0.19, 0)
+  truffle.scale.set(1.18, 0.78, 1)
+  group.add(soil, truffle)
+  return group
+}
+
+function discoveryRelic(id, x, z, rotation, heightAt) {
+  const group = new THREE.Group()
+  group.name = `Resource_${id}`
+  group.position.set(x, heightAt(x, z), z)
+  group.rotation.y = rotation
+  const stone = mesh(new THREE.DodecahedronGeometry(0.42, 1), mats.richOre, 'Fossil Stone')
+  stone.position.y = 0.28
+  stone.scale.set(1.2, 0.78, 0.52)
+  stone.rotation.x = -0.2
+  const fossil = mesh(new THREE.TorusGeometry(0.16, 0.045, 7, 16, Math.PI * 1.72), mats.parchment, 'Spiral Fossil')
+  fossil.position.set(0, 0.31, 0.24)
+  fossil.rotation.z = -0.4
+  group.add(stone, fossil)
+  return group
+}
+
+function berryBush(id, x, z, scale, rotation, heightAt, variant = 0) {
+  const group = natureBush(x, z, scale, rotation, heightAt, variant)
+  group.name = 'Wild Berry Bush'
+  const berries = new THREE.Group()
+  berries.name = `Resource_${id}`
+  berries.add(mesh(berryClusterGeometry, mats.fruit, 'Ripe Berry Cluster'))
+  group.add(berries)
+  return group
+}
+
+function scatterCluster(scene, cx, cz, count, radius, heightAt, salt = 0, treeScale = 1) {
+  for (let index = 0; index < count; index += 1) {
+    const angle = seeded(index, salt + 1) * Math.PI * 2
+    const distance = Math.sqrt(seeded(index, salt + 2)) * radius
+    const x = cx + Math.cos(angle) * distance
+    const z = cz + Math.sin(angle) * distance
+    scene.add(natureTree(x, z, treeScale * (0.82 + seeded(index, salt + 3) * 0.5), seeded(index, salt + 4) * Math.PI * 2, heightAt, index + salt))
+    if (index % 2 === 0) scene.add(natureGrass(x + 1.2, z - 0.7, 0.65 + seeded(index, salt + 5) * 0.55, angle, heightAt))
+    if (index % 3 === 0) scene.add(natureFlowers(x - 1.1, z + 0.65, 0.38 + seeded(index, salt + 7) * 0.24, angle, heightAt))
+  }
+}
+
+function mesh(geometry, mat, name) {
+  const value = new THREE.Mesh(geometry, mat)
+  value.name = name
+  value.castShadow = true
+  value.receiveShadow = true
+  return value
+}
+
+const forageTrail = [[0, 22], [1, 12], [-2, 0], [-8, -16], [-3, -34], [9, -52], [4, -72], [-12, -91], [-5, -112], [8, -132], [-2, -154], [10, -177], [2, -203]]
+const farmParcels = [
+  [-54, -16], [-18, -14], [19, -17], [55, -13],
+  [-53, -50], [-17, -49], [20, -53], [56, -48],
+]
+
+function smoothstep(edge0, edge1, value) {
+  const t = Math.max(0, Math.min(1, (value - edge0) / (edge1 - edge0)))
+  return t * t * (3 - 2 * t)
+}
+
+function trailCenterAt(z) {
+  if (z >= forageTrail[0][1]) return forageTrail[0][0]
+  for (let index = 0; index < forageTrail.length - 1; index += 1) {
+    const [ax, az] = forageTrail[index]
+    const [bx, bz] = forageTrail[index + 1]
+    if (z <= az && z >= bz) {
+      const t = (az - z) / (az - bz)
+      return ax + (bx - ax) * t
+    }
+  }
+  return forageTrail[forageTrail.length - 1][0]
+}
+
+function forageGroundHeight(x, z) {
+  const trailDistance = Math.abs(x - trailCenterAt(z))
+  const rolling = Math.sin(x * 0.055 + z * 0.018) * 0.7 + Math.cos(z * 0.047 - x * 0.026) * 0.62 + Math.sin((x + z) * 0.12) * 0.18
+  const westRise = Math.exp(-((x + 48) ** 2 + (z + 42) ** 2) / 900) * 7.5
+  const eastRise = Math.exp(-((x - 55) ** 2 + (z + 75) ** 2) / 1100) * 8.2
+  const oldHill = Math.exp(-((x + 22) ** 2 + (z + 103) ** 2) / 620) * 5.8
+  const sideMass = smoothstep(62, 138, Math.abs(x)) * (4.5 + Math.sin(z * 0.035) * 1.4)
+  const northMass = smoothstep(42, 145, z) * 5.5
+  const southMass = smoothstep(118, 160, -z) * 4.2
+  const trailChannel = Math.exp(-(trailDistance ** 2) / 32) * 0.7
+  return rolling + westRise + eastRise + oldHill + sideMass + northMass + southMass - trailChannel
+}
+
+function terrain(radius = 34, heightAt = null, groundMaterial = mats.ground) {
+  const terrainSegments = Math.max(120, Math.min(260, Math.ceil(radius * 1.1)))
+  const geometry = heightAt ? new THREE.PlaneGeometry(radius * 2, radius * 2, terrainSegments, terrainSegments) : new THREE.CircleGeometry(radius, 80)
+  geometry.rotateX(-Math.PI / 2)
+  const positions = geometry.attributes.position
+  const uvs = geometry.attributes.uv
+  for (let i = 0; i < positions.count; i += 1) {
+    const x = positions.getX(i)
+    const z = positions.getZ(i)
+    const y = heightAt ? heightAt(x, z) : Math.min(1, Math.hypot(x, z) / (radius * 0.75)) * (Math.sin(x * 0.38) + Math.cos(z * 0.31)) * 0.12
+    positions.setY(i, y)
+    uvs.setXY(i, uvs.getX(i) * (heightAt ? radius / 6 : 7), uvs.getY(i) * (heightAt ? radius / 6 : 7))
+  }
+  geometry.computeVertexNormals()
+  return mesh(geometry, groundMaterial, groundMaterial === mats.mineGround ? 'Mine Ground' : 'Woodland Ground')
+}
+
+function pathRibbon(points, width, name, heightAt = null, pathMaterial = mats.path) {
+  const curve = new THREE.CatmullRomCurve3(points.map(([x, z]) => new THREE.Vector3(x, (heightAt?.(x, z) ?? 0) + 0.055, z)), false, 'catmullrom', 0.4)
+  const samples = curve.getPoints(Math.max(24, Math.min(220, Math.ceil(curve.getLength() / 1.15))))
+  const positions = []
+  const uvs = []
+  const indices = []
+  for (let i = 0; i < samples.length; i += 1) {
+    const current = samples[i]
+    const previous = samples[Math.max(0, i - 1)]
+    const next = samples[Math.min(samples.length - 1, i + 1)]
+    const tangent = next.clone().sub(previous).normalize()
+    const side = new THREE.Vector3(-tangent.z, 0, tangent.x).multiplyScalar(width * (0.48 + Math.sin(i * 1.7) * 0.035))
+    for (const point of [current.clone().add(side), current.clone().sub(side)]) {
+      if (heightAt) point.y = heightAt(point.x, point.z) + 0.065
+      positions.push(point.x, point.y, point.z)
+    }
+    uvs.push(0, i / 4, 1, i / 4)
+    if (i < samples.length - 1) {
+      const n = i * 2
+      indices.push(n, n + 2, n + 1, n + 2, n + 3, n + 1)
+    }
+  }
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  geometry.setIndex(indices)
+  geometry.computeVertexNormals()
+  return mesh(geometry, pathMaterial, name)
+}
+
+function beamBetween(a, b, radius = 0.13, mat = mats.bark) {
+  const start = new THREE.Vector3(...a)
+  const end = new THREE.Vector3(...b)
+  const direction = end.clone().sub(start)
+  const value = mesh(new THREE.CylinderGeometry(radius * 0.82, radius, direction.length(), 7), mat, 'Hewn Wood')
+  value.position.copy(start.clone().add(end).multiplyScalar(0.5))
+  value.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize())
+  return value
+}
+
+function tree(x, z, scale = 1, rotation = 0, dark = false, y = 0) {
+  const group = new THREE.Group()
+  group.name = 'Storybook Tree'
+  group.position.set(x, y, z)
+  group.rotation.y = rotation
+  group.scale.setScalar(scale)
+  group.userData.colliderRadius = 0.34
+  const trunk = mesh(new THREE.CylinderGeometry(0.34, 0.6, 4.5, 7), mats.bark, 'Tree Trunk')
+  trunk.position.y = 2.1
+  trunk.rotation.z = 0.06
+  group.add(trunk)
+  group.add(beamBetween([0, 3.1, 0], [1.1, 4.3, 0.15], 0.2))
+  group.add(beamBetween([0, 3.45, 0], [-0.9, 4.25, -0.1], 0.18))
+  const canopyMaterial = dark ? mats.leafDark : mats.leaf
+  const crowns = [
+    [0, 5.15, 0, 1.75],
+    [1.15, 4.95, 0.1, 1.25],
+    [-1.1, 4.8, -0.15, 1.35],
+    [0.15, 5.95, -0.15, 1.15],
+  ]
+  crowns.forEach(([cx, cy, cz, size], index) => {
+    const crown = mesh(new THREE.DodecahedronGeometry(size, 1), canopyMaterial, `Canopy ${index + 1}`)
+    crown.position.set(cx, cy, cz)
+    crown.scale.y = 0.78
+    crown.rotation.set(index * 0.3, index * 0.7, 0)
+    group.add(crown)
+  })
+  return group
+}
+
+function shrub(x, z, scale = 1, dark = false, y = 0) {
+  const group = new THREE.Group()
+  group.name = 'Shrub Cluster'
+  group.position.set(x, y, z)
+  const mat = dark ? mats.leafDark : mats.leaf
+  ;[
+    [-0.45, 0.5, 0, 0.65],
+    [0.35, 0.55, 0.08, 0.72],
+    [0, 0.72, -0.25, 0.66],
+  ].forEach(([px, py, pz, size]) => {
+    const part = mesh(new THREE.DodecahedronGeometry(size * scale, 1), mat, 'Shrub')
+    part.position.set(px * scale, py * scale, pz * scale)
+    part.scale.y = 0.68
+    group.add(part)
+  })
+  return group
+}
+
+function fernPatch(x, z, scale = 1, rotation = 0) {
+  const group = new THREE.Group()
+  group.name = 'Fern Understory Patch'
+  group.position.set(x, forageGroundHeight(x, z), z)
+  group.rotation.y = rotation
+  for (let index = 0; index < 7; index += 1) {
+    const angle = (index / 7) * Math.PI * 2 + (index % 2) * 0.18
+    const leaf = mesh(new THREE.SphereGeometry(0.5, 7, 5), mats.leaf, 'Broad Fern Frond')
+    leaf.scale.set(0.38 * scale, 0.16 * scale, (0.72 + (index % 2) * 0.1) * scale)
+    leaf.position.set(Math.sin(angle) * 0.34 * scale, 0.34 * scale, Math.cos(angle) * 0.34 * scale)
+    leaf.rotation.set(-0.62, angle, 0)
+    group.add(leaf)
+  }
+  return group
+}
+
+function fallenLog(x, z, length = 5.4, rotation = 0) {
+  const group = new THREE.Group()
+  group.name = 'Mossy Fallen Log Landmark'
+  group.position.set(x, forageGroundHeight(x, z), z)
+  group.rotation.y = rotation
+  group.userData.colliderRadius = length * 0.42
+  const trunk = mesh(new THREE.CylinderGeometry(0.42, 0.55, length, 9), mats.bark, 'Fallen Tree Trunk')
+  trunk.position.y = 0.48
+  trunk.rotation.z = Math.PI / 2
+  trunk.rotation.y = 0.08
+  const brokenEnd = mesh(new THREE.CylinderGeometry(0.26, 0.45, 0.7, 7), mats.barkLight, 'Broken Log End')
+  brokenEnd.position.set(length * 0.52, 0.62, 0)
+  brokenEnd.rotation.z = Math.PI / 2
+  const moss = mesh(new THREE.SphereGeometry(0.55, 8, 5), mats.leaf, 'Moss on Log')
+  moss.position.set(-0.6, 0.82, -0.08)
+  moss.scale.set(2.4, 0.24, 0.68)
+  group.add(trunk, brokenEnd, moss)
+  return group
+}
+
+function rock(x, z, scale = 1, dark = false, y = 0) {
+  const value = mesh(new THREE.DodecahedronGeometry(0.75 * scale, 1), dark ? mats.stoneDark : mats.stone, 'Ground Rock')
+  value.position.set(x, y + 0.42 * scale, z)
+  value.userData.colliderRadius = 0.62 * scale
+  value.scale.set(1.2, 0.72, 0.9)
+  value.rotation.set(0.12, x * 0.31 + z, 0.08)
+  return value
+}
+
+function seeded(index, salt = 0) {
+  const value = Math.sin((index + 1) * 91.733 + salt * 37.17) * 43758.5453
+  return value - Math.floor(value)
+}
+
+function fruitTree(x, z, scale = 1, golden = false) {
+  const group = tree(x, z, scale, seeded(Math.round(x * 9 + z * 13), 8) * Math.PI, false, forageGroundHeight(x, z))
+  group.name = golden ? 'Golden Pear Tree' : 'Wild Apple Tree'
+  const fruitMaterial = golden ? mats.fruitGold : mats.fruit
+  ;[
+    [-1.15, 4.55, 1.05], [0.85, 5.05, 1.15], [1.35, 4.35, -0.5], [-0.25, 5.75, -1.05], [-1.45, 4.82, -0.45], [0.3, 4.15, 1.35], [1.1, 5.42, 0.35], [-0.7, 4.22, -1.2],
+  ].forEach(([fx, fy, fz], index) => {
+    const fruit = mesh(new THREE.IcosahedronGeometry(0.23 + (index % 2) * 0.025, 1), fruitMaterial, golden ? 'Pear' : 'Apple')
+    fruit.position.set(fx, fy, fz)
+    group.add(fruit)
+  })
+  return group
+}
+
+function boulderFormation(x, z, scale = 1, rotation = 0) {
+  const group = new THREE.Group()
+  group.name = 'Natural Cliff Boulder'
+  group.position.set(x, forageGroundHeight(x, z), z)
+  group.rotation.y = rotation
+  group.userData.colliderRadius = 1.35 * scale
+  ;[
+    [-0.65, 0.65, 0, 1.15], [0.55, 0.82, 0.1, 1.35], [0, 1.55, -0.15, 1.05],
+  ].forEach(([bx, by, bz, size], index) => {
+    const stone = mesh(new THREE.DodecahedronGeometry(size * scale, 1), index % 2 ? mats.stoneDark : mats.stone, 'Cliff Stone')
+    stone.position.set(bx * scale, by * scale, bz * scale)
+    stone.scale.set(1.2, 0.82 + index * 0.1, 0.95)
+    stone.rotation.set(index * 0.13, index * 0.61, index * 0.08)
+    group.add(stone)
+  })
+  return group
+}
+
+function portalIcon(kind, colorMaterial) {
+  const group = new THREE.Group()
+  group.name = `${kind} Emblem`
+  if (kind === 'Forage') {
+    const cap = mesh(new THREE.SphereGeometry(0.52, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), colorMaterial, 'Mushroom Cap')
+    cap.scale.y = 0.68
+    const stem = mesh(new THREE.CylinderGeometry(0.18, 0.25, 0.65, 8), mats.parchment, 'Mushroom Stem')
+    stem.position.y = -0.35
+    group.add(cap, stem)
+  } else if (kind === 'Farm') {
+    const leafA = mesh(new THREE.SphereGeometry(0.46, 10, 8), colorMaterial, 'Leaf')
+    leafA.scale.set(0.52, 1, 0.22)
+    leafA.rotation.z = -0.72
+    leafA.position.x = -0.22
+    const leafB = leafA.clone()
+    leafB.position.x = 0.22
+    leafB.rotation.z = 0.72
+    group.add(leafA, leafB, beamBetween([0, -0.7, 0], [0, 0.45, 0], 0.07, mats.bark))
+  } else if (kind === 'Mine') {
+    group.add(beamBetween([-0.45, -0.55, 0], [0.4, 0.5, 0], 0.09, mats.barkLight))
+    group.add(beamBetween([-0.55, 0.28, 0], [0.12, 0.72, 0], 0.08, colorMaterial))
+  } else {
+    const roof = mesh(new THREE.ConeGeometry(0.7, 0.55, 4), colorMaterial, 'Home Roof')
+    roof.rotation.y = Math.PI / 4
+    roof.position.y = 0.28
+    const cottage = mesh(new RoundedBoxGeometry(0.82, 0.7, 0.18, 3, 0.12), mats.parchment, 'Home Cottage')
+    cottage.position.y = -0.28
+    group.add(roof, cottage)
+  }
+  return group
+}
+
+function portal(kind, glass, position, rotation = 0) {
+  const group = new THREE.Group()
+  group.name = `${kind} Portal Landmark`
+  group.position.set(...position)
+  group.rotation.y = rotation
+  for (const side of [-1, 1]) {
+    const collider = new THREE.Object3D()
+    collider.name = `${kind} Portal Side Collider`
+    collider.position.set(side * 2.03, 0, 0)
+    collider.userData.colliderRadius = 0.8
+    group.add(collider)
+  }
+  const stoneGeometry = new THREE.DodecahedronGeometry(0.72, 1)
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 4; i += 1) {
+      const stone = mesh(stoneGeometry, i % 2 ? mats.stoneDark : mats.stone, 'Portal Stone')
+      stone.position.set(side * 2.03, 0.55 + i * 0.92, 0)
+      stone.scale.set(0.82, 0.9, 0.72)
+      stone.rotation.set(i * 0.2, i * 0.42, side * 0.06)
+      group.add(stone)
+    }
+  }
+  for (let i = 0; i < 7; i += 1) {
+    const angle = (i / 6) * Math.PI
+    const stone = mesh(stoneGeometry, i % 2 ? mats.stone : mats.stoneDark, 'Arch Stone')
+    stone.position.set(Math.cos(angle) * 2.03, 3.3 + Math.sin(angle) * 1.72, 0)
+    stone.scale.set(0.8, 0.78, 0.7)
+    stone.rotation.z = -angle
+    group.add(stone)
+  }
+  const veil = mesh(new RoundedBoxGeometry(3.15, 3.25, 0.06, 4, 0.65), glass, 'Portal Veil')
+  veil.position.set(0, 1.68, 0.1)
+  group.add(veil)
+  const icon = portalIcon(kind, glass)
+  icon.position.set(0, 5.3, 0)
+  icon.scale.setScalar(1.18)
+  group.add(icon)
+  return group
+}
+
+function fenceRect(group, centerX, centerZ, width, depth) {
+  const left = centerX - width / 2
+  const right = centerX + width / 2
+  const near = centerZ + depth / 2
+  const far = centerZ - depth / 2
+  const gateHalf = 1.25
+  const posts = [
+    [left, far], [left, near], [right, far], [right, near],
+    [centerX - gateHalf, far], [centerX + gateHalf, far],
+    [centerX - gateHalf, near], [centerX + gateHalf, near],
+    [left, centerZ - gateHalf], [left, centerZ + gateHalf],
+    [right, centerZ - gateHalf], [right, centerZ + gateHalf],
+  ]
+  posts.forEach(([x, z]) => {
+    const post = mesh(new THREE.CylinderGeometry(0.14, 0.18, 1.1, 7), mats.bark, 'Fence Post')
+    post.position.set(x, 0.55, z)
+    group.add(post)
+  })
+  for (const y of [0.42, 0.83]) {
+    group.add(beamBetween([left, y, far], [centerX - gateHalf, y, far], 0.09))
+    group.add(beamBetween([centerX + gateHalf, y, far], [right, y, far], 0.09))
+    group.add(beamBetween([left, y, near], [centerX - gateHalf, y, near], 0.09))
+    group.add(beamBetween([centerX + gateHalf, y, near], [right, y, near], 0.09))
+    group.add(beamBetween([left, y, far], [left, y, centerZ - gateHalf], 0.09))
+    group.add(beamBetween([left, y, centerZ + gateHalf], [left, y, near], 0.09))
+    group.add(beamBetween([right, y, far], [right, y, centerZ - gateHalf], 0.09))
+    group.add(beamBetween([right, y, centerZ + gateHalf], [right, y, near], 0.09))
+  }
+  const addCollider = (x, z) => {
+    const collider = new THREE.Object3D()
+    collider.name = 'Fence Collider'
+    collider.position.set(x, 0, z)
+    collider.userData.colliderRadius = 0.34
+    group.add(collider)
+  }
+  for (let x = left; x <= right + 0.01; x += 0.9) {
+    if (Math.abs(x - centerX) > gateHalf + 0.15) { addCollider(x, far); addCollider(x, near) }
+  }
+  for (let z = far; z <= near + 0.01; z += 0.9) {
+    if (Math.abs(z - centerZ) > gateHalf + 0.15) { addCollider(left, z); addCollider(right, z) }
+  }
+}
+
+function farmPlot() {
+  const group = new THREE.Group()
+  group.name = 'Finished Farm Plot'
+  fenceRect(group, -9.5, 8.5, 10, 7)
+  const patch = mesh(new RoundedBoxGeometry(7.5, 0.18, 4.8, 5, 0.4), mats.soil, 'Tilled Soil')
+  patch.position.set(-10.1, 0.13, 8.5)
+  group.add(patch)
+  for (let row = -1; row <= 1; row += 1) {
+    const furrow = mesh(new RoundedBoxGeometry(6.7, 0.15, 0.72, 4, 0.3), mats.barkLight, 'Planting Row')
+    furrow.position.set(-10.1, 0.28, 8.5 + row * 1.28)
+    group.add(furrow)
+  }
+  const signPost = mesh(new THREE.CylinderGeometry(0.11, 0.14, 1.45, 7), mats.bark, 'Farm Sign Post')
+  signPost.position.set(-4.9, 0.72, 6.1)
+  const sign = mesh(new RoundedBoxGeometry(1.25, 0.62, 0.1, 4, 0.12), mats.parchment, 'Farm Emblem Sign')
+  sign.position.set(-4.9, 1.3, 6.1)
+  const icon = portalIcon('Farm', mats.glassFarm)
+  icon.position.set(-4.9, 1.3, 6.02)
+  icon.scale.setScalar(0.32)
+  group.add(signPost, sign, icon)
+  return group
+}
+
+function shop(name = 'Common Shop', position = [8.1, 0, 6.4], rotation = -0.62, roofMaterial = mats.leafDark) {
+  const group = new THREE.Group()
+  group.name = name
+  group.position.set(...position)
+  group.rotation.y = rotation
+  const roof = mesh(new THREE.ConeGeometry(2.35, 1.08, 7), roofMaterial, 'Leafy Shop Roof')
+  roof.position.y = 3.18
+  roof.rotation.y = Math.PI / 7
+  const counter = mesh(new RoundedBoxGeometry(3.3, 0.82, 0.85, 5, 0.2), mats.barkLight, 'Shop Counter')
+  counter.position.set(0, 0.55, -1.05)
+  group.add(roof, counter)
+  for (const x of [-1.45, 1.45]) group.add(beamBetween([x, 0, -1.05], [x, 3.1, -1.05], 0.13))
+  const basket = mesh(new THREE.TorusGeometry(0.65, 0.12, 8, 12), mats.bark, 'Produce Basket')
+  basket.position.set(-0.8, 1.12, -1.08)
+  basket.rotation.x = Math.PI / 2
+  group.add(basket)
+  return group
+}
+
+function shopOffset(position, rotation, localZ) {
+  return [position[0] + Math.sin(rotation) * localZ, position[2] + Math.cos(rotation) * localZ]
+}
+
+function stockExchange(position = [-8, 0, 8], rotation = 0.18) {
+  const group = new THREE.Group()
+  group.name = 'Stock Exchange Pavilion'
+  group.position.set(...position)
+  group.rotation.y = rotation
+  const counter = mesh(new RoundedBoxGeometry(3.35, 0.82, 0.92, 5, 0.22), mats.stoneDark, 'Exchange Counter')
+  counter.position.set(0, 0.58, -1)
+  const roof = mesh(new THREE.ConeGeometry(2.35, 0.9, 7), mats.leafDark, 'Exchange Pavilion Roof')
+  roof.position.set(0, 3.2, -0.35)
+  roof.rotation.y = Math.PI / 7
+  const lintel = mesh(new RoundedBoxGeometry(2.65, 0.18, 0.38, 5, 0.12), mats.richOre, 'Exchange Copper Lintel')
+  lintel.position.set(0, 2.82, 0.05)
+  group.add(counter, roof, lintel)
+  for (const x of [-1.45, 1.45]) group.add(beamBetween([x, 0, -0.9], [x, 3.05, -0.9], 0.14, mats.barkLight))
+  const ring = mesh(new THREE.TorusGeometry(0.25, 0.055, 8, 20), mats.richOre, 'Animated_StockRing')
+  ring.position.set(0, 2.68, -0.72)
+  const center = mesh(new THREE.OctahedronGeometry(0.12, 0), mats.parchment, 'Exchange Token')
+  center.position.set(0, 2.68, -0.72)
+  group.add(ring, center)
+  return group
+}
+
+function farmGroundHeight(x, z) {
+  const raw = Math.sin(x * 0.045) * 0.48 + Math.cos(z * 0.052) * 0.38 + Math.sin((x - z) * 0.085) * 0.15
+  let height = raw
+  farmParcels.forEach(([cx, cz], index) => {
+    const distance = Math.max(Math.abs(x - cx), Math.abs(z - cz))
+    const influence = 1 - smoothstep(8.2, 12.5, distance)
+    const terrace = Math.sin(cx * 0.045) * 0.48 + Math.cos(cz * 0.052) * 0.38 + (index > 3 ? -0.08 : 0.08)
+    height = THREE.MathUtils.lerp(height, terrace, influence)
+  })
+  const westBank = Math.exp(-((x + 86) ** 2) / 260) * 5.5
+  const eastBank = Math.exp(-((x - 88) ** 2) / 300) * 5.8
+  const farBank = smoothstep(78, 108, -z) * 5.2
+  const entryBank = smoothstep(55, 92, z) * 3.8
+  return height + westBank + eastBank + farBank + entryBank
+}
+
+function hubGroundHeight(x, z) {
+  const rolling = Math.sin(x * 0.055) * 0.34 + Math.cos(z * 0.049) * 0.28 + Math.sin((x + z) * 0.09) * 0.1
+  const clearing = 1 - smoothstep(17, 29, Math.hypot(x, z))
+  const outerRise = smoothstep(27, 62, Math.hypot(x, z)) * 9.5
+  return THREE.MathUtils.lerp(rolling, 0.04, clearing) + outerRise
+}
+
+function farmParcel(x, z, index) {
+  const group = new THREE.Group()
+  group.name = `Farm ${index + 1}`
+  group.position.set(x, farmGroundHeight(x, z), z)
+  fenceRect(group, 0, 0, 14.5, 14.5)
+  const bed = mesh(new RoundedBoxGeometry(11.65, 0.11, 11.65, 5, 0.22), mats.soil, `Farm ${index + 1} Soil Bed`)
+  bed.position.y = 0.075
+  group.add(bed)
+  const gatePaths = [
+    [8.55, 0, 2.6, 2.15], [-8.55, 0, 2.6, 2.15],
+    [0, 8.55, 2.15, 2.6], [0, -8.55, 2.15, 2.6],
+  ]
+  gatePaths.forEach(([px, pz, pw, pd]) => {
+    const gatePath = mesh(new RoundedBoxGeometry(pw, 0.07, pd, 4, 0.2), mats.path, 'Farm Gate Path')
+    gatePath.position.set(px, 0.06, pz)
+    group.add(gatePath)
+  })
+  const signPost = mesh(new THREE.CylinderGeometry(0.1, 0.13, 1.35, 7), mats.bark, 'Plot Sign Post')
+  signPost.position.set(5.85, 0.68, 6.25)
+  const sign = mesh(new RoundedBoxGeometry(1.2, 0.58, 0.1, 4, 0.12), mats.parchment, 'Claim Sign')
+  sign.position.set(5.85, 1.18, 6.25)
+  const icon = portalIcon('Farm', mats.glassFarm)
+  icon.position.set(5.85, 1.18, 6.18)
+  icon.scale.setScalar(0.27)
+  group.add(signPost, sign, icon)
+  return group
+}
+
+function farmFurnacePad(x, z, index) {
+  const group = new THREE.Group()
+  group.name = `Farm Furnace Pad ${index + 1}`
+  group.position.set(x, farmGroundHeight(x, z), z)
+  group.rotation.y = -Math.PI / 2
+  const pad = mesh(new THREE.CylinderGeometry(1.08, 1.18, 0.12, 12), mats.stoneDark, 'Furnace Stone Pad')
+  pad.position.y = 0.06
+  pad.scale.z = 0.86
+  group.add(pad)
+
+  const body = new THREE.Group()
+  body.name = `FurnaceBody${index}`
+  body.userData.furnaceIndex = index
+  body.userData.colliderRadius = 0.62
+  body.scale.setScalar(0.68)
+  const base = mesh(new RoundedBoxGeometry(1.75, 1.35, 1.5, 5, 0.18), mats.stone, 'Furnace Masonry')
+  base.position.y = 0.78
+  const shoulder = mesh(new THREE.CylinderGeometry(0.56, 0.9, 0.62, 8), mats.stone, 'Furnace Shoulder')
+  shoulder.position.y = 1.7
+  const chimney = mesh(new THREE.CylinderGeometry(0.34, 0.42, 0.9, 8), mats.stoneDark, 'Furnace Chimney')
+  chimney.position.y = 2.38
+  const copperBand = mesh(new THREE.TorusGeometry(0.72, 0.09, 7, 8), mats.richOre, 'Copper Furnace Band')
+  copperBand.position.y = 1.42
+  copperBand.rotation.x = Math.PI / 2
+  const door = mesh(new RoundedBoxGeometry(0.82, 0.72, 0.12, 5, 0.15), mats.stoneDark, 'Furnace Door')
+  door.position.set(0, 0.88, 0.78)
+  const doorFrame = mesh(new THREE.TorusGeometry(0.43, 0.075, 7, 18, Math.PI), mats.richOre, 'Copper Firebox Arch')
+  doorFrame.position.set(0, 1.03, 0.86)
+  doorFrame.rotation.z = Math.PI
+  const fire = mesh(new THREE.ConeGeometry(0.2, 0.42, 7), mats.furnaceFire, `Animated_FurnaceFire${index}`)
+  fire.position.set(0, 0.88, 0.87)
+  fire.scale.set(0.9, 0.82, 0.42)
+  fire.visible = false
+  const ready = mesh(new THREE.TorusGeometry(0.58, 0.075, 8, 20), mats.furnaceFire, `Animated_FurnaceReady${index}`)
+  ready.position.set(0, 0.88, 0.9)
+  ready.visible = false
+  const steam = new THREE.Group()
+  steam.name = `Animated_FurnaceSteam${index}`
+  steam.position.set(0, 2.86, 0)
+  steam.visible = false
+  for (let puff = 0; puff < 3; puff += 1) {
+    const cloud = mesh(new THREE.IcosahedronGeometry(0.11 + puff * 0.018, 1), mats.furnaceSteam, 'Steam Puff')
+    cloud.position.set((puff % 2 ? 0.07 : -0.05), puff * 0.2, 0)
+    cloud.scale.set(0.9, 1.35, 0.9)
+    steam.add(cloud)
+  }
+  body.add(base, shoulder, chimney, copperBand, door, doorFrame, fire, ready, steam)
+  group.add(body)
+  return group
+}
+
+function mineGroundHeight(x, z) {
+  if (z >= 22) {
+    const mouthHill = Math.exp(-((z - 28) ** 2) / 520) * smoothstep(5, 24, Math.abs(x)) * 5.8
+    return mouthHill + Math.sin(x * 0.09 + z * 0.035) * 0.18
+  }
+  const ramp = (high, low, from, to) => {
+    const progress = THREE.MathUtils.clamp((high - z) / (high - low), 0, 1)
+    if (progress >= 1) return to
+    const steps = 3
+    const scaled = progress * steps
+    const step = Math.min(steps - 1, Math.floor(scaled))
+    const local = scaled - step
+    const easedDrop = smoothstep(0.04, 0.46, local)
+    return THREE.MathUtils.lerp(from, to, (step + easedDrop) / steps)
+  }
+  let level = z >= 8 ? ramp(22, 8, 0, -3)
+    : z >= -30 ? -3
+      : z >= -44 ? ramp(-30, -44, -3, -8)
+        : z >= -84 ? -8
+          : z >= -98 ? ramp(-84, -98, -8, -15)
+            : z >= -132 ? -15
+              : z >= -146 ? ramp(-132, -146, -15, -22)
+                : -22
+  const shelf = (cx, cz, radiusX, radiusZ, height) => {
+    const distance = Math.hypot((x - cx) / radiusX, (z - cz) / radiusZ)
+    return (1 - smoothstep(0.48, 1, distance)) * height
+  }
+  level += Math.sin(x * 0.055 + z * 0.024) * 0.52 + Math.cos(z * 0.061 - x * 0.018) * 0.36 + Math.sin((x - z) * 0.145) * 0.12
+  level += shelf(-39, -22, 20, 22, 3.2) + shelf(39, -30, 22, 19, -1.4)
+  level += shelf(-43, -73, 22, 25, 3.8) + shelf(43, -79, 23, 23, -1.8)
+  level += shelf(-31, -122, 23, 20, -1.6) + shelf(34, -126, 21, 20, 3.1)
+  level += shelf(0, -151, 20, 10, -1.1)
+  level += Math.exp(-((x + 38) ** 2 + (z + 22) ** 2) / 310) * 1.15
+  level -= Math.exp(-((x - 41) ** 2 + (z + 67) ** 2) / 360) * 1.2
+  level += Math.exp(-((x - 34) ** 2 + (z + 113) ** 2) / 330) * 0.9
+  level -= Math.exp(-((x + 24) ** 2 + (z + 118) ** 2) / 330) * 1.05
+  return level
+}
+
+function mineBoulder(x, z, scale = 1, rotation = 0) {
+  const group = new THREE.Group()
+  group.name = 'Quarry Wall'
+  group.position.set(x, mineGroundHeight(x, z), z)
+  group.rotation.y = rotation
+  // Keep the blocker inside the visible footprint. The former broad circle
+  // caught players on empty space between the three visible stones.
+  group.userData.colliderRadius = 0.72 * scale
+  ;[[-0.6, 0.7, 0, 1.15], [0.5, 0.9, 0.1, 1.35], [0, 1.75, -0.1, 1.2]].forEach(([bx, by, bz, size], index) => {
+    const stone = mesh(quarryStoneGeometry, index % 2 ? mats.mineWall : mats.stoneDark, 'Quarry Stone')
+    stone.position.set(bx * scale, by * scale, bz * scale)
+    stone.scale.set(size * scale * 1.2, size * scale * 0.88, size * scale * 0.92)
+    stone.rotation.set(index * 0.14, index * 0.63, index * 0.09)
+    group.add(stone)
+  })
+  return group
+}
+
+function caveCeiling(x, z, width, depth, seed = 0, height = 4.55) {
+  const columns = Math.max(2, Math.ceil(width / 3))
+  const rows = Math.max(2, Math.ceil(depth / 3))
+  const positions = []
+  const indices = []
+  for (let row = 0; row <= rows; row += 1) {
+    for (let column = 0; column <= columns; column += 1) {
+      const px = x - width / 2 + (column / columns) * width
+      const pz = z - depth / 2 + (row / rows) * depth
+      const edge = Math.min(column, columns - column, row, rows - row)
+      const ripple = (seeded(row * 31 + column, 3100 + seed) - 0.5) * 0.72 + Math.sin(px * 0.42 + pz * 0.17) * 0.16
+      positions.push(px, height + ripple - (edge === 0 ? 0.22 : 0), pz)
+    }
+  }
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      const a = row * (columns + 1) + column
+      const b = a + 1
+      const c = a + columns + 1
+      const d = c + 1
+      indices.push(a, c, b, b, c, d)
+    }
+  }
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setIndex(indices)
+  geometry.computeVertexNormals()
+  const ceilingMaterial = mats.mineWall.clone()
+  ceilingMaterial.name = 'Cave Ceiling Stone'
+  ceilingMaterial.color.multiply(new THREE.Color(0.82, 0.76, 0.68))
+  ceilingMaterial.emissive = new THREE.Color(0x21150f)
+  ceilingMaterial.emissiveIntensity = 0.22
+  ceilingMaterial.roughness = 1
+  ceilingMaterial.side = THREE.DoubleSide
+  const value = mesh(geometry, ceilingMaterial, 'Irregular Cave Ceiling')
+  return value
+}
+
+function oreNode(id, x, z) {
+  const group = new THREE.Group()
+  group.name = `Resource_${id}`
+  group.position.set(x, mineGroundHeight(x, z), z)
+  group.position.y -= 0.04
+  // Ore beds are ankle-height interaction targets, not navigation blockers.
+  const seed = Number(id.slice(-3))
+  const bed = mesh(new THREE.DodecahedronGeometry(0.78, 1), mats.mineWall, 'Embedded Ore Bed')
+  bed.scale.set(1.15, 0.22, 0.9)
+  bed.position.y = 0.13
+  bed.rotation.y = seeded(seed, 6110) * Math.PI
+  group.add(bed)
+  const boulderPositions = [[-0.34, 0.34, 0.04], [0.08, 0.46, -0.06], [0.39, 0.3, 0.12]]
+  for (let index = 0; index < boulderPositions.length; index += 1) {
+    const radius = 0.3 + seeded(index, seed + 6130) * 0.09
+    const boulder = mesh(new THREE.DodecahedronGeometry(radius, 1), mats.stoneOre, 'Ore Boulder')
+    const [bx, by, bz] = boulderPositions[index]
+    boulder.position.set(bx, by, bz)
+    boulder.scale.set(1 + seeded(index, seed + 6140) * 0.22, 0.82 + seeded(index, seed + 6150) * 0.16, 0.9 + seeded(index, seed + 6160) * 0.2)
+    boulder.rotation.set(seeded(index, seed + 6170) * 0.28, seeded(index, seed + 6180) * Math.PI, seeded(index, seed + 6190) * 0.24)
+    group.add(boulder)
+    const vein = mesh(new THREE.DodecahedronGeometry(radius * .43, 0), mats.richOre, 'Ore Vein')
+    vein.position.set(bx + (seeded(index, seed + 6201) - .5) * radius * .45, by + radius * .72, bz + radius * .42)
+    vein.scale.set(1.12, .44, .72)
+    vein.rotation.set(.18 + seeded(index, seed + 6211) * .4, seeded(index, seed + 6221) * Math.PI, .1)
+    group.add(vein)
+  }
+  return group
+}
+
+function hayStack(x, z, rotation = 0) {
+  const group = new THREE.Group()
+  group.name = 'Hay Bale Cluster'
+  group.position.set(x, farmGroundHeight(x, z), z)
+  group.rotation.y = rotation
+  const hay = material('Sun-dried Hay', 0xb78a42)
+  ;[[-0.65, 0.48, 0], [0.65, 0.48, 0], [0, 1.23, 0]].forEach(([px, py, pz], index) => {
+    const bale = mesh(new THREE.CylinderGeometry(0.58, 0.58, 1.15, 10), hay, 'Round Hay Bale')
+    bale.position.set(px, py, pz)
+    bale.rotation.z = Math.PI / 2
+    bale.rotation.y = index * 0.14
+    group.add(bale)
+  })
+  return group
+}
+
+function mineEntrance(x, z) {
+  const group = new THREE.Group()
+  group.name = 'Old Quarry Entrance'
+  group.position.set(x, mineGroundHeight(x, z), z)
+  group.name = 'Mine Timber Gate'
+  group.add(beamBetween([-2.45, 0, 0], [-2.45, 4.45, 0], 0.24, mats.barkLight))
+  group.add(beamBetween([2.45, 0, 0], [2.45, 4.45, 0], 0.24, mats.barkLight))
+  group.add(beamBetween([-2.65, 4.35, 0], [2.65, 4.35, 0], 0.26, mats.barkLight))
+  for (const xOffset of [-3.6, 3.6]) {
+    const lamp = mesh(new THREE.OctahedronGeometry(0.24, 0), material('Quarry Lantern', 0xd7a153, { roughness: 0.55 }), 'Quarry Lantern')
+    lamp.position.set(xOffset, 2.25, -0.1)
+    group.add(lamp, beamBetween([xOffset, 0, 0], [xOffset, 2.1, 0], 0.09, mats.bark))
+  }
+  return group
+}
+
+function mineTrack(x, z, length = 12, rotation = 0) {
+  const group = new THREE.Group()
+  group.name = 'Abandoned Mine Track'
+  group.position.set(x, mineGroundHeight(x, z) + 0.055, z)
+  group.rotation.y = rotation
+  for (const railX of [-0.52, 0.52]) {
+    const rail = mesh(new RoundedBoxGeometry(0.08, 0.08, length, 3, 0.025), mats.richOre, 'Worn Rail')
+    rail.position.x = railX
+    group.add(rail)
+  }
+  for (let offset = -length / 2 + 0.45; offset < length / 2; offset += 0.9) {
+    const sleeper = mesh(new RoundedBoxGeometry(1.55, 0.09, 0.18, 3, 0.025), mats.bark, 'Track Sleeper')
+    sleeper.position.z = offset
+    sleeper.rotation.y = (seeded(Math.round(offset * 10), 904) - 0.5) * 0.05
+    group.add(sleeper)
+  }
+  return group
+}
+
+function caveLantern(x, z, side = 1) {
+  const group = new THREE.Group()
+  group.name = 'Cave Lantern Landmark'
+  group.position.set(x, mineGroundHeight(x, z), z)
+  const post = mesh(new THREE.CylinderGeometry(0.085, 0.11, 2.25, 7), mats.barkLight, 'Lantern Post')
+  post.position.y = 1.12
+  const arm = beamBetween([0, 2.1, 0], [0.62 * side, 2.1, 0], 0.07, mats.barkLight)
+  const lamp = mesh(new THREE.OctahedronGeometry(0.23, 0), material('Cave Lantern Amber', 0xe0a653, { roughness: 0.58 }), 'Cave Lantern')
+  lamp.position.set(0.64 * side, 1.84, 0)
+  group.add(post, arm, lamp)
+  return group
+}
+
+function decorativeOreSeam(x, z, rotation = 0, color = mats.crystal) {
+  const group = new THREE.Group()
+  group.name = 'Decorative Ore Seam'
+  group.position.set(x, mineGroundHeight(x, z) + 1.15, z)
+  group.rotation.y = rotation
+  for (let index = 0; index < 7; index += 1) {
+    const shard = mesh(new THREE.OctahedronGeometry(0.12 + (index % 3) * 0.055, 0), color, 'Wall Ore Glint')
+    shard.position.set((index - 3) * 0.27, 0.2 + (index % 2) * 0.28, (index % 3) * 0.05)
+    shard.rotation.set(index * 0.37, index * 0.73, index * 0.16)
+    group.add(shard)
+  }
+  return group
+}
+
+const mineFootprint = [
+  [-10, 24], [-18, 12], [-40, 8], [-57, -1], [-64, -18], [-62, -36], [-48, -51], [-61, -64],
+  [-67, -82], [-61, -96], [-43, -108], [-54, -120], [-53, -139], [-45, -158], [-53, -176], [-43, -191], [-20, -199],
+  [20, -199], [43, -191], [53, -176], [45, -158], [53, -139], [54, -120], [42, -108], [59, -98], [67, -83], [63, -63],
+  [49, -50], [62, -36], [64, -17], [57, -1], [40, 8], [18, 12], [10, 24],
+]
+
+function pointInPolygon(x, z, polygon) {
+  let inside = false
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
+    const [xi, zi] = polygon[index]
+    const [xj, zj] = polygon[previous]
+    const intersects = zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi
+    if (intersects) inside = !inside
+  }
+  return inside
+}
+
+function maskedTerrain(name, bounds, step, heightAt, groundMaterial, includeCell) {
+  const [minX, maxX, minZ, maxZ] = bounds
+  const columns = Math.ceil((maxX - minX) / step)
+  const rows = Math.ceil((maxZ - minZ) / step)
+  const positions = []
+  const uvs = []
+  const indices = []
+  for (let row = 0; row <= rows; row += 1) {
+    const z = THREE.MathUtils.lerp(minZ, maxZ, row / rows)
+    for (let column = 0; column <= columns; column += 1) {
+      const x = THREE.MathUtils.lerp(minX, maxX, column / columns)
+      positions.push(x, heightAt(x, z), z)
+      uvs.push((x - minX) / 7, (z - minZ) / 7)
+    }
+  }
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      const x = THREE.MathUtils.lerp(minX, maxX, (column + 0.5) / columns)
+      const z = THREE.MathUtils.lerp(minZ, maxZ, (row + 0.5) / rows)
+      if (!includeCell(x, z)) continue
+      const a = row * (columns + 1) + column
+      const b = a + 1
+      const c = a + columns + 1
+      const d = c + 1
+      indices.push(a, c, b, b, c, d)
+    }
+  }
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  geometry.setIndex(indices)
+  geometry.computeVertexNormals()
+  return mesh(geometry, groundMaterial, name)
+}
+
+function mineExteriorTerrain() {
+  return maskedTerrain(
+    'Grassy Sinkhole Rim', [-78, 78, 18, 78], 1.5,
+    mineGroundHeight, mats.ground,
+    (x, z) => {
+      const throat = 6.5 + Math.max(0, 34 - z) * 0.34
+      return z >= 22 || Math.abs(x) >= throat
+    },
+  )
+}
+
+function caveHeight(x, z) {
+  const depth = Math.min(1, Math.max(0, (-z + 8) / 165))
+  const chamber = Math.exp(-((x + 37) ** 2 + (z + 23) ** 2) / 760) * 5.8
+    + Math.exp(-((x - 39) ** 2 + (z + 24) ** 2) / 760) * 5.4
+    + Math.exp(-((x + 38) ** 2 + (z + 73) ** 2) / 920) * 7.2
+    + Math.exp(-((x - 40) ** 2 + (z + 76) ** 2) / 920) * 7.5
+    + Math.exp(-((x + 28) ** 2 + (z + 124) ** 2) / 720) * 6.4
+    + Math.exp(-((x - 31) ** 2 + (z + 121) ** 2) / 720) * 6.8
+  return mineGroundHeight(x, z) + 8.5 + depth * 3.4 + chamber + Math.sin(x * 0.13 + z * 0.065) * 0.62
+}
+
+function authoredCavern() {
+  const group = new THREE.Group()
+  group.name = 'Authored Stonewake Cavern'
+  group.add(maskedTerrain(
+    'Continuous Cavern Floor', [-68, 68, -202, 25], 1.35,
+    (x, z) => mineGroundHeight(x, z) + 0.09 + Math.sin(x * 0.21 + z * 0.11) * 0.025,
+    mats.mineGround,
+    (x, z) => pointInPolygon(x, z, mineFootprint),
+  ))
+
+  const roofFootprint = mineFootprint.filter(([, z]) => z <= -7)
+  const roofShape = new THREE.Shape()
+  roofFootprint.forEach(([x, z], index) => index ? roofShape.lineTo(x, z) : roofShape.moveTo(x, z))
+  roofShape.closePath()
+  const tessellate = new TessellateModifier(3.2, 7)
+  const roofGeometry = tessellate.modify(new THREE.ShapeGeometry(roofShape))
+  const roofPosition = roofGeometry.getAttribute('position')
+  for (let index = 0; index < roofPosition.count; index += 1) {
+    const x = roofPosition.getX(index)
+    const z = roofPosition.getY(index)
+    roofPosition.setXYZ(index, x, caveHeight(x, z) + Math.sin(x * 0.47 - z * 0.29) * 0.42 + Math.cos(x * 0.19 + z * 0.37) * 0.24, z)
+  }
+  roofGeometry.computeVertexNormals()
+  const roofMaterial = mats.mineWall.clone()
+  roofMaterial.name = 'Cavern Roof Stone'
+  roofMaterial.side = THREE.DoubleSide
+  roofMaterial.emissive = new THREE.Color(0x26231f)
+  roofMaterial.emissiveIntensity = 0.18
+  group.add(mesh(roofGeometry, roofMaterial, 'Sealed Irregular Cavern Roof'))
+
+  const wallPositions = []
+  const wallUvs = []
+  const wallIndices = []
+  let cursor = 0
+  for (let edge = 0; edge < mineFootprint.length; edge += 1) {
+    const [ax, az] = mineFootprint[edge]
+    const [bx, bz] = mineFootprint[(edge + 1) % mineFootprint.length]
+    if (az > 10 && bz > 10) continue
+    const length = Math.hypot(bx - ax, bz - az)
+    const segments = Math.max(1, Math.ceil(length / 2.1))
+    for (let part = 0; part < segments; part += 1) {
+      const t0 = part / segments
+      const t1 = (part + 1) / segments
+      const x0 = THREE.MathUtils.lerp(ax, bx, t0)
+      const z0 = THREE.MathUtils.lerp(az, bz, t0)
+      const x1 = THREE.MathUtils.lerp(ax, bx, t1)
+      const z1 = THREE.MathUtils.lerp(az, bz, t1)
+      const h0 = caveHeight(x0, z0)
+      const h1 = caveHeight(x1, z1)
+      const f0 = mineGroundHeight(x0, z0)
+      const f1 = mineGroundHeight(x1, z1)
+      const center = new THREE.Vector2(0, -72)
+      const inward0 = center.clone().sub(new THREE.Vector2(x0, z0)).normalize()
+      const inward1 = center.clone().sub(new THREE.Vector2(x1, z1)).normalize()
+      const offsets0 = [0, 0.5, 1.2, 0.8, 1.35, 0.05]
+      const offsets1 = [0, 0.65, 1.05, 1.3, 0.7, 0.05]
+      for (let level = 0; level < 6; level += 1) {
+        const ratio = level / 5
+        wallPositions.push(
+          x0 + inward0.x * (offsets0[level] + seeded(cursor + level, 7710) * 0.4), THREE.MathUtils.lerp(f0 - 0.2, h0, ratio) + (seeded(cursor + level, 7750) - 0.5) * 0.7, z0 + inward0.y * offsets0[level],
+          x1 + inward1.x * (offsets1[level] + seeded(cursor + level, 7730) * 0.4), THREE.MathUtils.lerp(f1 - 0.2, h1, ratio) + (seeded(cursor + level, 7760) - 0.5) * 0.7, z1 + inward1.y * offsets1[level],
+        )
+        wallUvs.push(t0 * length / 3, ratio * 2.2, t1 * length / 3, ratio * 2.2)
+      }
+      for (let level = 0; level < 5; level += 1) {
+        const base = cursor + level * 2
+        wallIndices.push(base, base + 1, base + 2, base + 2, base + 1, base + 3)
+      }
+      cursor += 12
+    }
+  }
+  const wallGeometry = new THREE.BufferGeometry()
+  wallGeometry.setAttribute('position', new THREE.Float32BufferAttribute(wallPositions, 3))
+  wallGeometry.setAttribute('uv', new THREE.Float32BufferAttribute(wallUvs, 2))
+  wallGeometry.setIndex(wallIndices)
+  wallGeometry.computeVertexNormals()
+  const wallMaterial = mats.mineWall.clone()
+  wallMaterial.name = 'Cavern Perimeter Stone'
+  wallMaterial.side = THREE.DoubleSide
+  wallMaterial.emissive = new THREE.Color(0x27231f)
+  wallMaterial.emissiveIntensity = 0.24
+  group.add(mesh(wallGeometry, wallMaterial, 'Sealed Cavern Walls'))
+
+  return group
+}
+
+function cavePool(x, z, radiusX, radiusZ) {
+  const pool = mesh(new THREE.CircleGeometry(1, 40), mats.caveWater, 'Still Cavern Pool')
+  pool.rotation.x = -Math.PI / 2
+  pool.scale.set(radiusX, radiusZ, 1)
+  pool.position.set(x, mineGroundHeight(x, z) + 0.18, z)
+  return pool
+}
+
+function caveWaterfall(x, z, width = 1.3) {
+  const floor = mineGroundHeight(x, z)
+  const top = caveHeight(x, z) - 1.1
+  const fall = mesh(new THREE.PlaneGeometry(width, top - floor), mats.caveWater, 'Cavern Waterfall')
+  fall.position.set(x, floor + (top - floor) / 2, z)
+  fall.rotation.y = Math.PI / 2
+  return fall
+}
+
+function caveColumn(x, z, scale = 1, seed = 0) {
+  const group = new THREE.Group()
+  group.name = 'Natural Cave Column'
+  const floor = mineGroundHeight(x, z)
+  group.position.set(x, floor, z)
+  group.userData.colliderRadius = 0.72 * scale
+  const height = caveHeight(x, z) - floor
+  const trunk = mesh(new THREE.CylinderGeometry(0.75 * scale, 1.15 * scale, height, 9, 4), mats.mineWall, 'Weathered Stone Column')
+  trunk.position.y = height / 2
+  trunk.rotation.y = seeded(seed, 4400) * Math.PI
+  group.add(trunk)
+  for (let index = 0; index < 4; index += 1) {
+    const shelf = mesh(new THREE.DodecahedronGeometry((0.55 + index * 0.11) * scale, 1), index % 2 ? mats.stoneDark : mats.mineWall, 'Column Shelf')
+    shelf.position.set((seeded(index, seed + 4500) - 0.5) * 0.6, 1.2 + index * (height - 2) / 4, (seeded(index, seed + 4600) - 0.5) * 0.6)
+    shelf.scale.set(1.45, 0.52, 1.15)
+    shelf.rotation.y = index * 1.37
+    group.add(shelf)
+  }
+  return group
+}
+
+function cavernSpur(x, z, radiusX, radiusZ, height, seed = 0) {
+  const group = new THREE.Group()
+  group.name = 'Sculpted Cavern Spur'
+  group.position.set(x, mineGroundHeight(x, z) - 0.12, z)
+  group.userData.colliderRadius = Math.min(radiusX, radiusZ) * 0.52
+  const sides = 13
+  const rings = [
+    { y: 0, scale: 1 },
+    { y: height * 0.42, scale: 0.78 },
+    { y: height * 0.76, scale: 0.54 },
+    { y: height, scale: 0.28 },
+  ]
+  const positions = []
+  const uvs = []
+  const indices = []
+  rings.forEach((ring, ringIndex) => {
+    for (let side = 0; side < sides; side += 1) {
+      const angle = side / sides * Math.PI * 2
+      const wobble = 0.84 + seeded(side + ringIndex * sides, seed + 6600) * 0.24
+      positions.push(Math.cos(angle) * radiusX * ring.scale * wobble, ring.y + (seeded(side, seed + ringIndex * 70) - 0.5) * 0.28, Math.sin(angle) * radiusZ * ring.scale * wobble)
+      uvs.push(side / sides * 3, ringIndex / (rings.length - 1) * 2)
+    }
+  })
+  for (let ring = 0; ring < rings.length - 1; ring += 1) {
+    for (let side = 0; side < sides; side += 1) {
+      const next = (side + 1) % sides
+      const a = ring * sides + side
+      const b = ring * sides + next
+      const c = (ring + 1) * sides + side
+      const d = (ring + 1) * sides + next
+      indices.push(a, c, b, b, c, d)
+    }
+  }
+  const topCenter = positions.length / 3
+  positions.push(0, height + 0.08, 0)
+  uvs.push(1.5, 2.3)
+  const lastRing = (rings.length - 1) * sides
+  for (let side = 0; side < sides; side += 1) indices.push(lastRing + side, topCenter, lastRing + (side + 1) % sides)
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  geometry.setIndex(indices)
+  geometry.computeVertexNormals()
+  group.add(mesh(geometry, mats.mineStrata, 'Continuous Rock Spur'))
+  return group
+}
+
+function stalactite(x, z, length = 1.5, scale = 1) {
+  const spike = mesh(new THREE.ConeGeometry(0.46 * scale, length, 7), mats.mineWall, 'Natural Stalactite')
+  spike.position.set(x, caveHeight(x, z) - length / 2 + 0.1, z)
+  spike.rotation.z = (seeded(Math.round(x * 13 + z * 7), 4750) - 0.5) * 0.16
+  return spike
+}
+
+function stalagmiteCluster(x, z, scale = 1, seed = 0) {
+  const group = new THREE.Group()
+  group.name = 'Natural Stalagmite Cluster'
+  group.position.set(x, mineGroundHeight(x, z), z)
+  group.userData.colliderRadius = 0.48 * scale
+  for (let index = 0; index < 5; index += 1) {
+    const height = (0.85 + seeded(index, seed + 4810) * 1.65) * scale
+    const spike = mesh(new THREE.ConeGeometry((0.22 + height * 0.12), height, 7), index % 3 ? mats.mineWall : mats.stoneDark, 'Floor Stalagmite')
+    const angle = seeded(index, seed + 4820) * Math.PI * 2
+    const radius = 0.22 + seeded(index, seed + 4830) * 0.58 * scale
+    spike.position.set(Math.cos(angle) * radius, height / 2, Math.sin(angle) * radius)
+    spike.rotation.z = (seeded(index, seed + 4840) - 0.5) * 0.14
+    group.add(spike)
+  }
+  return group
+}
+
+function caveRubble(x, z, scale = 1, seed = 0) {
+  const group = new THREE.Group()
+  group.name = 'Settled Cave Rubble'
+  group.position.set(x, mineGroundHeight(x, z) + 0.03, z)
+  for (let index = 0; index < 7; index += 1) {
+    const angle = seeded(index, seed + 7200) * Math.PI * 2
+    const distance = 0.35 + seeded(index, seed + 7210) * 1.25 * scale
+    const size = (0.22 + seeded(index, seed + 7220) * 0.34) * scale
+    const stone = mesh(new THREE.DodecahedronGeometry(size, 0), index % 3 ? mats.mineWall : mats.stoneDark, 'Loose Cavern Stone')
+    stone.position.set(Math.cos(angle) * distance, size * 0.34, Math.sin(angle) * distance)
+    stone.scale.set(1.15 + seeded(index, seed + 7230) * 0.6, 0.38 + seeded(index, seed + 7240) * 0.25, 0.9 + seeded(index, seed + 7250) * 0.5)
+    stone.rotation.set(seeded(index, seed + 7260) * 0.35, seeded(index, seed + 7270) * Math.PI, seeded(index, seed + 7280) * 0.28)
+    group.add(stone)
+  }
+  return group
+}
+
+function lanternLandmark() {
+  const group = new THREE.Group()
+  group.name = 'Lantern Hearth'
+  for (let i = 0; i < 10; i += 1) {
+    const angle = (i / 10) * Math.PI * 2
+    const stone = rock(Math.cos(angle) * 1.25, Math.sin(angle) * 1.25, 0.42, i % 2 === 0)
+    group.add(stone)
+  }
+  const stump = mesh(new THREE.CylinderGeometry(0.58, 0.68, 0.72, 9), mats.barkLight, 'Meeting Stump')
+  stump.position.y = 0.36
+  const post = mesh(new THREE.CylinderGeometry(0.1, 0.14, 2.25, 7), mats.bark, 'Lantern Post')
+  post.position.set(0, 1.55, 0)
+  const lamp = mesh(new THREE.OctahedronGeometry(0.28, 0), material('Lantern Amber', 0xe1a855, { roughness: 0.6 }), 'Amber Lantern')
+  lamp.position.set(0, 2.58, 0)
+  group.add(stump, post, lamp)
+  group.position.set(2.6, 0, 1.8)
+  return group
+}
+
+function anchor(name, position) {
+  const value = new THREE.Object3D()
+  value.name = `Anchor_${name}`
+  value.position.set(...position)
+  return value
+}
+
+function addForestFrame(scene, treeData) {
+  treeData.forEach(([x, z, scale, rotation, dark]) => scene.add(tree(x, z, scale, rotation, dark)))
+  const shrubs = [
+    [-17, -15, 1.2], [-12, -20, 1], [-6, -25, 1.2], [7, -25, 1.1], [13, -20, 1.2], [18, -14, 1],
+    [-24, -6, 1.1], [24, -7, 1.2], [-25, 7, 1], [25, 8, 1.1], [-18, 18, 1.1], [17, 19, 1.2],
+  ]
+  shrubs.forEach(([x, z, s], i) => scene.add(shrub(x, z, s, i % 3 === 0)))
+}
+
+function hubScene() {
+  const scene = new THREE.Scene()
+  scene.name = 'Lantern Hollow Hub'
+  scene.add(terrain(72, hubGroundHeight))
+  scene.add(pathRibbon([[0, 19], [0.3, 10], [0, 0], [0, -18], [0, -37]], 2.2, 'North Path', hubGroundHeight))
+  scene.add(pathRibbon([[0, 0], [-9, -8], [-18, -17], [-25, -25]], 1.95, 'West Path', hubGroundHeight))
+  scene.add(pathRibbon([[0, 0], [9, -8], [18, -17], [25, -25]], 1.95, 'East Path', hubGroundHeight))
+  scene.add(pathRibbon([[-1, 12], [-4, 10], [-8, 8]], 1.35, 'Exchange Path', hubGroundHeight))
+  scene.add(pathRibbon([[1, 12], [4, 10], [8, 8]], 1.35, 'Market Path', hubGroundHeight))
+  scene.add(portal('Forage', mats.glassForage, [0, hubGroundHeight(0, -38), -38], 0))
+  scene.add(portal('Farm', mats.glassFarm, [-25, hubGroundHeight(-25, -25), -25], Math.PI / 4))
+  scene.add(portal('Mine', mats.glassMine, [25, hubGroundHeight(25, -25), -25], -Math.PI / 4))
+  const commonShop = [8, hubGroundHeight(8, 8), 8]
+  const exchange = [-8, hubGroundHeight(-8, 8), 8]
+  const commonRotation = Math.PI - 0.18
+  const exchangeRotation = Math.PI + 0.18
+  const commonFront = shopOffset(commonShop, commonRotation, -1.78)
+  const commonNpc = shopOffset(commonShop, commonRotation, 0.3)
+  const exchangeFront = shopOffset(exchange, exchangeRotation, -1.78)
+  const exchangeNpc = shopOffset(exchange, exchangeRotation, 0.3)
+  scene.add(shop('Common Shop', commonShop, commonRotation, mats.leafDark))
+  scene.add(stockExchange(exchange, exchangeRotation))
+  const hearth = lanternLandmark(); hearth.position.y = hubGroundHeight(2.6, 1.8); scene.add(hearth)
+  const hubClusters = [[-28,-14,9,8],[29,-15,9,8],[-23,20,9,9],[23,21,9,9],[0,-55,16,14],[-39,-37,13,12],[39,-38,13,12],[-53,-17,14,15],[53,-18,14,15],[-54,22,15,16],[54,24,15,16],[-32,45,15,16],[33,46,15,16],[0,55,13,15],[-63,1,12,13],[63,0,12,13]]
+  hubClusters.forEach(([x,z,count,radius], index) => scatterCluster(scene, x, z, count, radius, hubGroundHeight, 1800 + index * 29, 1.42 + (index % 3) * 0.16))
+  const closeGrove = [
+    [-17,16,2.35],[-22,10,2.1],[-19,1,2.55],[-23,-8,2.2],[-29,-15,2.45],
+    [18,15,2.2],[23,9,2.5],[20,0,2.25],[24,-9,2.55],[30,-16,2.25],
+    [-15,-34,2.35],[-10,-43,2.65],[-4,-50,2.25],[4,-51,2.55],[11,-44,2.3],[16,-35,2.65],
+    [-15,30,2.5],[-7,36,2.25],[5,38,2.65],[15,31,2.35],
+  ]
+  closeGrove.forEach(([x,z,scale], index) => {
+    scene.add(natureTree(x, z, scale, index * 0.79, hubGroundHeight, 2200 + index))
+    scene.add(natureBush(x + (index % 2 ? 1.5 : -1.3), z - 0.8, 1.15 + (index % 3) * 0.16, index, hubGroundHeight, index))
+  })
+  for (let index = 0; index < 260; index += 1) {
+    const x = -62 + seeded(index, 1881) * 124
+    const z = -56 + seeded(index, 1889) * 116
+    if (Math.hypot(x, z) < 17 || Math.abs(x) < 3.2 || Math.abs(z) < 3.2) continue
+    scene.add(natureGrass(x, z, 0.7 + seeded(index, 1897) * 0.8, seeded(index, 1901) * Math.PI * 2, hubGroundHeight))
+  }
+  ;[[-9,-9],[-6,-13],[8,-10],[11,-6],[-15,7],[15,6],[-7,18],[7,19]].forEach(([x,z], index) => {
+    scene.add(natureGrass(x, z, 0.82 + (index % 3) * 0.12, index * 0.67, hubGroundHeight))
+    scene.add(natureFlowers(x + 0.8, z - 0.45, 0.46, index * 0.41, hubGroundHeight))
+  })
+  scene.add(
+    boulderFormation(-20, -31, 1.4, 0.28), boulderFormation(20, -31, 1.45, -0.32),
+    boulderFormation(-32, 2, 1.25, 0.14), boulderFormation(33, 1, 1.3, -0.18),
+    fallenLog(-18, 30, 5.4, 0.3), fallenLog(21, 34, 5.8, -0.36),
+  )
+  scene.add(
+    anchor('Spawn', [0, hubGroundHeight(0, 18), 18]),
+    anchor('PortalForage', [0, hubGroundHeight(0, -38), -38]),
+    anchor('PortalFarm', [-25, hubGroundHeight(-25, -25), -25]),
+    anchor('PortalMine', [25, hubGroundHeight(25, -25), -25]),
+    anchor('Shop', [commonFront[0], hubGroundHeight(...commonFront), commonFront[1]]),
+    anchor('Stocks', [exchangeFront[0], hubGroundHeight(...exchangeFront), exchangeFront[1]]),
+    anchor('NpcShop', [commonNpc[0], hubGroundHeight(...commonNpc), commonNpc[1]]),
+    anchor('NpcStocks', [exchangeNpc[0], hubGroundHeight(...exchangeNpc), exchangeNpc[1]]),
+  )
+  return scene
+}
+
+function forageScene() {
+  const scene = new THREE.Scene()
+  scene.name = 'Mosswood Forage Grove'
+  scene.add(terrain(235, forageGroundHeight))
+  scene.add(pathRibbon(forageTrail, 2.25, 'Old Forest Trail', forageGroundHeight))
+  scene.add(pathRibbon([[-5, -14], [-17, -22], [-27, -37], [-43, -51]], 1.55, 'West Orchard Trail', forageGroundHeight))
+  scene.add(pathRibbon([[7, -48], [22, -54], [36, -67], [49, -78]], 1.45, 'Sunlit Thicket Trail', forageGroundHeight))
+  scene.add(pathRibbon([[-8, -91], [-27, -98], [-40, -112]], 1.4, 'Old Stone Trail', forageGroundHeight))
+  scene.add(pathRibbon([[0, -145], [25, -155], [48, -169], [68, -188]], 1.85, 'Deep Orchard Trail', forageGroundHeight))
+  scene.add(pathRibbon([[-1, -158], [-24, -169], [-47, -184], [-69, -202]], 1.4, 'Fern Hollow Trail', forageGroundHeight))
+  const homeY = forageGroundHeight(0, -64)
+  const home = portal('Home', mats.glassHome, [0, homeY, -64], Math.PI)
+  home.name = 'Home Portal Landmark'
+  scene.add(home)
+  const forageShopY = forageGroundHeight(9, -76)
+  const forageBuyerY = forageGroundHeight(-9, -76)
+  const forageShopPosition = [9, forageShopY, -76]
+  const forageBuyerPosition = [-9, forageBuyerY, -76]
+  const forageShopRotation = Math.PI - 0.32
+  const forageBuyerRotation = Math.PI + 0.32
+  const forageShopFront = shopOffset(forageShopPosition, forageShopRotation, -1.78)
+  const forageShopNpc = shopOffset(forageShopPosition, forageShopRotation, 0.3)
+  const forageBuyerFront = shopOffset(forageBuyerPosition, forageBuyerRotation, -1.78)
+  const forageBuyerNpc = shopOffset(forageBuyerPosition, forageBuyerRotation, 0.3)
+  scene.add(pathRibbon([[0,-66],[4,-71],[9,-76]], 1.25, 'Foraging Shop Path', forageGroundHeight))
+  scene.add(pathRibbon([[0,-66],[-4,-71],[-9,-76]], 1.25, 'Forage Market Path', forageGroundHeight))
+  scene.add(shop('Foraging Shop', forageShopPosition, forageShopRotation, mats.leafDark))
+  scene.add(shop('Forage Market', forageBuyerPosition, forageBuyerRotation, mats.fruitGold))
+
+  // Jittered cells give the forest a consistent rhythm without obvious rows or
+  // dense copy-pasted groves. The playable trails and spawn clearing stay open.
+  let forestIndex = 0
+  for (let row = 0; row < 15; row += 1) {
+    for (let column = 0; column < 23; column += 1) {
+      const index = row * 23 + column
+      const x = -207 + column * 18.2 + (seeded(index, 3021) - 0.5) * 9.2
+      const z = 39 - row * 17.6 + (seeded(index, 3037) - 0.5) * 8.8
+      const center = trailCenterAt(z)
+      const nearMainTrail = Math.abs(x - center) < 7.4
+      const nearHome = Math.hypot(x, z + 64) < 13
+      const nearSpecialists = Math.hypot(x, z + 76) < 18
+      if (nearMainTrail || nearHome || nearSpecialists) continue
+      const scale = 1.04 + seeded(index, 3041) * 0.58
+      scene.add(natureTree(x, z, scale, seeded(index, 3049) * Math.PI * 2, forageGroundHeight, 3100 + index))
+      if (forestIndex % 2 === 0) scene.add(natureBush(x + 1.25, z - 0.9, 0.68 + seeded(index, 3053) * 0.42, index, forageGroundHeight, index))
+      forestIndex += 1
+    }
+  }
+
+  for (let index = 0; index < 170; index += 1) {
+    const x = -102 + seeded(index, 751) * 204
+    const z = 20 - seeded(index, 757) * 232
+    const center = trailCenterAt(z)
+    if (Math.abs(x - center) < 3.7 || Math.hypot(x, z - 24) < 8) continue
+    scene.add(fernPatch(x, z, 0.72 + seeded(index, 761) * 0.72, seeded(index, 769) * Math.PI * 2))
+  }
+  ;[[-7,9], [7,5], [-9,-2], [10,-10], [-13,-19], [14,-28], [-17,-41], [18,-52], [-12,-118], [13,-129], [-14,-143], [15,-153], [-9,-166], [17,-181], [-11,-196]].forEach(([x, z], index) => {
+    scene.add(fernPatch(x, z, 0.86 + (index % 3) * 0.12, index * 0.73))
+  })
+
+  for (let index = 0; index < 360; index += 1) {
+    const x = -205 + seeded(index, 701) * 410
+    const z = 48 - seeded(index, 709) * 266
+    const center = trailCenterAt(z)
+    if (Math.abs(x - center) < 4.2 || Math.hypot(x, z - 24) < 8) continue
+    const scale = 0.9 + seeded(index, 719) * 1.05
+    scene.add(natureGrass(x, z, scale, seeded(index, 727) * Math.PI * 2, forageGroundHeight, index))
+    if (index % 5 === 0) scene.add(natureFlowers(x + 0.7, z - 0.5, 0.5 + seeded(index, 733) * 0.55, seeded(index, 739) * Math.PI * 2, forageGroundHeight))
+  }
+
+  scene.add(
+    boulderFormation(-41, -55, 2.2, 0.4), boulderFormation(48, -76, 2.4, -0.35),
+    boulderFormation(-38, -113, 2.5, 0.18), fallenLog(-24, -45, 6.4, 0.25),
+    fallenLog(27, -102, 7.2, -0.28), boulderFormation(16, -149, 1.15, -0.22),
+    fallenLog(-17, -160, 5.6, 0.31),
+  )
+
+  const orchardSites = (cx, cz, count, salt) => Array.from({ length: count }, (_, index) => {
+    const column = index % 5
+    const row = Math.floor(index / 5)
+    return [
+      cx + (column - 2) * 8.4 + (seeded(index, salt) - 0.5) * 3.6,
+      cz + (row - 1.5) * 8.8 + (seeded(index, salt + 1) - 0.5) * 3.8,
+    ]
+  })
+  const distributedFruitSites = (count, salt) => Array.from({ length: count }, (_, index) => {
+    const columns = 7
+    const rows = Math.ceil(count / columns)
+    const column = index % columns
+    const row = Math.floor(index / columns)
+    let x = -174 + (348 * (column + 0.5)) / columns + (seeded(index, salt) - 0.5) * 16
+    const z = -22 - (178 * (row + 0.5)) / rows + (seeded(index, salt + 1) - 0.5) * 13
+    const trail = trailCenterAt(z)
+    if (Math.abs(x - trail) < 9) x += x <= trail ? -13 : 13
+    return [THREE.MathUtils.clamp(x, -188, 188), z]
+  })
+  const apples = [
+    ...orchardSites(-49, -44, 12, 6101),
+    ...orchardSites(54, -117, 12, 6127),
+    ...orchardSites(-64, -181, 12, 6151),
+    ...distributedFruitSites(34, 6173),
+  ]
+  const oranges = [
+    ...orchardSites(54, -69, 12, 6203),
+    ...orchardSites(-52, -124, 12, 6229),
+    ...distributedFruitSites(36, 6257),
+  ]
+  const regularOrchardTrees = []
+  const truffles = [[-112,-66],[97,-104],[-78,-204],[126,-167],[34,-151]]
+  const discoveries = [[-178,-185],[164,-201],[-139,-16]]
+
+  apples.forEach(([x, z], index) => scene.add(fruitBirch(`ForageApple${String(index).padStart(3, '0')}`, x, z, 1 + (index % 3) * 0.08, index * 0.71, forageGroundHeight, false, index)))
+  oranges.forEach(([x, z], index) => scene.add(fruitBirch(`ForageOrange${String(index).padStart(3, '0')}`, x, z, 0.96 + (index % 4) * 0.07, index * 0.83, forageGroundHeight, true, index + 80)))
+  regularOrchardTrees.forEach(([x, z], index) => scene.add(natureTree(x, z, 0.96 + (index % 5) * 0.07, index * 0.77, forageGroundHeight, 7400 + index)))
+  truffles.forEach(([x, z], index) => scene.add(trufflePatch(`ForageTruffle${String(index).padStart(3, '0')}`, x, z, index * 0.69, forageGroundHeight)))
+  discoveries.forEach(([x, z], index) => scene.add(discoveryRelic(`ForageDiscovery${String(index).padStart(2, '0')}`, x, z, index * 0.83, forageGroundHeight)))
+  scene.add(
+    anchor('Spawn', [0, forageGroundHeight(0, -69), -69]),
+    anchor('GateDeep', [4, forageGroundHeight(4, -174), -174]),
+    anchor('Home', [0, homeY, -64]),
+    anchor('ForageShop', [forageShopFront[0], forageGroundHeight(...forageShopFront), forageShopFront[1]]),
+    anchor('ForageBuyer', [forageBuyerFront[0], forageGroundHeight(...forageBuyerFront), forageBuyerFront[1]]),
+    anchor('NpcForageShop', [forageShopNpc[0], forageGroundHeight(...forageShopNpc), forageShopNpc[1]]),
+    anchor('NpcForageBuyer', [forageBuyerNpc[0], forageGroundHeight(...forageBuyerNpc), forageBuyerNpc[1]]),
+    anchor('SecretSite0', [-43, forageGroundHeight(-43, -51), -51]),
+    anchor('SecretSite1', [49, forageGroundHeight(49, -78), -78]),
+    anchor('SecretSite2', [-40, forageGroundHeight(-40, -112), -112]),
+  )
+  apples.forEach(([x, z], index) => scene.add(anchor(`ForageApple${String(index).padStart(3, '0')}`, [x, forageGroundHeight(x, z) + 2.45, z])))
+  oranges.forEach(([x, z], index) => scene.add(anchor(`ForageOrange${String(index).padStart(3, '0')}`, [x, forageGroundHeight(x, z) + 2.45, z])))
+  truffles.forEach(([x, z], index) => scene.add(anchor(`ForageTruffle${String(index).padStart(3, '0')}`, [x, forageGroundHeight(x, z), z])))
+  discoveries.forEach(([x, z], index) => scene.add(anchor(`ForageDiscovery${String(index).padStart(2, '0')}`, [x, forageGroundHeight(x, z), z])))
+  return scene
+}
+
+function farmScene() {
+  const scene = new THREE.Scene()
+  scene.name = 'Sunmeadow Farmstead'
+  scene.add(terrain(118, farmGroundHeight))
+  scene.add(pathRibbon([[0, 24], [0, 13], [0, 2], [0, -18], [0, -43], [0, -75]], 2.35, 'Farmstead Lane', farmGroundHeight))
+  scene.add(pathRibbon([[-79, 1], [-55, 0], [-18, -1], [19, -1], [56, 0], [79, 2]], 1.8, 'North Farm Lane', farmGroundHeight))
+  scene.add(pathRibbon([[-79, -32], [-54, -32], [-18, -32], [20, -32], [57, -32], [80, -31]], 1.8, 'South Farm Lane', farmGroundHeight))
+  scene.add(pathRibbon([[-1, 13], [-4, 11], [-7, 9]], 1.4, 'Seed Shop Path', farmGroundHeight))
+  scene.add(pathRibbon([[1, 13], [4, 11], [7, 9]], 1.4, 'Produce Stand Path', farmGroundHeight))
+  const homeY = farmGroundHeight(0, 27)
+  scene.add(portal('Home', mats.glassHome, [0, homeY, 27], Math.PI))
+  farmParcels.forEach(([x, z], index) => scene.add(farmParcel(x, z, index)))
+  farmParcels.forEach(([x, z], index) => {
+    const laneZ = index < 4 ? -1 : -32
+    scene.add(pathRibbon([[x + 9.1, laneZ], [x + 9.1, z]], 1.45, `Farm ${index + 1} Entry Path`, farmGroundHeight))
+  })
+  farmParcels.forEach(([x, z], index) => scene.add(farmFurnacePad(x - 8.8, z + 4.8, index)))
+  const farmShopY = farmGroundHeight(-7, 9)
+  const buyerY = farmGroundHeight(7, 9)
+  const farmShopPosition = [-7, farmShopY, 9]
+  const buyerPosition = [7, buyerY, 9]
+  const farmShopRotation = Math.PI + 0.16
+  const buyerRotation = Math.PI - 0.16
+  const farmShopFront = shopOffset(farmShopPosition, farmShopRotation, -1.78)
+  const farmShopNpc = shopOffset(farmShopPosition, farmShopRotation, 0.3)
+  const buyerFront = shopOffset(buyerPosition, buyerRotation, -1.78)
+  const buyerNpc = shopOffset(buyerPosition, buyerRotation, 0.3)
+  scene.add(
+    shop('Farm Shop', farmShopPosition, farmShopRotation, mats.glassFarm),
+    shop('Produce Stand', buyerPosition, buyerRotation, mats.leaf),
+    hayStack(-78, -30, 0.35), hayStack(77, -69, -0.4), hayStack(10, -86, 0.12),
+  )
+
+  const farmClusters = [[-24, 9, 5, 4], [25, 7, 5, 4], [-42, 15, 7, 7], [42, 11, 7, 7], [-78, -7, 7, 9], [78, -36, 7, 9], [-78, -79, 7, 9], [78, -87, 7, 9], [-92, 31, 11, 18], [91, 27, 10, 17], [-102, -16, 11, 19], [101, -25, 11, 19], [-100, -70, 12, 20], [98, -77, 12, 20], [-66, -101, 11, 18], [65, -105, 11, 18], [-14, -106, 8, 15], [24, -90, 7, 11], [17, 38, 8, 14]]
+  farmClusters.forEach(([x, z, count, radius], index) => scatterCluster(scene, x, z, count, radius, farmGroundHeight, 903 + index * 23, 1.02))
+  for (let index = 0; index < 150; index += 1) {
+    const x = -103 + seeded(index, 1001) * 206
+    const z = 32 - seeded(index, 1009) * 137
+    const nearParcel = farmParcels.some(([cx, cz]) => Math.abs(x - cx) < 9.5 && Math.abs(z - cz) < 9.5)
+    const nearLane = Math.abs(x) < 3.5 || Math.abs(z + 1) < 3 || Math.abs(z + 32) < 3
+    if (nearParcel || nearLane || Math.hypot(x + 22, z - 16) < 7 || Math.hypot(x - 22, z - 16) < 7) continue
+    scene.add(natureGrass(x, z, 0.8 + seeded(index, 1013) * 0.82, seeded(index, 1019) * Math.PI * 2, farmGroundHeight, index))
+    if (index % 6 === 0) scene.add(natureFlowers(x + 0.5, z - 0.4, 0.48, index, farmGroundHeight))
+  }
+
+  scene.add(
+    anchor('Spawn', [0, farmGroundHeight(0, 17), 17]),
+    anchor('GateDeep', [20, farmGroundHeight(20, -53), -53]),
+    anchor('Home', [0, homeY, 27]),
+    anchor('FarmShop', [farmShopFront[0], farmGroundHeight(...farmShopFront), farmShopFront[1]]),
+    anchor('ProduceBuyer', [buyerFront[0], farmGroundHeight(...buyerFront), buyerFront[1]]),
+    anchor('NpcFarmShop', [farmShopNpc[0], farmGroundHeight(...farmShopNpc), farmShopNpc[1]]),
+    anchor('NpcProduceBuyer', [buyerNpc[0], farmGroundHeight(...buyerNpc), buyerNpc[1]]),
+    anchor('SecretSite0', [-78, farmGroundHeight(-78, -30), -30]),
+    anchor('SecretSite1', [77, farmGroundHeight(77, -69), -69]),
+    anchor('SecretSite2', [10, farmGroundHeight(10, -86), -86]),
+  )
+  farmParcels.forEach(([farmX, farmZ], farmIndex) => {
+    const level = farmGroundHeight(farmX, farmZ)
+    scene.add(anchor(`FarmPlot${farmIndex}`, [farmX, level, farmZ]))
+    scene.add(anchor(`FarmClaim${farmIndex}`, [farmX + 5.85, level + 0.18, farmZ + 6.25]))
+    scene.add(anchor(`FurnacePad${farmIndex}`, [farmX - 8.8, farmGroundHeight(farmX - 8.8, farmZ + 4.8) + 0.12, farmZ + 4.8]))
+    for (let row = 0; row < 8; row += 1) {
+      for (let column = 0; column < 8; column += 1) {
+        const cellIndex = row * 8 + column
+        const x = farmX + (column - 3.5) * 1.42
+        const z = farmZ + (row - 3.5) * 1.42
+        scene.add(anchor(`FarmCell${farmIndex}_${String(cellIndex).padStart(2, '0')}`, [x, level + 0.14, z]))
+      }
+    }
+  })
+  return scene
+}
+
+function mineScene() {
+  const scene = new THREE.Scene()
+  scene.name = 'Stonewake Authored Cavern'
+  scene.add(mineExteriorTerrain(), authoredCavern())
+  scene.add(pathRibbon([[0, 43], [0, 34], [0, 25], [0, 18], [0, 8], [0, 2]], 2.45, 'Mine Approach', mineGroundHeight))
+  scene.add(mineEntrance(0, 18))
+  scene.add(portal('Home', mats.glassHome, [-16, mineGroundHeight(-16, 36), 36], Math.PI / 2))
+  const mineShopPosition = [-8.5, mineGroundHeight(-8.5, 25), 25]
+  const oreBuyerPosition = [8.5, mineGroundHeight(8.5, 25), 25]
+  const mineShopFront = shopOffset(mineShopPosition, -0.06, -1.78)
+  const mineShopNpc = shopOffset(mineShopPosition, -0.06, 0.3)
+  const oreBuyerFront = shopOffset(oreBuyerPosition, 0.06, -1.78)
+  const oreBuyerNpc = shopOffset(oreBuyerPosition, 0.06, 0.3)
+  scene.add(
+    shop('Mining Shop', mineShopPosition, -0.06, mats.glassMine),
+    shop('Ore Stand', oreBuyerPosition, 0.06, mats.richOre),
+  )
+  for (const [x, z, scale, rotation, variant] of [[-18,41,1.15,0.3,0],[19,43,1.3,-0.5,0],[-27,57,1.05,0.8,0],[28,60,1.2,-0.2,0],[-18,70,1.25,0.4,0],[20,72,1.1,-0.7,0]]) {
+    scene.add(natureTree(x, z, scale, rotation, mineGroundHeight, variant), natureBush(x + 2.2, z - 1.1, 0.9, rotation, mineGroundHeight, 0))
+  }
+  for (const [x, z, scale, rotation] of [
+    [-48, 1, 1.8, 0.2], [49, 0, 1.65, -0.5], [-58, -26, 2.1, 0.7], [57, -31, 1.85, -0.3],
+    [-49, -47, 1.55, 1.1], [50, -48, 1.75, -0.8], [-59, -72, 2.05, 0.4], [59, -68, 1.75, -0.2],
+    [-55, -96, 1.7, 0.8], [55, -94, 1.9, -0.6], [-46, -109, 1.45, 0.2], [47, -108, 1.6, -0.4],
+    [-49, -133, 1.85, 0.9], [49, -136, 1.7, -0.7], [-34, -151, 1.45, 0.4], [35, -151, 1.55, -0.3],
+    [-15, -34, 1.2, 0.5], [17, -35, 1.15, -0.4], [-18, -89, 1.25, 0.7], [19, -92, 1.2, -0.6],
+  ]) scene.add(mineBoulder(x, z, scale, rotation))
+
+  for (const [x, z, width] of [[0,-78,7.8]]) {
+    const floor = mineGroundHeight(x, z)
+    const rib = new THREE.Group(); rib.name = 'Mine Timber Rib'; rib.position.set(x, floor, z)
+    const height = Math.min(5.2, caveHeight(x, z) - floor - 0.45)
+    rib.add(beamBetween([-width,0,0],[-width,height,0],0.2,mats.barkLight), beamBetween([width,0,0],[width,height,0],0.2,mats.barkLight), beamBetween([-width-0.2,height,0],[width+0.2,height,0],0.22,mats.barkLight))
+    scene.add(rib)
+  }
+  scene.add(
+    mineTrack(-27, -19, 16), mineTrack(28, -21, 13), mineTrack(0, -45, 18, Math.PI / 2),
+    mineTrack(-34, -73, 15), mineTrack(35, -76, 16), mineTrack(0, -104, 17, Math.PI / 2),
+    mineTrack(-27, -128, 14), mineTrack(29, -127, 13), mineTrack(0, -176, 20, Math.PI / 2),
+    caveLantern(-7, 7, 1), caveLantern(-28, -8, 1), caveLantern(29, -10, -1),
+    caveLantern(-42, -39, 1), caveLantern(41, -42, -1), caveLantern(-42, -70, 1),
+    caveLantern(43, -73, -1), caveLantern(-34, -103, 1), caveLantern(35, -103, -1),
+    caveLantern(-31, -139, 1), caveLantern(31, -140, -1),
+    decorativeOreSeam(-55, -32, Math.PI / 2), decorativeOreSeam(56, -36, -Math.PI / 2, mats.richOre),
+    decorativeOreSeam(-47, -112, Math.PI / 2, mats.richOre), decorativeOreSeam(48, -116, -Math.PI / 2),
+    caveColumn(-24, -42, 1.35, 1), caveColumn(27, -43, 1.25, 2), caveColumn(-31, -96, 1.45, 3),
+    caveColumn(32, -99, 1.3, 4), caveColumn(17, -146, 1.18, 5), caveColumn(-24, -177, 1.32, 6), caveColumn(26, -184, 1.22, 7),
+    cavernSpur(-43, -24, 12.5, 10.5, 7.4, 31), cavernSpur(44, -31, 11.2, 9.6, 6.9, 32),
+    cavernSpur(-47, -76, 13.6, 11.8, 8.2, 33), cavernSpur(47, -84, 12.4, 10.8, 7.7, 34),
+    cavernSpur(-40, -127, 11.6, 10.2, 7.6, 35), cavernSpur(41, -134, 12.8, 10.7, 8.1, 36),
+    cavernSpur(-37, -178, 13.2, 11.4, 8.0, 37), cavernSpur(36, -181, 12.6, 11.0, 7.8, 38),
+    cavePool(44, -75, 7.2, 4.6), caveWaterfall(60.4, -78, 1.8),
+    cavePool(-39, -123, 6.4, 3.8), cavePool(0, -119, 8.2, 3.9),
+    caveColumn(-11, -124, 1.08, 41), caveColumn(13, -130, 1.18, 42), caveLantern(-4, -111, 1), caveLantern(-5, -169, 1), caveLantern(8, -192, -1),
+    stalagmiteCluster(-51, -8, 1.05, 11), stalagmiteCluster(51, -10, 1.0, 12),
+    stalagmiteCluster(-53, -19, 1.35, 13), stalagmiteCluster(52, -25, 1.3, 14),
+    stalagmiteCluster(-55, -82, 1.5, 15), stalagmiteCluster(55, -90, 1.4, 16),
+    stalagmiteCluster(-18, -102, 1.15, 17), stalagmiteCluster(19, -105, 1.25, 18),
+    stalagmiteCluster(-43, -144, 1.2, 19), stalagmiteCluster(43, -141, 1.25, 20),
+  )
+  for (const [x, z, scale, seed] of [
+    [-24,-2,1.1,81],[25,-4,1.0,82],[-42,-18,1.25,83],[43,-21,1.15,84],[-29,-39,1.2,85],[31,-41,1.15,86],
+    [-20,-54,1.05,87],[22,-56,1.1,88],[-48,-67,1.25,89],[49,-70,1.2,90],[-28,-88,1.15,91],[29,-91,1.15,92],
+    [-46,-104,1.25,93],[47,-106,1.1,94],[-19,-113,1.1,95],[20,-115,1.15,96],[-43,-132,1.2,97],[44,-134,1.25,98],
+    [-23,-149,1.1,99],[24,-149,1.0,100],[-34,-169,1.15,101],[35,-172,1.1,102],[-18,-190,1.05,103],[20,-191,1.1,104],
+  ]) scene.add(caveRubble(x, z, scale, seed))
+  const shallowCenters = [[-19,-4],[-38,-11],[-50,-27],[-40,-42],[-20,-31],[19,-4],[38,-13],[51,-28],[41,-42],[20,-32],[-53,-43],[53,-44]]
+  const middleCenters = [[-29,-53],[-47,-61],[-55,-82],[-42,-96],[-22,-94],[-22,-76],[29,-54],[47,-62],[55,-84],[43,-97],[23,-94]]
+  const deepCenters = [[-28,-109],[-44,-116],[-43,-134],[-28,-147],[-14,-145],[-53,-147],[28,-109],[44,-116],[44,-134],[29,-147],[15,-145],[-35,-169],[34,-171],[-29,-188],[27,-189]]
+  const nodeSites = []
+  ;[...shallowCenters, ...middleCenters, ...deepCenters].forEach(([cx, cz], clusterIndex) => {
+    for (let index = 0; index < 6; index += 1) {
+      const angle = (index / 6) * Math.PI * 2 + seeded(clusterIndex, 5300) * 0.8
+      const radius = 1.65 + seeded(index + clusterIndex * 7, 5310) * 1.85
+      const x = cx + Math.cos(angle) * radius
+      const z = cz + Math.sin(angle) * radius
+      nodeSites.push([x, z])
+    }
+  })
+  const centralSites = [[-6,-12],[7,-23],[-5,-38],[6,-51],[-7,-66],[5,-79],[-6,-93],[7,-108],[-5,-123],[6,-139],[-7,-155],[5,-171],[-4,-188]]
+  centralSites.forEach(([x, z], index) => nodeSites.push([x + (seeded(index, 5381) - 0.5) * 2.6, z]))
+  nodeSites.forEach(([x, z], index) => scene.add(oreNode(`MineOre${String(index).padStart(3, '0')}`, x, z)))
+  scene.add(
+    anchor('Spawn', [0, mineGroundHeight(0, 34), 34]), anchor('GateDeep', [0, mineGroundHeight(0, -154), -154]), anchor('Home', [-16, mineGroundHeight(-16, 36), 36]),
+    anchor('MineShop', [mineShopFront[0], mineGroundHeight(...mineShopFront), mineShopFront[1]]), anchor('OreBuyer', [oreBuyerFront[0], mineGroundHeight(...oreBuyerFront), oreBuyerFront[1]]),
+    anchor('NpcMineShop', [mineShopNpc[0], mineGroundHeight(...mineShopNpc), mineShopNpc[1]]), anchor('NpcOreBuyer', [oreBuyerNpc[0], mineGroundHeight(...oreBuyerNpc), oreBuyerNpc[1]]),
+    anchor('SecretSite0', [-55, mineGroundHeight(-55, -40), -40]), anchor('SecretSite1', [56, mineGroundHeight(56, -98), -98]), anchor('SecretSite2', [-39, mineGroundHeight(-39, -145), -145]),
+    ...nodeSites.map(([x, z], index) => anchor(`MineOre${String(index).padStart(3, '0')}`, [x, mineGroundHeight(x, z), z])),
+  )
+  return scene
+}
+
+function miningRushScene() {
+  const scene = new THREE.Scene()
+  scene.name = 'Stonewake Mining Rush Cavern'
+  const floorHeight = (x, z) => Math.sin(x * .045) * .22 + Math.cos(z * .057) * .18 + Math.sin((x - z) * .09) * .08
+  scene.add(maskedTerrain('Stonewake Rush Cavern Floor', [-60, 60, -42, 44], 1.08, floorHeight, mats.mineGround, () => true))
+
+  for (let index = 0; index < 94; index += 1) {
+    const side = index % 4
+    const along = -56 + (Math.floor(index / 4) / 23) * 112
+    const x = side === 0 ? -57 : side === 1 ? 57 : along
+    const z = side === 2 ? -40 : side === 3 ? 42 : along * .68
+    const wallRock = mineBoulder(x, z, 3.4 + seeded(index, 9101) * 2.1, seeded(index, 9113) * Math.PI)
+    wallRock.position.y = 1.5 + seeded(index, 9127) * 1.4
+    wallRock.scale.y *= 2.35 + seeded(index, 9133) * .8
+    scene.add(wallRock)
+  }
+  const roof = new THREE.PlaneGeometry(120, 86, 24, 18)
+  const roofPosition = roof.getAttribute('position')
+  for (let index = 0; index < roofPosition.count; index += 1) roofPosition.setZ(index, Math.sin(index * .71) * .7 + Math.cos(index * .33) * .5)
+  roof.computeVertexNormals()
+  const roofMesh = mesh(roof, mats.mineWall, 'Stonewake Rush Irregular Roof')
+  roofMesh.rotation.x = Math.PI / 2
+  roofMesh.position.set(0, 10.6, 1)
+  scene.add(roofMesh)
+
+  const bayCenters = [[-36, 18], [-12, 18], [12, 18], [36, 18], [-36, -18], [-12, -18], [12, -18], [36, -18]]
+  const baySites = []
+  bayCenters.forEach(([bx, bz], bayIndex) => {
+    scene.add(mineTrack(bx, bz + 10.8, 11.5, Math.PI / 2), caveLantern(bx - 9.2, bz + 8.6, 1), caveLantern(bx + 9.2, bz - 8.6, -1))
+    scene.add(caveRubble(bx - 10.6, bz - 10.3, .82, 9800 + bayIndex), caveRubble(bx + 10.4, bz + 10.2, .86, 9850 + bayIndex))
+    const sites = []
+    for (let row = 0; row < 5; row += 1) for (let column = 0; column < 5; column += 1) {
+      const socket = row * 5 + column + bayIndex * 25
+      const x = bx + (column - 2) * 3.8 + (seeded(socket, 9911) - .5) * .72
+      const z = bz + 6.9 - row * 3.45 + (seeded(socket, 9921) - .5) * .72
+      sites.push([x, z])
+      const node = oreNode(`RushOre${bayIndex}_${String(row * 5 + column).padStart(2, '0')}`, x, z)
+      node.position.set(x, floorHeight(x, z) + .04, z)
+      node.traverse((child) => {
+        if (!child.isMesh) return
+        if (child.name === 'Embedded Ore Bed') { child.scale.set(1.16, .38, 1); child.position.y = .19 }
+        if (child.name === 'Ore Boulder') { child.scale.multiply(new THREE.Vector3(1.28, 1.72, 1.28)); child.position.y += .28 }
+      })
+      scene.add(node)
+    }
+    baySites.push(sites)
+  })
+  scene.add(caveColumn(-2, 0, 1.12, 205), caveColumn(2, -33, 1.08, 206), caveColumn(-53, 0, 1.15, 207), caveColumn(53, 0, 1.15, 208))
+  scene.add(
+    ...bayCenters.map(([x, z], index) => anchor(`Spawn${index}`, [x, floorHeight(x, z + 11), z + 11])),
+    ...baySites.flatMap((sites, bay) => sites.map(([x, z], index) => anchor(`RushOre${bay}_${String(index).padStart(2, '0')}`, [x, floorHeight(x, z), z]))),
+  )
+  return scene
+}
+
+function farmRushScene() {
+  const scene = new THREE.Scene()
+  scene.name = 'Sunmeadow Kitchen Rush Fields'
+  const floorHeight = (x, z) => Math.sin(x * .045) * .34 + Math.cos(z * .052) * .28 + Math.sin((x - z) * .085) * .1
+  scene.add(maskedTerrain('Sunmeadow Rush Terrain', [-52, 52, -36, 42], 1.1, floorHeight, mats.ground, () => true))
+  scene.add(pathRibbon([[-48, 0], [-24, 0], [0, 0], [24, 0], [48, 0]], 2.1, 'Sunmeadow Rush Lane', floorHeight, mats.path))
+  scene.add(pathRibbon([[-36, 34], [-36, 0], [-36, -28]], 1.5, 'Sunmeadow West Work Lane', floorHeight, mats.path))
+  scene.add(pathRibbon([[-12, 34], [-12, 0], [-12, -28]], 1.5, 'Sunmeadow Inner Work Lane', floorHeight, mats.path))
+  scene.add(pathRibbon([[12, 34], [12, 0], [12, -28]], 1.5, 'Sunmeadow East Work Lane', floorHeight, mats.path))
+  scene.add(pathRibbon([[36, 34], [36, 0], [36, -28]], 1.5, 'Sunmeadow Far Work Lane', floorHeight, mats.path))
+  const plots = [[-36, 16], [-12, 16], [12, 16], [36, 16], [-36, -16], [-12, -16], [12, -16], [36, -16]]
+  const cellsByBay = []
+  plots.forEach(([x, z], index) => {
+    const parcel = farmParcel(x, z, index)
+    parcel.position.set(x, floorHeight(x, z), z)
+    scene.add(parcel)
+    const furnace = farmFurnacePad(x - 8.8, z + 4.8, 80 + index)
+    furnace.name = `Rush Farm Furnace ${index + 1}`
+    furnace.position.set(x - 8.8, floorHeight(x - 8.8, z + 4.8), z + 4.8)
+    furnace.traverse((object) => {
+      if (typeof object.userData.furnaceIndex === 'number') object.userData.rushCooker = index
+      else delete object.userData.furnaceIndex
+    })
+    scene.add(furnace)
+    const cells = []
+    for (let row = 0; row < 5; row += 1) for (let column = 0; column < 5; column += 1) cells.push([x + (column - 2) * 2.12, z + (row - 2) * 2.12])
+    cellsByBay.push(cells)
+  })
+  for (let index = 0; index < 54; index += 1) {
+    const side = index % 4
+    const along = -48 + Math.floor(index / 4) * 7.2
+    const x = side === 0 ? -49 : side === 1 ? 49 : along
+    const z = side === 2 ? -34 : side === 3 ? 40 : along * .7
+    scene.add(natureTree(x, z, 1 + seeded(index, 9210) * .44, seeded(index, 9220) * Math.PI * 2, floorHeight, index + 220))
+    if (index % 2 === 0) scene.add(natureBush(x + (index % 3 - 1) * 1.35, z - .9, .75 + seeded(index, 9230) * .35, index, floorHeight, index + 230))
+  }
+  scene.add(
+    ...plots.map(([x, z], bay) => anchor(`Spawn${bay}`, [x, floorHeight(x, z + 12), z + 12])),
+    ...plots.map(([x, z], bay) => anchor(`FarmRushCooker${bay}`, [x - 8.8, floorHeight(x - 8.8, z + 4.8), z + 4.8])),
+    ...cellsByBay.flatMap((cells, bay) => cells.map(([x, z], index) => anchor(`FarmRushCell${bay}_${String(index).padStart(2, '0')}`, [x, floorHeight(x, z) + .15, z]))),
+  )
+  return scene
+}
+
+function forageRushScene() {
+  const scene = forageScene()
+  scene.name = 'Mosswood Forage Race'
+  scene.traverse((object) => {
+    if (object.name.startsWith('Resource_ForageApple')) object.name = object.name.replace('Resource_ForageApple', 'Resource_ForageRushApple')
+    else if (object.name.startsWith('Resource_ForageOrange')) object.name = object.name.replace('Resource_ForageOrange', 'Resource_ForageRushOrange')
+    else if (object.name.startsWith('Resource_ForageTruffle')) object.name = object.name.replace('Resource_ForageTruffle', 'Resource_ForageRushTruffle')
+    else if (object.name.startsWith('Resource_ForageDiscovery')) object.name = object.name.replace('Resource_ForageDiscovery', 'Resource_ForageRushDiscovery')
+    else if (object.name.startsWith('Anchor_ForageApple')) object.name = object.name.replace('Anchor_ForageApple', 'Anchor_ForageRushApple')
+    else if (object.name.startsWith('Anchor_ForageOrange')) object.name = object.name.replace('Anchor_ForageOrange', 'Anchor_ForageRushOrange')
+    else if (object.name.startsWith('Anchor_ForageTruffle')) object.name = object.name.replace('Anchor_ForageTruffle', 'Anchor_ForageRushTruffle')
+    else if (object.name.startsWith('Anchor_ForageDiscovery')) object.name = object.name.replace('Anchor_ForageDiscovery', 'Anchor_ForageRushDiscovery')
+  })
+  // Event sites reuse the real orchard trees, but bring enough of them onto the
+  // established forest route that collecting—not hiking—decides the race.
+  const eventApples = [[-23,-84],[-17,-101],[-6,-111],[9,-105],[21,-91],[27,-76],[17,-57],[-8,-52]]
+  const eventOranges = [[22,-84],[15,-101],[4,-112],[-11,-104],[-24,-89],[-28,-73],[-17,-57],[8,-55]]
+  const eventTruffles = [[-18,-94],[16,-96],[-4,-116],[25,-64],[-27,-65],[3,-72]]
+  const eventDiscoveries = [[-2,-122],[29,-106],[-31,-106]]
+  eventApples.forEach(([x,z], index) => {
+    const id = `ForageRushApple${String(index + 100).padStart(3, '0')}`
+    scene.add(fruitBirch(id, x, z, 1.02 + (index % 3) * .06, index * .73, forageGroundHeight, false, index + 810))
+    scene.add(anchor(id, [x, forageGroundHeight(x, z) + 2.45, z]))
+  })
+  eventOranges.forEach(([x,z], index) => {
+    const id = `ForageRushOrange${String(index + 100).padStart(3, '0')}`
+    scene.add(fruitBirch(id, x, z, .98 + (index % 3) * .06, index * .81, forageGroundHeight, true, index + 830))
+    scene.add(anchor(id, [x, forageGroundHeight(x, z) + 2.45, z]))
+  })
+  eventTruffles.forEach(([x,z], index) => {
+    const id = `ForageRushTruffle${String(index + 20).padStart(3, '0')}`
+    scene.add(trufflePatch(id, x, z, index * .61, forageGroundHeight), anchor(id, [x, forageGroundHeight(x, z), z]))
+  })
+  eventDiscoveries.forEach(([x,z], index) => {
+    const id = `ForageRushDiscovery${String(index + 10).padStart(2, '0')}`
+    scene.add(discoveryRelic(id, x, z, index * .71, forageGroundHeight), anchor(id, [x, forageGroundHeight(x, z), z]))
+  })
+  const deliveries = { Apple: [-8.5, -81], Orange: [-2.8, -81], Truffle: [2.8, -81], Discovery: [8.5, -81] }
+  Object.entries(deliveries).forEach(([kind,[x,z]]) => {
+    const stand = shop(`${kind} Delivery Stand`, [x, forageGroundHeight(x, z), z], Math.PI, kind === 'Apple' ? mats.fruit : kind === 'Orange' ? mats.fruitGold : kind === 'Truffle' ? mats.barkLight : mats.crystal)
+    stand.scale.setScalar(.5)
+    scene.add(stand, anchor(`ForageRushDeliver${kind}`, [x, forageGroundHeight(x,z), z + .8]), anchor(`NpcForageRush${kind}`, [x, forageGroundHeight(x,z), z - .45]))
+  })
+  return scene
+}
+
+async function exportScene(scene, filename) {
+  let dynamicResourceIndex = 0
+  scene.traverse((object) => {
+    if (!object.name.startsWith('Resource_ForageApple') && !object.name.startsWith('Resource_ForageOrange') && !object.name.startsWith('Resource_ForageRush') && !object.name.startsWith('Resource_RushOre')) return
+    const marker = ++dynamicResourceIndex
+    object.traverse((child) => {
+      if (!child.isMesh || (!child.name.includes('Woodland Apples') && !child.name.includes('Woodland Oranges') && !object.name.startsWith('Resource_RushOre') && !object.name.startsWith('Resource_ForageRush'))) return
+      child.geometry = child.geometry.clone()
+      const position = child.geometry.getAttribute('position')
+      position.setX(0, position.getX(0) + marker * 1e-7)
+      position.needsUpdate = true
+    })
+  })
+  scene.traverse((object) => {
+    if (object.isMesh) {
+      object.castShadow = true
+      object.receiveShadow = true
+    }
+  })
+  const exporter = new GLTFExporter()
+  const binary = await exporter.parseAsync(scene, { binary: true, onlyVisible: false, trs: true })
+  const outputPath = path.join(out, filename)
+  await writeFile(outputPath, Buffer.from(binary))
+
+  const io = new NodeIO().registerExtensions([EXTMeshGPUInstancing])
+  const document = await io.read(outputPath)
+  document.createExtension(EXTMeshGPUInstancing).setRequired(true)
+  const woodlandSource = await readFile(path.join(root, 'public', 'assets', 'textures', 'woodland-ground-v1.png'))
+  const caveStoneSource = await readFile(path.join(root, 'public', 'assets', 'textures', 'storybook-cave-stone-v1.png'))
+  const groundTexture = document
+    .createTexture('Woodland Ground V1')
+    .setImage(await sharp(woodlandSource).resize(1024, 1024).png({ compressionLevel: 9 }).toBuffer())
+    .setMimeType('image/png')
+  const farmTexture = document
+    .createTexture('Sunmeadow Grass V1')
+    .setImage(await sharp(woodlandSource).resize(1024, 1024).tint('#88ad62').modulate({ brightness: 1.12, saturation: 0.9 }).png({ compressionLevel: 9 }).toBuffer())
+    .setMimeType('image/png')
+  const mineTexture = document
+    .createTexture('Storybook Cave Stone V1')
+    .setImage(await sharp(caveStoneSource).resize(1024, 1024).modulate({ brightness: 0.78, saturation: 0.58 }).tint('#888078').png({ compressionLevel: 9 }).toBuffer())
+    .setMimeType('image/png')
+  for (const mat of document.getRoot().listMaterials()) {
+    if (mat.getName() === 'Ground') {
+      const greenGround = filename === 'farm.glb' || filename === 'forage.glb' || filename === 'hub.glb' || filename === 'farm-rush.glb' || filename === 'forage-rush.glb'
+      mat.setBaseColorTexture(greenGround ? farmTexture : groundTexture).setBaseColorFactor(greenGround ? [0.9, 1, 0.82, 1] : [0.9, 0.9, 0.9, 1]).setRoughnessFactor(0.95).setMetallicFactor(0)
+    }
+    if (mat.getName() === 'Path') mat.setBaseColorTexture(groundTexture).setBaseColorFactor([0.72, 0.56, 0.38, 1]).setRoughnessFactor(1).setMetallicFactor(0)
+    if (mat.getName() === 'Mine Ground') mat.setBaseColorTexture(mineTexture).setBaseColorFactor([0.92, 0.9, 0.84, 1]).setRoughnessFactor(1).setMetallicFactor(0)
+    if (mat.getName() === 'Mine Path') mat.setBaseColorTexture(mineTexture).setBaseColorFactor([0.92, 0.82, 0.66, 1]).setRoughnessFactor(1).setMetallicFactor(0)
+    if (['Mine Wall', 'Mine Strata', 'Cavern Roof Stone', 'Cavern Perimeter Stone'].includes(mat.getName())) mat.setBaseColorTexture(mineTexture).setBaseColorFactor(mat.getName() === 'Mine Strata' ? [0.5, 0.48, 0.45, 1] : [0.68, 0.7, 0.66, 1]).setRoughnessFactor(1).setMetallicFactor(0)
+  }
+  await document.transform(dedup(), instance({ min: filename === 'forage.glb' ? 3 : 5 }))
+  await io.write(outputPath, document)
+  console.log(`Authored ${filename}`)
+}
+
+await exportScene(hubScene(), 'hub.glb')
+await exportScene(forageScene(), 'forage.glb')
+await exportScene(farmScene(), 'farm.glb')
+await exportScene(mineScene(), 'mine.glb')
+await exportScene(miningRushScene(), 'mining-rush.glb')
+await exportScene(farmRushScene(), 'farm-rush.glb')
+await exportScene(forageRushScene(), 'forage-rush.glb')

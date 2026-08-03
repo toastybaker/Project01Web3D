@@ -4,27 +4,45 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -k -n web,server \"vite\" \"npm run server\"",
+    "dev:web": "vite",
+    "server": "tsx watch server/index.ts",
+    "assets:convert": "node scripts/convert-assets.mjs",
+    "assets:brands": "node scripts/build-brand-icons.mjs",
+    "assets:scenes": "node scripts/build-scenes.mjs",
+    "assets": "npm run assets:convert && npm run assets:brands && npm run assets:scenes",
+    "test:economy": "tsx scripts/validate-economy.ts",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "concurrently -k -n web,server \"vite preview\" \"tsx server/index.ts\""
   },
   "dependencies": {
+    "@colyseus/core": "^0.16.24",
+    "@colyseus/ws-transport": "^0.16.5",
+    "@dimforge/rapier3d-compat": "0.19.2",
+    "@fontsource/nunito-sans": "5.3.0",
     "@react-three/drei": "latest",
     "@react-three/fiber": "latest",
-    "@react-three/rapier": "latest",
     "colyseus.js": "latest",
     "react": "latest",
     "react-dom": "latest",
     "three": "latest",
+    "tsx": "^4.23.1",
     "zustand": "latest"
   },
   "devDependencies": {
+    "@gltf-transform/core": "4.2.1",
+    "@gltf-transform/extensions": "^4.2.1",
+    "@gltf-transform/functions": "^4.2.1",
+    "@napi-rs/canvas": "^1.0.3",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "@types/three": "latest",
-    "@vitejs/plugin-react": "latest",
+    "@vitejs/plugin-react": "4.3.4",
+    "concurrently": "^8.2.2",
+    "fbx2gltf": "0.9.7-p1",
+    "sharp": "0.35.3",
+    "simple-icons": "^16.28.0",
     "typescript": "latest",
-    "vite": "latest"
+    "vite": "5.4.14"
   }
 }
-
