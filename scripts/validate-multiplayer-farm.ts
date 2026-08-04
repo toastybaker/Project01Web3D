@@ -47,11 +47,43 @@ try {
 
   const snapshotA = message<{ selfId: string; owners: Record<number, string | null>; cells: Record<string, unknown> }>(farmerA, 'farm:snapshot')
   const snapshotB = message<{ selfId: string; owners: Record<number, string | null>; cells: Record<string, unknown> }>(farmerB, 'farm:snapshot')
+  const deedSnapshotA = message<{ personalAvailable: boolean; globalRemaining: number }>(farmerA, 'deed:snapshot')
+  const deedSnapshotB = message<{ personalAvailable: boolean; globalRemaining: number }>(farmerB, 'deed:snapshot')
   farmerA.send('lobby:ready', {})
   farmerB.send('lobby:ready', {})
-  const [initialA, initialB] = await Promise.all([snapshotA, snapshotB])
+  const [initialA, initialB, initialDeedA, initialDeedB] = await Promise.all([snapshotA, snapshotB, deedSnapshotA, deedSnapshotB])
   assert(Object.keys(initialA.owners).length === 8 && Object.keys(initialB.owners).length === 8, 'Farm snapshot is incomplete')
   assert(Object.values(initialA.owners).every((owner) => owner === null), 'Fresh farm snapshot contains an owner')
+  assert(initialDeedA.personalAvailable && initialDeedB.personalAvailable, 'A player did not receive a personal deed entitlement')
+  assert(initialDeedA.globalRemaining === 2 && initialDeedB.globalRemaining === 2, 'Shared expansion pool did not begin at two')
+
+  type DeedResult = { requestId: string; ok: boolean; quantity: number; personalCount: number; globalCount: number; personalAvailable: boolean; globalRemaining: number; reason?: string }
+  const leaderPersonalPurchase = message<DeedResult>(farmerA, 'deed:result', (result) => result.requestId === 'leader-buys-personal')
+  farmerA.send('deed:purchase', { requestId: 'leader-buys-personal', quantity: 3 })
+  const leaderPersonal = await leaderPersonalPurchase
+  assert(leaderPersonal.ok && leaderPersonal.quantity === 1 && leaderPersonal.personalCount === 1 && leaderPersonal.globalCount === 0, 'First transaction did not stay personal-only')
+
+  const leaderPurchase = message<DeedResult>(farmerA, 'deed:result', (result) => result.requestId === 'leader-buys-shared')
+  const depletedStock = message<{ globalRemaining: number }>(farmerB, 'deed:stock', (stock) => stock.globalRemaining === 0)
+  farmerA.send('deed:purchase', { requestId: 'leader-buys-shared', quantity: 3 })
+  const [leaderDeeds] = await Promise.all([leaderPurchase, depletedStock])
+  assert(leaderDeeds.ok && leaderDeeds.quantity === 2, 'Leader could not buy both shared deeds after the personal deed')
+  assert(leaderDeeds.personalCount === 0 && leaderDeeds.globalCount === 2 && leaderDeeds.globalRemaining === 0, 'Leader purchase used the wrong deed pool')
+
+  const protectedPurchase = message<DeedResult>(farmerB, 'deed:result', (result) => result.requestId === 'protected-personal')
+  farmerB.send('deed:purchase', { requestId: 'protected-personal', quantity: 1 })
+  const protectedDeed = await protectedPurchase
+  assert(protectedDeed.ok && protectedDeed.quantity === 1 && protectedDeed.personalCount === 1 && protectedDeed.globalCount === 0, 'Depleted shared stock blocked another player personal deed')
+
+  const soldOutPurchase = message<DeedResult>(farmerB, 'deed:result', (result) => result.requestId === 'shared-sold-out')
+  farmerB.send('deed:purchase', { requestId: 'shared-sold-out', quantity: 1 })
+  const soldOut = await soldOutPurchase
+  assert(!soldOut.ok && soldOut.quantity === 0 && soldOut.globalRemaining === 0, 'Shared pool sold more than two expansion deeds')
+
+  const duplicatePurchase = message<DeedResult>(farmerA, 'deed:result', (result) => result.requestId === 'leader-buys-shared')
+  farmerA.send('deed:purchase', { requestId: 'leader-buys-shared', quantity: 3 })
+  const duplicate = await duplicatePurchase
+  assert(duplicate.quantity === 2 && duplicate.globalRemaining === 0, 'Idempotent deed retry returned a different result')
 
   const movement = { zone: 'farm', position: [-48.15, 0.86, -9.75], nickname: 'Farmer', cash: 100_000, progressValue: 100_000, stats: { foraged: 0, mined: 0, harvested: 0, sold: 0 }, minigameOpen: false }
   farmerA.send('move', movement)
@@ -104,7 +136,7 @@ try {
   const [harvest] = await Promise.all([harvestResult, harvestUpdateA, harvestUpdateB])
   assert(harvest.ok && harvest.quantity === 1, 'Harvest award was wrong')
 
-  console.log(JSON.stringify({ status: 'pass', farms: 8, oneOwner: true, nonOwnerRejected: true, sharedCrop: true, lateJoin: true, harvestQuantity: harvest.quantity }, null, 2))
+  console.log(JSON.stringify({ status: 'pass', maxPlayers: 6, farms: 8, personalDeeds: true, sharedExpansionDeeds: 2, leaderCanOwn: leaderPersonal.quantity + leaderDeeds.quantity, personalProtected: protectedDeed.quantity, deedRetryIdempotent: true, oneOwner: true, nonOwnerRejected: true, sharedCrop: true, lateJoin: true, harvestQuantity: harvest.quantity }, null, 2))
 } finally {
   await Promise.allSettled(rooms.map((room) => room.leave()))
   server.kill()

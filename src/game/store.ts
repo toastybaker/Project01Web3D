@@ -27,8 +27,11 @@ export type MinigameRewardResult = { kind: MinigameKind; placement: number; scor
 export type SharedFarmSnapshot = { selfId: string; owners: Record<number, string | null>; cells: Record<string, FarmCellState> }
 export type SharedFarmUpdate = { farmId: number; ownerId?: string | null; cellIndex?: number; cell?: FarmCellState | null }
 export type SharedFarmResult = { requestId: string; ok: boolean; reason?: string; op?: 'claim' | 'plant' | 'water' | 'harvest'; farmId?: number; cellIndex?: number; crop?: CropKind; quantity?: number }
+export type SharedDeedSnapshot = { personalAvailable: boolean; globalRemaining: number }
+export type SharedDeedResult = SharedDeedSnapshot & { requestId: string; ok: boolean; quantity: number; personalCount: number; globalCount: number; reason?: string }
 
 const pendingFarmActions = new Map<string, { op: 'claim' | 'plant' | 'water' | 'harvest'; farmId: number; cellIndex?: number; seed?: ItemId; crop?: CropKind }>()
+const pendingDeedPurchases = new Set<string>()
 
 type Prompt = { id: string; label: string } | null
 type Stats = { foraged: number; mined: number; harvested: number; sold: number }
@@ -233,6 +236,10 @@ type GameState = {
   sharedFarmSelfId: string | null
   farmOwners: Record<number, string | null>
   sharedFarmCells: Record<string, FarmCellState>
+  sharedDeedOnline: boolean
+  personalDeedAvailable: boolean
+  globalDeedsRemaining: number
+  deedPurchasePending: boolean
   collectedForage: Record<string, number>
   minedNodes: Record<string, number>
   mineGenerations: Record<string, number>
@@ -326,6 +333,9 @@ type GameState = {
   syncFarmSnapshot: (snapshot: SharedFarmSnapshot) => void
   syncFarmUpdate: (update: SharedFarmUpdate) => void
   applyFarmResult: (result: SharedFarmResult) => void
+  syncDeedSnapshot: (snapshot: SharedDeedSnapshot) => void
+  syncDeedStock: (globalRemaining: number) => void
+  applyDeedResult: (result: SharedDeedResult) => void
   mineNode: (id: string, item: OreItem) => void
   syncMineSnapshot: (seed: number, nodes: Record<string, MineNodeState>) => void
   syncMineNode: (id: string, node: MineNodeState) => void
@@ -520,6 +530,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   sharedFarmSelfId: null,
   farmOwners: {},
   sharedFarmCells: {},
+  sharedDeedOnline: false,
+  personalDeedAvailable: true,
+  globalDeedsRemaining: 2,
+  deedPurchasePending: false,
   collectedForage: {},
   minedNodes: {},
   mineGenerations: {},
@@ -626,6 +640,19 @@ export const useGameStore = create<GameState>((set, get) => ({
     const marketRate = definition.category === 'crop' ? state.marketRates.crop : definition.category === 'forage' ? state.marketRates.forage : definition.category === 'ore' ? state.marketRates.ore : 1
     if (quantity > 0) {
       if (shop.action === 'sell' || !definition.buyPrice) return
+      if (item === 'farm-deed' && state.sharedDeedOnline) {
+        if (state.deedPurchasePending) return set({ toast: 'Purchase pending' })
+        const available = (state.personalDeedAvailable ? 1 : 0) + state.globalDeedsRemaining
+        const wanted = Math.min(quantity, available)
+        if (!wanted) return set({ toast: 'Sold out' })
+        const affordable = Math.min(wanted, Math.floor(state.cash / definition.buyPrice))
+        if (!affordable) return set({ toast: 'Not enough coins' })
+        const requestId = crypto.randomUUID()
+        pendingDeedPurchases.add(requestId)
+        if (sendMultiplayer('deed:purchase', { requestId, quantity: affordable })) return set({ deedPurchasePending: true })
+        pendingDeedPurchases.delete(requestId)
+        return set({ toast: 'Shop unavailable' })
+      }
       const available = definition.limited ? state.shopStock[item] ?? 0 : quantity
       const bought = Math.min(quantity, available)
       if (!bought) return set({ toast: 'Sold out' })
@@ -807,6 +834,28 @@ export const useGameStore = create<GameState>((set, get) => ({
     const quantity = Math.max(0, Math.floor(result.quantity ?? CROP_YIELD[crop]))
     const inventory = { ...state.inventory, [crop]: (state.inventory[crop] ?? 0) + quantity }
     return { inventory, hotbar: hotbarWithNewItem(state.hotbar, state.inventory, crop), stats: { ...state.stats, harvested: state.stats.harvested + quantity }, toast: `+${quantity} ${ITEMS[crop].name}` }
+  }),
+  syncDeedSnapshot: ({ personalAvailable, globalRemaining }) => set({
+    sharedDeedOnline: true,
+    personalDeedAvailable: Boolean(personalAvailable),
+    globalDeedsRemaining: Math.max(0, Math.floor(Number(globalRemaining) || 0)),
+  }),
+  syncDeedStock: (globalRemaining) => set({ globalDeedsRemaining: Math.max(0, Math.floor(Number(globalRemaining) || 0)) }),
+  applyDeedResult: (result) => set((state) => {
+    const pending = pendingDeedPurchases.has(result.requestId)
+    if (pending) pendingDeedPurchases.delete(result.requestId)
+    const shared = {
+      sharedDeedOnline: true,
+      personalDeedAvailable: Boolean(result.personalAvailable),
+      globalDeedsRemaining: Math.max(0, Math.floor(Number(result.globalRemaining) || 0)),
+      deedPurchasePending: pending ? false : state.deedPurchasePending,
+    }
+    if (!pending) return shared
+    if (!result.ok || result.quantity <= 0) return { ...shared, toast: result.reason || 'Sold out' }
+    const quantity = Math.max(0, Math.floor(result.quantity))
+    const price = ITEMS['farm-deed'].buyPrice ?? 0
+    const inventory = { ...state.inventory, 'farm-deed': (state.inventory['farm-deed'] ?? 0) + quantity }
+    return { ...shared, cash: state.cash - price * quantity, inventory, toast: `+${quantity} Farm Deed${quantity === 1 ? '' : 's'}` }
   }),
   mineNode: (id, item) => {
     const state = get()

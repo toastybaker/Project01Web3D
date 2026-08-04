@@ -5,7 +5,7 @@ import { commodityPrice, formatCoins, lotteryJackpot, lotteryPrice, lotteryTwoMa
 import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, MATCH_CONFIG, PICKAXE_CONFIG, type CommodityId } from './game/config'
 import { canMineOre, miningDuration, oreKindAtDepth, requiredPickaxe } from './game/ore'
 import { onMultiplayer, sendMultiplayer } from './game/multiplayer'
-import { economyProgressValue, lotteryDraw, preparedFoodValue, secretStockOffer, useGameStore, type MineNodeState, type SharedFarmResult, type SharedFarmSnapshot, type SharedFarmUpdate } from './game/store'
+import { economyProgressValue, lotteryDraw, preparedFoodValue, secretStockOffer, useGameStore, type MineNodeState, type SharedDeedResult, type SharedDeedSnapshot, type SharedFarmResult, type SharedFarmSnapshot, type SharedFarmUpdate } from './game/store'
 import { RECIPES, RECIPE_IDS, type RecipeId } from './game/recipes'
 import { FARM_RUSH_CROPS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, FORAGE_RUSH_REQUIREMENTS, MINIGAME_DURATION, MINING_RUSH_POINTS, farmRushOrders, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MiningRushOre } from './game/minigame'
 import { playGameSfx, type GameSfx } from './game/sfx'
@@ -96,6 +96,19 @@ function FarmSync() {
     const offResult = onMultiplayer('farm:result', (raw) => applyResult(raw as SharedFarmResult))
     return () => { offSnapshot(); offUpdate(); offResult() }
   }, [applyResult, syncSnapshot, syncUpdate])
+  return null
+}
+
+function DeedSync() {
+  const syncSnapshot = useGameStore((state) => state.syncDeedSnapshot)
+  const syncStock = useGameStore((state) => state.syncDeedStock)
+  const applyResult = useGameStore((state) => state.applyDeedResult)
+  useEffect(() => {
+    const offSnapshot = onMultiplayer('deed:snapshot', (raw) => syncSnapshot(raw as SharedDeedSnapshot))
+    const offStock = onMultiplayer('deed:stock', (raw) => syncStock(Number((raw as { globalRemaining?: number }).globalRemaining)))
+    const offResult = onMultiplayer('deed:result', (raw) => applyResult(raw as SharedDeedResult))
+    return () => { offSnapshot(); offStock(); offResult() }
+  }, [applyResult, syncSnapshot, syncStock])
   return null
 }
 
@@ -305,7 +318,7 @@ function LobbyPanel() {
     sendMultiplayer('lobby:start', {})
   }
   return <div className="modal-scrim lobby-scrim"><section className="panel lobby-panel">
-    <header><div className="panel-title"><span className="lobby-mark">P1</span><span>WOODLAND RUN</span></div><b>{players.length + 1}/8</b></header>
+    <header><div className="panel-title"><span className="lobby-mark">P1</span><span>WOODLAND RUN</span></div><b>{players.length + 1}/6</b></header>
     <label className="lobby-name"><span>NAME</span><input aria-label="Nickname" value={draftName} maxLength={18} onChange={(event) => setDraftName(event.target.value)} onBlur={() => setNickname(draftName)} onKeyDown={(event) => { if (event.key === 'Enter') { setNickname(draftName); event.currentTarget.blur() } }} /></label>
     <div className="lobby-duration"><span>TIME</span><div>{MATCH_CONFIG.selectableDurationsSeconds.map((seconds) => <button className={duration === seconds ? 'active' : ''} disabled={!isHost} key={seconds} onClick={() => chooseDuration(seconds)}>{seconds / 60}</button>)}</div></div>
     {isHost ? <button className="lobby-start" disabled={!connected} onClick={start}>{connected ? 'START GAME' : 'CONNECTING'}</button> : <div className="lobby-wait">{connected ? 'WAITING FOR HOST' : 'CONNECTING'}</div>}
@@ -511,6 +524,9 @@ function ShopPanel() {
   const commodityMarket = useGameStore((state) => state.commodityMarket)
   const round = useGameStore((state) => state.roundNumber)
   const shopStock = useGameStore((state) => state.shopStock)
+  const sharedDeedOnline = useGameStore((state) => state.sharedDeedOnline)
+  const personalDeedAvailable = useGameStore((state) => state.personalDeedAvailable)
+  const globalDeedsRemaining = useGameStore((state) => state.globalDeedsRemaining)
   const openLottery = useGameStore((state) => state.setLotteryOpen)
   if (!open) return null
   const shop = SHOPS[kind]
@@ -524,7 +540,9 @@ function ShopPanel() {
             const commodity = id in COMMODITY_MARKET_CONFIG ? id as CommodityId : null
             const price = id === 'lottery-ticket' ? lotteryPrice(round) : shop.action === 'sell' && commodity ? commodityPrice(commodity, item.sellPrice ?? 0, commodityMarket[commodity]) : shop.action === 'sell' ? item.sellPrice : item.buyPrice
             const owned = inventory[id] ?? 0
-            const available = item.limited ? shopStock[id] ?? 0 : null
+            const sharedDeed = id === 'farm-deed' && sharedDeedOnline
+            const available = sharedDeed ? (personalDeedAvailable ? 1 : 0) + globalDeedsRemaining : item.limited ? shopStock[id] ?? 0 : null
+            const stockLabel = sharedDeed ? (personalDeedAvailable ? 'PERSONAL' : `${globalDeedsRemaining} SHARED`) : available !== null ? `${available} LEFT` : null
             return <button
               className="shop-tile"
               key={id}
@@ -536,7 +554,7 @@ function ShopPanel() {
                 if (event.button === 2 && shop.action !== 'buy') trade(id, -amount)
               }}
               onContextMenu={(event) => event.preventDefault()}
-            ><img src={item.icon} alt={item.name} /><span className="shop-item-name">{item.name}</span><span className="shop-owned"><b>×{owned}</b>{available !== null && <em>{available} LEFT</em>}</span><span className="shop-price" title={price ? formatCoins(price) : undefined}><Icon name="coin" />{price ? formatCoins(price, true) : '—'}</span><HoverTip lines={itemTooltip(id)} /></button>
+            ><img src={item.icon} alt={item.name} /><span className="shop-item-name">{item.name}</span><span className="shop-owned"><b>×{owned}</b>{stockLabel && <em>{stockLabel}</em>}</span><span className="shop-price" title={price ? formatCoins(price) : undefined}><Icon name="coin" />{price ? formatCoins(price, true) : '—'}</span><HoverTip lines={itemTooltip(id)} /></button>
           })}
         </div>
       </section>
@@ -1194,5 +1212,5 @@ function Interface() {
 }
 
 export function App() {
-  return <main className="game-shell"><GameWorld /><Interface /><AudioBed /><FeedbackBed /><MineSync /><FarmSync /></main>
+  return <main className="game-shell"><GameWorld /><Interface /><AudioBed /><FeedbackBed /><MineSync /><FarmSync /><DeedSync /></main>
 }

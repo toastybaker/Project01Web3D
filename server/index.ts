@@ -17,7 +17,10 @@ type CropKind = keyof typeof CROP_CONFIG
 type SharedFarmCell = { crop: CropKind | null; stage: 'empty' | 'planted' | 'watered' | 'ready'; readyAt: number | null }
 type SharedFarm = { ownerId: string | null; cells: Map<number, SharedFarmCell> }
 type FarmResult = { requestId: string; ok: boolean; reason?: string; op?: 'claim' | 'plant' | 'water' | 'harvest'; farmId?: number; cellIndex?: number; crop?: CropKind; quantity?: number }
+type DeedResult = { requestId: string; ok: boolean; quantity: number; personalCount: number; globalCount: number; personalAvailable: boolean; globalRemaining: number; reason?: string }
 
+const MAX_PLAYERS = 6
+const GLOBAL_EXPANSION_DEEDS = 2
 const FARM_CENTERS = [[-54, -16], [-18, -14], [19, -17], [55, -13], [-53, -50], [-17, -49], [20, -53], [56, -48]] as const
 const CROP_IDS = new Set<CropKind>(Object.keys(CROP_CONFIG) as CropKind[])
 const farmGrowthMs = (crop: CropKind) => Number(process.env.TEST_FARM_GROWTH_MS) > 0 ? Number(process.env.TEST_FARM_GROWTH_MS) : CROP_CONFIG[crop].growthSeconds * 1000
@@ -30,7 +33,7 @@ const zoneBounds: Record<ZoneId, { x: number; zMin: number; zMax: number }> = {
 }
 
 class WoodlandRoom extends Room {
-  maxClients = 8
+  maxClients = MAX_PLAYERS
   private matchSeed = Math.floor(Math.random() * 1_000_000_000)
   private matchStartedAt = 0
   private matchDurationSeconds = MATCH_CONFIG.defaultDurationSeconds
@@ -49,6 +52,9 @@ class WoodlandRoom extends Room {
   private farms = new Map<number, SharedFarm>(FARM_CENTERS.map((_, index) => [index, { ownerId: null, cells: new Map() }]))
   private farmTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private farmResults = new Map<string, Map<string, FarmResult>>()
+  private personalDeedsPurchased = new Set<string>()
+  private globalDeedsRemaining = GLOBAL_EXPANSION_DEEDS
+  private deedResults = new Map<string, Map<string, DeedResult>>()
 
   private sendTo(id: string, type: string, payload: unknown) {
     this.clients.find((client) => client.sessionId === id)?.send(type, payload)
@@ -73,6 +79,21 @@ class WoodlandRoom extends Room {
       for (const [cellIndex, cell] of farm.cells) cells[`${farmId}:${cellIndex}`] = { ...cell }
     }
     client.send('farm:snapshot', { selfId: client.sessionId, owners, cells })
+  }
+
+  private deedSnapshot(client: Client) {
+    client.send('deed:snapshot', {
+      personalAvailable: !this.personalDeedsPurchased.has(client.sessionId),
+      globalRemaining: this.globalDeedsRemaining,
+    })
+  }
+
+  private resetDeeds() {
+    this.personalDeedsPurchased.clear()
+    this.globalDeedsRemaining = GLOBAL_EXPANSION_DEEDS
+    this.deedResults.clear()
+    this.clients.forEach((client) => this.deedSnapshot(client))
+    this.broadcast('deed:stock', { globalRemaining: this.globalDeedsRemaining })
   }
 
   private scheduleFarmReady(farmId: number, cellIndex: number) {
@@ -226,6 +247,7 @@ class WoodlandRoom extends Room {
       client.send('presence:snapshot', [...this.players.values()].filter((player) => player.id !== client.sessionId))
       this.sendOreSnapshot(client)
       this.farmSnapshot(client)
+      this.deedSnapshot(client)
     })
     this.onMessage('lobby:update', (client, message: { durationSeconds?: number }) => {
       if (this.matchStarted || client.sessionId !== this.hostId) return
@@ -241,6 +263,7 @@ class WoodlandRoom extends Room {
       this.matchStarted = true
       this.resetOreNodes()
       this.resetFarms()
+      this.resetDeeds()
       this.broadcast('match:sync', { seed: this.matchSeed, startedAt: this.matchStartedAt, durationSeconds: this.matchDurationSeconds })
       this.broadcastLobby()
     })
@@ -305,6 +328,37 @@ class WoodlandRoom extends Room {
       this.broadcast('mine:node', { id, ...next })
       client.send('mine:award', { id, ore, quantity, ...next })
       this.scheduleOreRespawn(id)
+    })
+    this.onMessage('deed:purchase', (client, message: { requestId?: string; quantity?: number }) => {
+      const requestId = typeof message?.requestId === 'string' ? message.requestId.slice(0, 80) : ''
+      if (!requestId) return
+      const prior = this.deedResults.get(client.sessionId)?.get(requestId)
+      if (prior) return client.send('deed:result', prior)
+      const requested = Math.max(1, Math.min(1 + GLOBAL_EXPANSION_DEEDS, Math.floor(Number(message?.quantity) || 1)))
+      let personalCount = 0
+      if (!this.personalDeedsPurchased.has(client.sessionId)) {
+        this.personalDeedsPurchased.add(client.sessionId)
+        personalCount = 1
+      }
+      const globalCount = personalCount > 0 ? 0 : Math.min(requested, this.globalDeedsRemaining)
+      this.globalDeedsRemaining -= globalCount
+      const quantity = personalCount + globalCount
+      const result: DeedResult = {
+        requestId,
+        ok: quantity > 0,
+        quantity,
+        personalCount,
+        globalCount,
+        personalAvailable: !this.personalDeedsPurchased.has(client.sessionId),
+        globalRemaining: this.globalDeedsRemaining,
+        reason: quantity > 0 ? undefined : 'Sold out',
+      }
+      const results = this.deedResults.get(client.sessionId) ?? new Map<string, DeedResult>()
+      results.set(requestId, result)
+      while (results.size > 64) results.delete(results.keys().next().value!)
+      this.deedResults.set(client.sessionId, results)
+      client.send('deed:result', result)
+      if (globalCount > 0) this.broadcast('deed:stock', { globalRemaining: this.globalDeedsRemaining })
     })
     this.onMessage('farm:action', (client, message: { requestId?: string; op?: 'claim' | 'plant' | 'water' | 'harvest'; farmId?: number; cellIndex?: number; crop?: CropKind; watered?: boolean }) => {
       const requestId = typeof message?.requestId === 'string' ? message.requestId.slice(0, 80) : ''
@@ -444,6 +498,7 @@ class WoodlandRoom extends Room {
     client.send('presence:snapshot', [...this.players.values()])
     this.sendOreSnapshot(client)
     this.farmSnapshot(client)
+    this.deedSnapshot(client)
     const presence: Presence = { id: client.sessionId, nickname: `Player ${client.sessionId.slice(0, 4)}`, zone: 'hub', position: [0, 0.86, 14], cash: 100_000, stats: { foraged: 0, mined: 0, harvested: 0, sold: 0 }, seenAt: Date.now() }
     this.players.set(client.sessionId, presence)
     this.broadcast('presence:move', presence, { except: client })
@@ -457,6 +512,7 @@ class WoodlandRoom extends Room {
     }
     this.players.delete(client.sessionId)
     this.farmResults.delete(client.sessionId)
+    this.deedResults.delete(client.sessionId)
     this.lobbyEligible.delete(client.sessionId)
     this.releaseEventBay(client.sessionId)
     this.broadcast('presence:leave', client.sessionId)

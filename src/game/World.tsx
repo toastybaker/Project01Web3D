@@ -615,7 +615,7 @@ function MultiplayerPresence() {
         room.onMessage('minigame:bay', (message: { bay?: number }) => { if (Number.isFinite(message.bay)) setEventBay(Number(message.bay)) })
         room.onMessage('presence:move', (message: PeerPresence) => mergePeer(message))
         room.onMessage('presence:leave', (id: string) => removePeer(id))
-        for (const type of ['trade:request', 'trade:opened', 'trade:update', 'trade:cancel', 'trade:commit', 'minigame:result', 'minigame:forage', 'mine:snapshot', 'mine:node', 'mine:award', 'mine:denied', 'farm:snapshot', 'farm:update', 'farm:result']) room.onMessage(type, (payload: unknown) => emitMultiplayer(type, payload))
+        for (const type of ['trade:request', 'trade:opened', 'trade:update', 'trade:cancel', 'trade:commit', 'minigame:result', 'minigame:forage', 'mine:snapshot', 'mine:node', 'mine:award', 'mine:denied', 'farm:snapshot', 'farm:update', 'farm:result', 'deed:snapshot', 'deed:stock', 'deed:result']) room.onMessage(type, (payload: unknown) => emitMultiplayer(type, payload))
         setMultiplayerSender((type, payload) => room.send(type, payload))
         room.send('lobby:ready', {})
         const publish = () => {
