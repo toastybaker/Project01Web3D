@@ -33,6 +33,7 @@ The intended session can continue past one hour, but the first hour must already
 Start with:
 
 - `docs/DIRECTION.md`
+- `docs/design-review/README.md` and its six current screenshots
 - `src/game/config.ts`
 - `src/game/economy.ts`
 - `src/game/minigame.ts`
