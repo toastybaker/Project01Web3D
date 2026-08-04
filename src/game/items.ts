@@ -1,9 +1,10 @@
 import { BASKET_CONFIG, CROP_CONFIG, FORAGE_CONFIG, ORE_CONFIG, PICKAXE_CONFIG } from './config'
+import { enhancedBasketCapacity, enhancementName, expectedFortune, fortuneFor, miningSpeedBonus } from './enhancement'
 
 export type ItemId =
   | 'farm-deed' | 'lottery-ticket' | 'information-note' | 'cookbook-box' | 'furnace' | 'water-can' | 'home-charm' | 'gold-coins'
   | 'worn-pickaxe' | 'iron-pickaxe' | 'steel-pickaxe' | 'crystal-pickaxe'
-  | 'basket' | 'reinforced-basket' | 'master-basket'
+  | 'basket' | 'reinforced-basket' | 'master-basket' | 'harvest-charm'
   | 'wheat-seeds' | 'tomato-seeds' | 'lettuce-seeds' | 'pumpkin-seeds' | 'watermelon-seeds'
   | 'wheat' | 'tomato' | 'lettuce' | 'pumpkin' | 'watermelon'
   | 'berries' | 'apple' | 'orange' | 'mushroom' | 'wild-herbs' | 'wildflower' | 'truffle' | 'natural-discovery'
@@ -40,6 +41,7 @@ export const ITEMS: Record<ItemId, ItemDefinition> = {
   basket: { id: 'basket', name: BASKET_CONFIG.basket.name, icon: '/assets/ui/items/basket.png', buyPrice: BASKET_CONFIG.basket.price, category: 'tool', limited: true, hotbar: false },
   'reinforced-basket': { id: 'reinforced-basket', name: BASKET_CONFIG['reinforced-basket'].name, icon: '/assets/ui/items/forager-crate.png', buyPrice: BASKET_CONFIG['reinforced-basket'].price, category: 'tool', limited: true, hotbar: false },
   'master-basket': { id: 'master-basket', name: BASKET_CONFIG['master-basket'].name, icon: '/assets/ui/items/orchard-cart.png', buyPrice: BASKET_CONFIG['master-basket'].price, category: 'tool', limited: true, hotbar: false },
+  'harvest-charm': { id: 'harvest-charm', name: 'Harvest Charm', icon: '/assets/ui/items/harvest-charm.png', buyPrice: 500_000, category: 'tool', limited: true, hotbar: false },
   'wheat-seeds': { id: 'wheat-seeds', name: 'Wheat Seeds', icon: '/assets/ui/items/wheat-seeds-v2.png', buyPrice: CROP_CONFIG.wheat.seedPrice, category: 'seed' },
   'tomato-seeds': { id: 'tomato-seeds', name: 'Tomato Seeds', icon: '/assets/ui/items/tomato-seeds.png', buyPrice: CROP_CONFIG.tomato.seedPrice, category: 'seed' },
   'lettuce-seeds': { id: 'lettuce-seeds', name: 'Lettuce Seeds', icon: '/assets/ui/items/lettuce-seeds.png', buyPrice: CROP_CONFIG.lettuce.seedPrice, category: 'seed' },
@@ -84,7 +86,7 @@ export const SHOPS: Record<ShopKind, { title: string; items: ItemId[]; action: '
   common: { title: 'COMMON SHOP', items: ['farm-deed', 'cookbook-box', 'lottery-ticket'], action: 'buy' },
   forage: { title: 'FORAGING SHOP', items: ['basket', 'reinforced-basket', 'master-basket'], action: 'buy' },
   'forage-sell': { title: 'FORAGE MARKET', items: ['apple', 'orange', 'truffle', 'natural-discovery'], action: 'sell' },
-  farm: { title: 'FARM SHOP', items: ['wheat-seeds', 'tomato-seeds', 'lettuce-seeds', 'pumpkin-seeds', 'watermelon-seeds', 'water-can', 'furnace'], action: 'buy' },
+  farm: { title: 'FARM SHOP', items: ['wheat-seeds', 'tomato-seeds', 'lettuce-seeds', 'pumpkin-seeds', 'watermelon-seeds', 'water-can', 'furnace', 'harvest-charm'], action: 'buy' },
   produce: { title: 'PRODUCE STAND', items: ['wheat', 'tomato', 'lettuce', 'pumpkin', 'watermelon'], action: 'sell' },
   mine: { title: 'MINING SHOP', items: ['iron-pickaxe', 'steel-pickaxe', 'crystal-pickaxe'], action: 'buy' },
   ore: { title: 'ORE STAND', items: ['copper-ore', 'iron-ore', 'silver-ore', 'gold-ore', 'crystal-ore', 'ancient-ore'], action: 'sell' },
@@ -116,7 +118,7 @@ function fortuneLine(outcomes: readonly { chance: number; bonus: number }[]) {
   return outcomes.map(({ chance, bonus }) => `${Math.round(chance * 100)}% ×${bonus + 1}`).join(' · ')
 }
 
-export function itemTooltip(id: ItemId): string[] | null {
+export function itemTooltip(id: ItemId, enhancement = 0): string[] | null {
   if (id === 'water-can') return ['Waters one planted crop.']
   if (id === 'furnace') return ['+10 batch capacity each.', 'Three queued recipes.']
   if (id === 'home-charm') return ['LMB Common · RMB Choose destination']
@@ -124,11 +126,15 @@ export function itemTooltip(id: ItemId): string[] | null {
   if (id === 'information-note') return ['RMB Read information']
   if (id in PICKAXE_CONFIG) {
     const pickaxe = PICKAXE_CONFIG[id as keyof typeof PICKAXE_CONFIG]
-    return [`${pickaxe.speed.toFixed(2)}× mining speed`, ...pickaxe.fortune.map(({ chance, bonus }) => `${Math.round(chance * 100)}% chance: ${bonus + 1}× yield`)]
+    const item = id as keyof typeof PICKAXE_CONFIG
+    const level = Math.max(0, Math.min(10, Math.floor(enhancement)))
+    return [enhancementName(item, level), `${level ? `+${Math.round(miningSpeedBonus(level) * 1000) / 10}%` : `${pickaxe.speed.toFixed(2)}×`} mining speed`, ...fortuneFor(item, level).map(({ chance, bonus }) => `${Math.round(chance * 100)}% chance: ${bonus + 1}× yield`)]
   }
   if (id in BASKET_CONFIG) {
-    const carrier = BASKET_CONFIG[id as keyof typeof BASKET_CONFIG]
-    return [`Stores ${carrier.capacity} fruit`, ...carrier.fortune.map(({ chance, bonus }) => `${Math.round(chance * 100)}% chance: ${bonus + 1}× yield`)]
+    const item = id as 'basket' | 'reinforced-basket' | 'master-basket'
+    const level = Math.max(0, Math.min(10, Math.floor(enhancement)))
+    return [enhancementName(item, level), `Stores ${enhancedBasketCapacity(item, level)} fruit`, ...fortuneFor(item, level).map(({ chance, bonus }) => `${Math.round(chance * 100)}% chance: ${bonus + 1}× yield`)]
   }
+  if (id === 'harvest-charm') return [enhancementName(id, enhancement), `${expectedFortune(id, enhancement).toFixed(2)}× average harvest`, ...fortuneFor(id, enhancement).map(({ chance, bonus }) => `${Math.round(chance * 100)}% chance: ${bonus + 1}× yield`)]
   return null
 }

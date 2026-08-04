@@ -170,6 +170,7 @@ button { color: inherit; }
 .hover-tip small { display: block; font-size: 11px; line-height: 1.35; font-weight: 850; }
 .hover-tip small + small { margin-top: 3px; color: #d9c58f; }
 .hotbar-slot:hover > .hover-tip, .hotbar-slot:focus-visible > .hover-tip, .inventory-slot:hover > .hover-tip, .shop-tile:hover > .hover-tip, .shop-tile:focus-visible > .hover-tip, .hud-chip.weather:hover > .hover-tip { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+.enhancement-items button:hover > .hover-tip, .enhancement-items button:focus-visible > .hover-tip, .enhancement-current-icon:hover > .hover-tip, .enhancement-preview-icon:hover > .hover-tip, .enhancement-materials > span:hover > .hover-tip, .enhancement-materials > span:focus-visible > .hover-tip { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
 .hud-chip.weather > .hover-tip { top: calc(100% + 9px); bottom: auto; }
 .shop-tile > .hover-tip { bottom: calc(100% - 6px); }
 
@@ -282,6 +283,7 @@ button { color: inherit; }
 .world-label.farm { color: #f0bb72; opacity: 0.58; }
 .world-label.mine { color: #b7d5ea; opacity: 0.58; }
 .world-label.shop { color: #f0d18b; }
+.world-label.enhance { color: #efc76d; }
 .world-label.assigned-plot { height: 29px; padding: 0 13px; border-color: rgba(239,199,109,.68); background: rgba(31,38,29,.92); box-shadow: 0 6px 18px rgba(17,23,18,.3), 0 0 0 3px rgba(239,199,109,.1); color: #efc76d; font-size: 10px; line-height: 29px; }
 .settings-panel { width: min(470px, calc(100vw - 40px)); }
 .volume-row { height: 58px; display: grid; grid-template-columns: 105px 1fr 40px; align-items: center; gap: 12px; border-top: 1px solid rgba(244, 232, 198, 0.1); font-size: 12px; font-weight: 900; letter-spacing: 0.1em; }
@@ -401,6 +403,45 @@ button { color: inherit; }
 @media (max-width: 620px) { .trade-columns { grid-template-columns: 1fr; max-height: 68vh; overflow: auto; } .trade-side { min-height: 210px; } }
 
 .cookbook-open { width: 100%; margin-top: 14px; padding: 11px; border: 1px solid rgba(224,186,108,.36); border-radius: 10px; background: rgba(224,186,108,.12); color: #f2dfb1; font-weight: 900; letter-spacing: .08em; }
+.enhancement-panel { width: min(860px, calc(100vw - 34px)); max-height: min(700px, calc(100vh - 42px)); overflow: auto; }
+.enhancement-mark { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px; background: #9b6734; color: #ffe5aa; font-size: 21px; font-weight: 1000; }
+.enhancement-layout { display: grid; grid-template-columns: 76px minmax(300px, 1.35fr) minmax(210px, .9fr); gap: 12px; padding: 16px; }
+.enhancement-items { display: grid; align-content: start; gap: 8px; }
+.enhancement-items button { position: relative; width: 62px; height: 62px; padding: 5px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.035); cursor: pointer; }
+.enhancement-items button.active { border-color: rgba(232,181,82,.78); background: rgba(224,154,54,.13); box-shadow: inset 0 0 0 1px rgba(232,181,82,.16); }
+.enhancement-items img { width: 100%; height: 100%; object-fit: contain; }
+.enhancement-items button > b { position: absolute; right: 5px; bottom: 4px; padding: 2px 5px; border-radius: 6px; background: rgba(18,24,20,.88); color: #f2c76f; font-size: 10px; }
+.enhancement-attempt, .enhancement-preview { min-width: 0; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.028); }
+.enhancement-attempt { display: grid; align-content: start; gap: 12px; padding: 14px; }
+.enhancement-current { display: grid; grid-template-columns: 48px minmax(0,1fr) auto auto; align-items: center; gap: 9px; min-height: 54px; }
+.enhancement-current-icon { position: relative; display: block; width: 48px; height: 48px; }
+.enhancement-current img { width: 100%; height: 100%; object-fit: contain; }
+.enhancement-current strong { min-width: 0; color: #f2ead6; font-size: 14px; }
+.enhancement-current > span:nth-last-of-type(1) { color: #c48a45; font-size: 20px; }
+.enhancement-current > b { color: #f1c76f; font-size: 20px; }
+.enhancement-materials { display: flex; flex-wrap: wrap; gap: 7px; min-height: 48px; }
+.enhancement-materials > span { position: relative; width: 48px; height: 48px; padding: 4px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; background: rgba(9,14,11,.32); }
+.enhancement-materials > span.missing { opacity: .42; border-color: rgba(189,84,62,.48); }
+.enhancement-materials img { width: 100%; height: 100%; object-fit: contain; }
+.enhancement-materials b { position: absolute; right: 4px; bottom: 3px; color: #f2e8cf; font-size: 10px; text-shadow: 0 1px 2px #000; }
+.enhancement-materials small { position: absolute; left: 4px; bottom: 3px; color: #91aa88; font-size: 8px; font-weight: 900; }
+.enhancement-materials .missing small { color: #d78873; }
+.enhancement-cost { min-height: 38px; display: flex; align-items: center; gap: 7px; padding: 0 10px; border-radius: 9px; background: rgba(225,174,75,.07); }
+.enhancement-cost svg { width: 18px; height: 18px; fill: none; stroke: #e5b95f; stroke-width: 1.8; }
+.enhancement-cost strong { color: #e9c26d; font-size: 13px; }
+.enhancement-cost b { margin-left: auto; color: #f5d58a; font-size: 24px; }
+.stabilize-toggle { min-height: 34px; border: 1px solid rgba(255,255,255,.13); border-radius: 9px; background: rgba(255,255,255,.045); color: #aeb5a8; font: 1000 9px/1 'Nunito Sans',sans-serif; letter-spacing: .1em; cursor: pointer; }
+.stabilize-toggle.active { border-color: rgba(225,184,91,.58); background: rgba(225,184,91,.13); color: #efd18d; }
+.enhancement-fail { min-height: 14px; color: #b7aa94; font-size: 9px; font-weight: 900; letter-spacing: .04em; text-align: center; }
+.enhance-button { min-height: 40px; border: 1px solid rgba(225,184,91,.56); border-radius: 10px; background: #80603a; color: #fff0c9; font: 1000 11px/1 'Nunito Sans',sans-serif; letter-spacing: .1em; cursor: pointer; }
+.enhance-button:disabled { opacity: .35; cursor: default; }
+.enhancement-preview { display: grid; align-content: center; justify-items: center; gap: 9px; padding: 18px 14px; text-align: center; }
+.enhancement-preview-icon { position: relative; display: block; width: min(124px, 70%); aspect-ratio: 1; }
+.enhancement-preview-icon > img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 10px 16px rgba(5,9,7,.28)); }
+.enhancement-preview > strong { color: #f2e7cf; font-size: 15px; }
+.enhancement-preview > div { width: 100%; min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 9px; border-top: 1px solid rgba(255,255,255,.08); }
+.enhancement-preview > div span { color: #87988a; font-size: 8px; font-weight: 1000; letter-spacing: .1em; }
+.enhancement-preview > div b { color: #eac476; font-size: 11px; }
 .cookbook-panel { width: min(880px, calc(100vw - 34px)); max-height: min(760px, calc(100vh - 44px)); overflow: auto; }
 .event-cookbook-panel .cook-actions { grid-template-columns: 1fr; }
 .event-cookbook-panel .cook-actions button:last-child { margin-left: 0; }
@@ -440,6 +481,14 @@ button { color: inherit; }
 .minigame-result-card b { display: flex; align-items: center; gap: 4px; color: #d8d4c3; font-size: 11px; }
 .minigame-result-card svg, .minigame-result-card img { width: 17px; height: 17px; object-fit: contain; fill: none; stroke: #e2b45b; stroke-width: 1.8; }
 @media (max-width: 760px) { .recipe-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 760px) {
+  .enhancement-layout { grid-template-columns: 1fr; }
+  .enhancement-items { grid-auto-flow: column; grid-auto-columns: 56px; overflow-x: auto; }
+  .enhancement-items button { width: 54px; height: 54px; }
+  .enhancement-preview { grid-template-columns: 82px 1fr; justify-items: start; text-align: left; }
+  .enhancement-preview-icon { grid-row: 1 / 4; width: 78px; }
+  .enhancement-preview > div { padding: 0; }
+}
 .leaderboard-list { display: grid; gap: 6px; width: min(480px, 100%); margin: 10px auto 14px; }
 .leaderboard-list button { display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 9px; padding: 9px 11px; border: 1px solid rgba(255,255,255,.09); border-radius: 9px; background: rgba(255,255,255,.035); color: #ddd8c8; text-align: left; }
 .leaderboard-list button.active { border-color: rgba(225,184,98,.65); background: rgba(225,184,98,.1); }

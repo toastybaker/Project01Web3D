@@ -21,8 +21,10 @@ type DeedResult = { requestId: string; ok: boolean; quantity: number; personalCo
 
 const MAX_PLAYERS = 6
 const GLOBAL_EXPANSION_DEEDS = 2
+const RAIN_CYCLE_COOLDOWN_MS = Number(process.env.TEST_RAIN_COOLDOWN_MS) >= 0 ? Number(process.env.TEST_RAIN_COOLDOWN_MS) : 340_000
 const FARM_CENTERS = [[-54, -16], [-18, -14], [19, -17], [55, -13], [-53, -50], [-17, -49], [20, -53], [56, -48]] as const
 const CROP_IDS = new Set<CropKind>(Object.keys(CROP_CONFIG) as CropKind[])
+const NON_TRADABLE_EQUIPMENT = new Set(['worn-pickaxe', 'iron-pickaxe', 'steel-pickaxe', 'crystal-pickaxe', 'basket', 'reinforced-basket', 'master-basket', 'harvest-charm'])
 const farmGrowthMs = (crop: CropKind) => Number(process.env.TEST_FARM_GROWTH_MS) > 0 ? Number(process.env.TEST_FARM_GROWTH_MS) : CROP_CONFIG[crop].growthSeconds * 1000
 
 const zoneBounds: Record<ZoneId, { x: number; zMin: number; zMax: number }> = {
@@ -55,6 +57,7 @@ class WoodlandRoom extends Room {
   private personalDeedsPurchased = new Set<string>()
   private globalDeedsRemaining = GLOBAL_EXPANSION_DEEDS
   private deedResults = new Map<string, Map<string, DeedResult>>()
+  private lastRainAt = 0
 
   private sendTo(id: string, type: string, payload: unknown) {
     this.clients.find((client) => client.sessionId === id)?.send(type, payload)
@@ -260,6 +263,7 @@ class WoodlandRoom extends Room {
       if (this.matchStarted || client.sessionId !== this.hostId) return
       this.matchSeed = Math.floor(Math.random() * 1_000_000_000)
       this.matchStartedAt = Date.now()
+      this.lastRainAt = this.matchStartedAt
       this.matchStarted = true
       this.resetOreNodes()
       this.resetFarms()
@@ -301,7 +305,7 @@ class WoodlandRoom extends Room {
       if (eventBay !== undefined && previous?.eventBay !== eventBay) this.sendTo(client.sessionId, 'minigame:bay', { bay: eventBay })
       this.broadcast('presence:move', presence, { except: client })
     })
-    this.onMessage('mine:request', (client, message: { id?: string; tool?: string }) => {
+    this.onMessage('mine:request', (client, message: { id?: string; tool?: string; enhancement?: number }) => {
       const id = message?.id
       const site = id ? MINE_NODE_BY_ID.get(id) : null
       const player = this.players.get(client.sessionId)
@@ -320,7 +324,8 @@ class WoodlandRoom extends Room {
         client.send('mine:denied', { id, reason: 'tier' })
         return
       }
-      const quantity = miningYield(tool)
+      const enhancement = Math.max(0, Math.min(10, Math.floor(Number(message.enhancement) || 0)))
+      const quantity = miningYield(tool, Math.random(), enhancement)
       const nextGeneration = node.generation + 1
       const readyAt = Date.now() + oreRespawnMs(id, nextGeneration, this.matchSeed)
       const next = { generation: nextGeneration, readyAt }
@@ -424,6 +429,19 @@ class WoodlandRoom extends Room {
       this.broadcast('farm:update', { farmId, cellIndex, cell: null })
       return respond({ ok: true, cellIndex, crop, quantity: CROP_CONFIG[crop].yield })
     })
+    this.onMessage('farm:rain', (client) => {
+      const player = this.players.get(client.sessionId)
+      if (!player || player.zone !== 'farm' || player.minigameOpen) return
+      if (RAIN_CYCLE_COOLDOWN_MS > 0 && (!this.matchStarted || Date.now() - this.lastRainAt < RAIN_CYCLE_COOLDOWN_MS)) return
+      this.lastRainAt = Date.now()
+      for (const [farmId, farm] of this.farms) for (const [cellIndex, current] of farm.cells) {
+        if (current.stage !== 'planted' || !current.crop) continue
+        const cell: SharedFarmCell = { ...current, stage: 'watered', readyAt: Date.now() + farmGrowthMs(current.crop) }
+        farm.cells.set(cellIndex, cell)
+        this.broadcast('farm:update', { farmId, cellIndex, cell })
+        this.scheduleFarmReady(farmId, cellIndex)
+      }
+    })
     this.onMessage('trade:request', (client, message: { targetId?: string }) => {
       const targetId = message?.targetId
       if (!targetId || targetId === client.sessionId || !this.players.has(targetId)) return
@@ -444,6 +462,7 @@ class WoodlandRoom extends Room {
       const rawItems = message.offer?.items ?? {}
       const items: Record<string, number> = {}
       for (const [id, rawQuantity] of Object.entries(rawItems).slice(0, 12)) {
+        if (NON_TRADABLE_EQUIPMENT.has(id)) continue
         const quantity = Math.max(0, Math.min(999, Math.floor(Number(rawQuantity) || 0)))
         if (quantity > 0) items[id] = quantity
       }

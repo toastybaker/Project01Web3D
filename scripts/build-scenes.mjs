@@ -1396,6 +1396,35 @@ function lanternLandmark() {
   return group
 }
 
+function enhancementForge() {
+  const group = new THREE.Group()
+  group.name = 'Enhancement Forge'
+  const pad = mesh(new THREE.CylinderGeometry(1.62, 1.75, 0.12, 12), mats.stoneDark, 'Forge Stone Pad')
+  pad.position.y = 0.06
+  const stump = mesh(new THREE.CylinderGeometry(0.62, 0.74, 0.76, 9), mats.barkLight, 'Forge Work Stump')
+  stump.position.set(-0.35, 0.45, 0)
+  const anvilBase = mesh(new RoundedBoxGeometry(0.7, 0.35, 0.58, 4, 0.1), mats.stoneDark, 'Woodland Anvil Base')
+  anvilBase.position.set(-0.35, 0.87, 0)
+  const anvilTop = mesh(new RoundedBoxGeometry(1.18, 0.24, 0.52, 4, 0.09), mats.richOre, 'Copper Anvil Top')
+  anvilTop.position.set(-0.2, 1.12, 0)
+  const horn = mesh(new THREE.ConeGeometry(0.24, 0.72, 7), mats.richOre, 'Anvil Horn')
+  horn.rotation.z = -Math.PI / 2
+  horn.position.set(0.63, 1.14, 0)
+  const emberBowl = mesh(new THREE.CylinderGeometry(0.46, 0.34, 0.18, 10), mats.stone, 'Ember Bowl')
+  emberBowl.position.set(0.82, 0.31, 0.12)
+  const ember = mesh(new THREE.IcosahedronGeometry(0.29, 1), mats.furnaceFire, 'Animated_ForgeEmber')
+  ember.scale.set(1.1, 0.48, 0.84)
+  ember.position.set(0.82, 0.48, 0.12)
+  const rackLeft = beamBetween([-1.18, 0.12, 0.72], [-1.18, 1.75, 0.72], 0.08, mats.bark)
+  const rackRight = beamBetween([1.18, 0.12, 0.72], [1.18, 1.75, 0.72], 0.08, mats.bark)
+  const rackTop = beamBetween([-1.28, 1.66, 0.72], [1.28, 1.66, 0.72], 0.08, mats.barkLight)
+  const displayedTool = beamBetween([0.15, 0.78, 0.69], [0.15, 1.58, 0.69], 0.045, mats.richOre)
+  const toolHead = mesh(new RoundedBoxGeometry(0.68, 0.14, 0.12, 3, 0.04), mats.stoneOre, 'Forge Tool Display')
+  toolHead.position.set(0.15, 1.57, 0.69)
+  group.add(pad, stump, anvilBase, anvilTop, horn, emberBowl, ember, rackLeft, rackRight, rackTop, displayedTool, toolHead)
+  return group
+}
+
 function anchor(name, position) {
   const value = new THREE.Object3D()
   value.name = `Anchor_${name}`
@@ -1435,6 +1464,8 @@ function hubScene() {
   scene.add(shop('Common Shop', commonShop, commonRotation, mats.leafDark))
   scene.add(stockExchange(exchange, exchangeRotation))
   const hearth = lanternLandmark(); hearth.position.set(0, hubGroundHeight(0, 0), 0); hearth.scale.setScalar(1.12); scene.add(hearth)
+  const forgePosition = [6.8, hubGroundHeight(6.8, -1), -1]
+  const forge = enhancementForge(); forge.position.set(...forgePosition); forge.rotation.y = -Math.PI / 2; scene.add(forge)
   const hubClusters = [[-28,-14,9,8],[29,-15,9,8],[-23,20,9,9],[23,21,9,9],[0,-55,16,14],[-39,-37,13,12],[39,-38,13,12],[-53,-17,14,15],[53,-18,14,15],[-54,22,15,16],[54,24,15,16],[-32,45,15,16],[33,46,15,16],[0,55,13,15],[-63,1,12,13],[63,0,12,13]]
   hubClusters.forEach(([x,z,count,radius], index) => scatterCluster(scene, x, z, count, radius, hubGroundHeight, 1800 + index * 29, 1.42 + (index % 3) * 0.16))
   const closeGrove = [
@@ -1469,6 +1500,8 @@ function hubScene() {
     anchor('PortalMine', [15, hubGroundHeight(15, -22), -22]),
     anchor('Shop', [commonFront[0], hubGroundHeight(...commonFront), commonFront[1]]),
     anchor('Stocks', [exchangeFront[0], hubGroundHeight(...exchangeFront), exchangeFront[1]]),
+    anchor('Enhance', [5.05, hubGroundHeight(5.05, -1), -1]),
+    anchor('LabelEnhance', [6.8, hubGroundHeight(6.8, -1), -1]),
     anchor('NpcShop', [commonNpc[0], hubGroundHeight(...commonNpc), commonNpc[1]]),
     anchor('NpcStocks', [exchangeNpc[0], hubGroundHeight(...exchangeNpc), exchangeNpc[1]]),
   )

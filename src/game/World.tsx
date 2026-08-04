@@ -12,7 +12,7 @@ import { miningRushOre, type MinigameKind } from './minigame'
 import { playGameSfx } from './sfx'
 
 const SCENES: Record<ZoneId, string> = {
-  hub: '/assets/3d/scenes/hub.glb?v=14',
+  hub: '/assets/3d/scenes/hub.glb?v=16',
   forage: '/assets/3d/scenes/forage.glb?v=23',
   farm: '/assets/3d/scenes/farm.glb?v=18',
   mine: '/assets/3d/scenes/mine.glb?v=24',
@@ -340,6 +340,7 @@ function EnvironmentScene() {
   const sharedFarmCells = useGameStore((state) => state.sharedFarmCells)
   const farmCells = sharedFarmOnline ? sharedFarmCells : localFarmCells
   const farmRushCells = useGameStore((state) => state.farmRushCells)
+  const weather = useGameStore((state) => state.weather)
   const ownedFarms = useMemo(() => sharedFarmOnline ? Object.keys(farmOwners).map(Number).filter((farm) => farmOwners[farm] === sharedFarmSelfId) : claimedFarms, [claimedFarms, farmOwners, sharedFarmOnline, sharedFarmSelfId])
   const cookQueue = useGameStore((state) => state.cookQueue)
   const farmRushCooking = useGameStore((state) => state.farmRushCooking)
@@ -380,9 +381,10 @@ function EnvironmentScene() {
           ? farmCells[`${Number(main[1])}:${Number(main[2])}`]
           : null
       const representativeMainCell = farmCellVisualGate && main?.[1] === '0' && main?.[2] === '27'
-      tile.visible = representativeMainCell || cell?.stage === 'watered' || cell?.stage === 'ready'
+      const rainWateredMainCell = Boolean(main && weather === 'rain' && cell?.stage === 'planted')
+      tile.visible = representativeMainCell || rainWateredMainCell || cell?.stage === 'watered' || cell?.stage === 'ready'
     })
-  }, [farmCells, farmRushCells, wateredSoilTiles])
+  }, [farmCells, farmRushCells, wateredSoilTiles, weather])
   rushPlotMarkers.forEach((marker) => { marker.visible = minigameOpen && minigameKind === 'farm' && Number(marker.userData.rushPlot) === eventBay })
   const assignedPlotBeacon = useMemo(() => rushPlotMarkers.find((marker) => Number(marker.userData.rushPlot) === eventBay)?.getObjectByName('Assigned Plot Beacon'), [eventBay, rushPlotMarkers])
   const assignedPlotBeaconY = useMemo(() => assignedPlotBeacon?.position.y ?? 0, [assignedPlotBeacon])
@@ -889,7 +891,7 @@ function Player() {
 
   useFrame((state, delta) => {
     const liveUi = useGameStore.getState()
-    const movementLocked = !liveUi.sessionStarted || liveUi.shopOpen || liveUi.stockOpen || liveUi.inventoryOpen || liveUi.menuOpen || liveUi.playerPanelOpen || liveUi.lotteryOpen || liveUi.ticketInspectOpen || liveUi.noteInspectOpen || liveUi.travelOpen || liveUi.secretOpen || liveUi.cookbookOpen || liveUi.sessionComplete
+    const movementLocked = !liveUi.sessionStarted || liveUi.shopOpen || liveUi.stockOpen || liveUi.inventoryOpen || liveUi.menuOpen || liveUi.playerPanelOpen || liveUi.lotteryOpen || liveUi.ticketInspectOpen || liveUi.noteInspectOpen || liveUi.travelOpen || liveUi.secretOpen || liveUi.cookbookOpen || liveUi.enhancementOpen || liveUi.sessionComplete
     if (movementLocked) keys.current = {}
     const inputX = movementLocked ? 0 : Number(Boolean(keys.current.KeyD)) - Number(Boolean(keys.current.KeyA))
     const inputZ = movementLocked ? 0 : Number(Boolean(keys.current.KeyW)) - Number(Boolean(keys.current.KeyS))
@@ -1134,6 +1136,7 @@ function candidateForAnchor(anchor: string, claimedFarms: number[], furnaceCount
   if (anchor.startsWith('SecretSite')) return { id: 'secret-npc', label: 'Trade', anchor, reach: 3.1 }
   if (anchor === 'Shop') return { id: 'shop', label: 'Common Shop', anchor, reach: 3 }
   if (anchor === 'Stocks') return { id: 'stocks', label: 'Stock Exchange', anchor, reach: 3 }
+  if (anchor === 'Enhance') return { id: 'enhance', label: 'Enhance', anchor, reach: 3 }
   if (anchor === 'FarmShop') return { id: 'farm-shop', label: 'Farm Shop', anchor, reach: 3 }
   if (anchor === 'ProduceBuyer') return { id: 'produce-shop', label: 'Produce Stand', anchor, reach: 3 }
   if (anchor === 'MineShop') return { id: 'mine-shop', label: 'Mining Shop', anchor, reach: 3 }
@@ -1260,7 +1263,7 @@ function InteractionFocus() {
       ? `FarmCell${cell[1]}_${String(Number(cell[2])).padStart(2, '0')}`
       : claim
         ? `FarmClaim${claim[1]}`
-        : ({ shop: 'NpcShop', stocks: 'NpcStocks', 'forage-shop': 'NpcForageShop', 'forage-sell': 'NpcForageBuyer', 'farm-shop': 'NpcFarmShop', 'produce-shop': 'NpcProduceBuyer', 'mine-shop': 'NpcMineShop', 'ore-shop': 'NpcOreBuyer', 'secret-npc': zone === 'hub' ? '' : `SecretSite${secretSiteForRound(zone, roundNumber, sessionSeed)}` } as Record<string, string>)[prompt.id] ?? prompt.id
+        : ({ shop: 'NpcShop', stocks: 'NpcStocks', enhance: 'Enhance', 'forage-shop': 'NpcForageShop', 'forage-sell': 'NpcForageBuyer', 'farm-shop': 'NpcFarmShop', 'produce-shop': 'NpcProduceBuyer', 'mine-shop': 'NpcMineShop', 'ore-shop': 'NpcOreBuyer', 'secret-npc': zone === 'hub' ? '' : `SecretSite${secretSiteForRound(zone, roundNumber, sessionSeed)}` } as Record<string, string>)[prompt.id] ?? prompt.id
   const furnace = /^furnace:(\d+)$/.exec(prompt.id)
   const point = anchors[furnace ? `FurnacePad${furnace[1]}` : anchorId]
   if (!point) return null
@@ -1300,6 +1303,7 @@ function WorldLabels() {
         { key: 'mine', text: 'MINE', point: anchors.PortalMine, lift: 5.75 },
         { key: 'shop', text: 'COMMON SHOP', point: anchors.Shop, lift: 3.2 },
         { key: 'stocks', text: 'STOCK EXCHANGE', point: anchors.Stocks, lift: 3.2 },
+        { key: 'enhance', text: 'ENHANCE', point: anchors.LabelEnhance, lift: 2.45 },
       ] : zone === 'farm' ? [
         { key: 'home', text: 'HOME', point: anchors.Home, lift: 5.75 },
         ...ownedFarms.map((farm) => ({ key: `owned-farm-${farm}`, text: 'YOUR FARM', point: anchors[`FarmPlot${farm}`] ?? anchors.FarmPlot, lift: 2.2 })),

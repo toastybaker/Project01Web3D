@@ -52,7 +52,9 @@ assert(deepOre['ancient-ore'] > 0 && deepOre['ancient-ore'] < 0.02, 'Ancient ore
 assert(middleOre['silver-ore'] > entranceOre['silver-ore'] && deepOre['silver-ore'] > middleOre['silver-ore'], 'Silver depth curve is not progressive')
 
 const rareOres = new Set(['gold-ore', 'crystal-ore', 'ancient-ore'])
-for (let seed = 0; seed < 500; seed += 1) assert(!rareOres.has(oreKindAtDepth('MineOre244', -190, 0, seed)), 'Initial rare-ore gate leaked')
+let initialRare = false
+for (let seed = 0; seed < 2_000; seed += 1) if (rareOres.has(oreKindAtDepth('MineOre244', -190, 0, seed))) initialRare = true
+assert(initialRare, 'Deep rare ores are missing from initial depth rolls')
 let rerolledRare = false
 for (let seed = 0; seed < 2_000; seed += 1) if (rareOres.has(oreKindAtDepth('MineOre244', -190, 1, seed))) rerolledRare = true
 assert(rerolledRare, 'Rare ores never enter deep-node rerolls')

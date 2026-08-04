@@ -9,6 +9,7 @@ import { economyProgressValue, inventoryLayout, lotteryDraw, preparedFoodValue, 
 import { RECIPES, RECIPE_IDS, type RecipeId } from './game/recipes'
 import { FARM_RUSH_CROPS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, FORAGE_RUSH_REQUIREMENTS, MINIGAME_DURATION, MINING_RUSH_POINTS, farmRushOrders, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MiningRushOre } from './game/minigame'
 import { playGameSfx, type GameSfx } from './game/sfx'
+import { ENHANCEABLE_ITEMS, canStabilize, enhancedBasketCapacity, enhancementChance, enhancementLevel, enhancementName, enhancementRequirements, expectedFortune, isEnhanceableItem, miningSpeedBonus, type EnhanceableItem } from './game/enhancement'
 
 function forageItem(anchorId: string): ItemId | null {
   if (anchorId.startsWith('ForageApple')) return 'apple'
@@ -37,6 +38,7 @@ function activatePrompt(id: string) {
   const shops: Record<string, ShopKind> = { shop: 'common', 'forage-shop': 'forage', 'forage-sell': 'forage-sell', 'farm-shop': 'farm', 'produce-shop': 'produce', 'mine-shop': 'mine', 'ore-shop': 'ore' }
   if (shops[id]) return state.setShopOpen(true, shops[id])
   if (id === 'stocks') return state.setStockOpen(true)
+  if (id === 'enhance') return state.setEnhancementOpen(true)
   if (id === 'secret-npc') return state.setSecretOpen(true)
   if (id.startsWith('furnace:')) return state.setCookbookOpen(true, Number(id.slice(8)))
   if (id.startsWith('farm-cell:')) {
@@ -54,7 +56,8 @@ function activatePrompt(id: string) {
     if (point) {
       const ore = oreKindAtDepth(id, point[2], state.mineGenerations[id] ?? 0, state.sessionSeed)
       const tool = state.hotbar[state.selectedHotbar]
-      if (sendMultiplayer('mine:request', { id, tool })) return
+      const enhancement = isEnhanceableItem(tool) ? enhancementLevel(state.enhancements, tool) : 0
+      if (sendMultiplayer('mine:request', { id, tool, enhancement })) return
       return state.mineNode(id, ore)
     }
   }
@@ -328,6 +331,7 @@ function LobbyPanel() {
 function Hotbar() {
   const realHotbar = useGameStore((state) => state.hotbar)
   const realInventory = useGameStore((state) => state.inventory)
+  const enhancements = useGameStore((state) => state.enhancements)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
   const farmRushInventory = useGameStore((state) => state.farmRushInventory)
@@ -352,6 +356,7 @@ function Hotbar() {
     <div className="hotbar" aria-label="Hotbar">
       {hotbar.map((storedItem, index) => {
         const item = storedItem && (inventory[storedItem] ?? 0) > 0 ? storedItem : null
+        const itemEnhancement = !minigameOpen && isEnhanceableItem(item) ? enhancementLevel(enhancements, item) : 0
         return <button
           className={`hotbar-slot ${index === selected ? 'selected' : ''}`}
           key={index}
@@ -379,11 +384,11 @@ function Hotbar() {
           }}
           draggable={!minigameOpen && Boolean(item)}
           onDragStart={(event) => { if (!minigameOpen) event.dataTransfer.setData('hotbar-slot', String(index)) }}
-          aria-label={item ? `${index + 1}: ${ITEMS[item].name}` : `Slot ${index + 1}`}
+          aria-label={item ? `${index + 1}: ${isEnhanceableItem(item) ? enhancementName(item, itemEnhancement) : ITEMS[item].name}` : `Slot ${index + 1}`}
         >
           {item && <img src={ITEMS[item].icon} alt={ITEMS[item].name} />}
           {item && minigameOpen && minigameKind === 'farm' && index < FARM_RUSH_TOOLS.length - 1 ? <span className="quantity">∞</span> : item && (inventory[item] ?? 0) > 1 && <span className="quantity">{inventory[item]}</span>}
-          {item && <HoverTip lines={itemTooltip(item)} />}
+          {item && <HoverTip lines={itemTooltip(item, itemEnhancement)} />}
         </button>
       })}
     </div>
@@ -432,6 +437,7 @@ function InteractionPrompt() {
   const farmRushCells = useGameStore((state) => state.farmRushCells)
   const farmRushTool = useGameStore((state) => state.farmRushTool)
   const farmRushCooking = useGameStore((state) => state.farmRushCooking)
+  const enhancements = useGameStore((state) => state.enhancements)
   if (!prompt) return null
   if (prompt.id.startsWith('MineOre') || prompt.id.startsWith('RushOre')) {
     const point = anchors[prompt.id]
@@ -439,7 +445,8 @@ function InteractionPrompt() {
     const rush = prompt.id.startsWith('RushOre')
     const ore = rush ? miningRushOre(minigameMilestone, prompt.id, rushNodes[prompt.id]?.generation ?? 0) : oreKindAtDepth(prompt.id, point[2], mineGenerations[prompt.id] ?? 0, sessionSeed)
     const tool = hotbar[selectedHotbar]
-    const duration = rush ? 760 : miningDuration(tool, ore)
+    const toolEnhancement = !rush && isEnhanceableItem(tool) ? enhancementLevel(enhancements, tool) : 0
+    const duration = rush ? 760 : miningDuration(tool, ore, toolEnhancement)
     const remaining = duration ? Math.max(0, duration * (1 - progress)) : 0
     const required = requiredPickaxe(ore)
     return <div className={`interaction mine-interaction ${duration ? '' : 'locked'}`}>
@@ -474,6 +481,7 @@ function InventoryPanel() {
   const realInventory = useGameStore((state) => state.inventory)
   const realInventoryOrder = useGameStore((state) => state.inventoryOrder)
   const realHotbar = useGameStore((state) => state.hotbar)
+  const enhancements = useGameStore((state) => state.enhancements)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
   const farmRushInventory = useGameStore((state) => state.farmRushInventory)
@@ -506,7 +514,7 @@ function InventoryPanel() {
               key={index}
               onDragOver={(event) => { if (!minigameOpen) event.preventDefault() }}
               onDrop={() => { if (!minigameOpen && dragging.current !== null) moveInventorySlot(dragging.current, index); dragging.current = null }}
-            >{id && quantity > 0 && <><img draggable={!minigameOpen} src={ITEMS[id].icon} alt={ITEMS[id].name} onClick={() => { if (minigameOpen) return; if (id === 'lottery-ticket') inspectTickets(true); else if (id === 'information-note') inspectNotes(true); else if (id === 'cookbook-box') useCookbookBox(); else equipItem(id) }} onContextMenu={(event) => { event.preventDefault(); if (minigameOpen) return; if (id === 'lottery-ticket') inspectTickets(true); if (id === 'information-note') inspectNotes(true); if (id === 'home-charm') setTravelOpen(true); if (id === 'cookbook-box') useCookbookBox() }} onDragStart={(event) => { if (!minigameOpen) { dragging.current = index; event.dataTransfer.setData('item-id', id) } }} onDragEnd={() => { dragging.current = null }} /><span>{minigameOpen && minigameKind === 'farm' && index < FARM_RUSH_TOOLS.length - 1 ? '∞' : quantity}</span><HoverTip lines={itemTooltip(id)} /></>}</div>
+            >{id && quantity > 0 && <><img draggable={!minigameOpen} src={ITEMS[id].icon} alt={isEnhanceableItem(id) && !minigameOpen ? enhancementName(id, enhancementLevel(enhancements, id)) : ITEMS[id].name} onClick={() => { if (minigameOpen) return; if (id === 'lottery-ticket') inspectTickets(true); else if (id === 'information-note') inspectNotes(true); else if (id === 'cookbook-box') useCookbookBox(); else equipItem(id) }} onContextMenu={(event) => { event.preventDefault(); if (minigameOpen) return; if (id === 'lottery-ticket') inspectTickets(true); if (id === 'information-note') inspectNotes(true); if (id === 'home-charm') setTravelOpen(true); if (id === 'cookbook-box') useCookbookBox() }} onDragStart={(event) => { if (!minigameOpen) { dragging.current = index; event.dataTransfer.setData('item-id', id) } }} onDragEnd={() => { dragging.current = null }} /><span>{minigameOpen && minigameKind === 'farm' && index < FARM_RUSH_TOOLS.length - 1 ? '∞' : quantity}</span><HoverTip lines={itemTooltip(id, !minigameOpen && isEnhanceableItem(id) ? enhancementLevel(enhancements, id) : 0)} /></>}</div>
           })}
         </div>
       </section>
@@ -524,6 +532,7 @@ function ShopPanel() {
   const commodityMarket = useGameStore((state) => state.commodityMarket)
   const round = useGameStore((state) => state.roundNumber)
   const shopStock = useGameStore((state) => state.shopStock)
+  const enhancements = useGameStore((state) => state.enhancements)
   const sharedDeedOnline = useGameStore((state) => state.sharedDeedOnline)
   const personalDeedAvailable = useGameStore((state) => state.personalDeedAvailable)
   const globalDeedsRemaining = useGameStore((state) => state.globalDeedsRemaining)
@@ -540,9 +549,11 @@ function ShopPanel() {
             const commodity = id in COMMODITY_MARKET_CONFIG ? id as CommodityId : null
             const price = id === 'lottery-ticket' ? lotteryPrice(round) : shop.action === 'sell' && commodity ? commodityPrice(commodity, item.sellPrice ?? 0, commodityMarket[commodity]) : shop.action === 'sell' ? item.sellPrice : item.buyPrice
             const owned = inventory[id] ?? 0
+            const level = isEnhanceableItem(id) ? enhancementLevel(enhancements, id) : 0
+            const displayName = isEnhanceableItem(id) ? enhancementName(id, level) : item.name
             const sharedDeed = id === 'farm-deed' && sharedDeedOnline
             const available = sharedDeed ? (personalDeedAvailable ? 1 : 0) + globalDeedsRemaining : item.limited ? shopStock[id] ?? 0 : null
-            const stockLabel = sharedDeed ? (personalDeedAvailable ? 'PERSONAL' : `${globalDeedsRemaining} SHARED`) : available !== null ? `${available} LEFT` : null
+            const stockLabel = isEnhanceableItem(id) && owned > 0 ? 'OWNED' : sharedDeed ? (personalDeedAvailable ? 'PERSONAL' : `${globalDeedsRemaining} SHARED`) : available !== null ? `${available} LEFT` : null
             return <button
               className="shop-tile"
               key={id}
@@ -554,7 +565,7 @@ function ShopPanel() {
                 if (event.button === 2 && shop.action !== 'buy') trade(id, -amount)
               }}
               onContextMenu={(event) => event.preventDefault()}
-            ><img src={item.icon} alt={item.name} /><span className="shop-item-name">{item.name}</span><span className="shop-owned"><b>×{owned}</b>{stockLabel && <em>{stockLabel}</em>}</span><span className="shop-price" title={price ? formatCoins(price) : undefined}><Icon name="coin" />{price ? formatCoins(price, true) : '—'}</span><HoverTip lines={itemTooltip(id)} /></button>
+            ><img src={item.icon} alt={displayName} /><span className="shop-item-name">{displayName}</span><span className="shop-owned"><b>×{owned}</b>{stockLabel && <em>{stockLabel}</em>}</span><span className="shop-price" title={price ? formatCoins(price) : undefined}><Icon name="coin" />{price ? formatCoins(price, true) : '—'}</span><HoverTip lines={itemTooltip(id, level)} /></button>
           })}
         </div>
       </section>
@@ -766,7 +777,7 @@ function PlayerTradePanel() {
     tradeRef.current = null; partnerRef.current = null; setTradeId(null); setPartner(null); setOpen(false)
   }
   if (!open) return null
-  const tradable = (Object.keys(ITEMS) as ItemId[]).filter((id) => id !== 'gold-coins' && (inventory[id] ?? 0) > 0)
+  const tradable = (Object.keys(ITEMS) as ItemId[]).filter((id) => id !== 'gold-coins' && !isEnhanceableItem(id) && (inventory[id] ?? 0) > 0)
   return (
     <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && closePanel()}>
       <section className="panel player-panel">
@@ -942,10 +953,87 @@ function ResultsPanel() {
   const leaderboard = [{ id: 'self', nickname, cash, stats }, ...players].sort((a, b) => b.cash - a.cash)
   const focused = leaderboard[Math.min(selected, leaderboard.length - 1)]
   const restart = () => {
+    localStorage.removeItem('project01-save-v12')
     localStorage.removeItem('project01-save-v11')
     window.location.assign('/?gate=final')
   }
   return <div className="modal-scrim results-scrim"><section className="panel results-panel"><header><div className="panel-title"><span className="results-mark">{duration / 60}</span><span>FINAL LEDGER</span></div></header><div className="leaderboard-list">{leaderboard.map((player, index) => <button className={selected === index ? 'active' : ''} key={player.id} onClick={() => setSelected(index)}><b>{index + 1}</b><span>{player.nickname}</span><strong>{formatCoins(player.cash, true)}</strong></button>)}</div><strong className="final-cash"><Icon name="coin" />{formatCoins(focused.cash)}</strong><div className="result-stats"><span>FORAGED<strong>{focused.stats.foraged}</strong></span><span>MINED<strong>{focused.stats.mined}</strong></span><span>HARVESTED<strong>{focused.stats.harvested}</strong></span><span>SOLD<strong>{focused.stats.sold}</strong></span></div><button onClick={restart}>NEW RUN</button></section></div>
+}
+
+function EnhancementPanel() {
+  const open = useGameStore((state) => state.enhancementOpen)
+  const close = useGameStore((state) => state.setEnhancementOpen)
+  const inventory = useGameStore((state) => state.inventory)
+  const enhancements = useGameStore((state) => state.enhancements)
+  const cash = useGameStore((state) => state.cash)
+  const enhance = useGameStore((state) => state.enhanceEquipment)
+  const volumes = useGameStore((state) => state.audioVolumes)
+  const owned = ENHANCEABLE_ITEMS.filter((item) => (inventory[item] ?? 0) > 0)
+  const [selected, setSelected] = useState<EnhanceableItem>('worn-pickaxe')
+  const [stabilized, setStabilized] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  useEffect(() => {
+    if (open && !owned.includes(selected) && owned[0]) setSelected(owned[0])
+  }, [open, owned, selected])
+  if (!open || !owned.length) return null
+  const current = enhancementLevel(enhancements, selected)
+  const atMax = current >= 10
+  const target = Math.min(10, current + 1)
+  const stabilizationAvailable = !atMax && canStabilize(target)
+  const useStabilization = stabilizationAvailable && stabilized
+  const requirements = enhancementRequirements(selected, target, useStabilization)
+  const materialRows = (atMax ? [] : Object.entries(requirements.materials)) as Array<[ItemId, number]>
+  const missingMaterials = materialRows.some(([id, quantity]) => (inventory[id] ?? 0) < quantity)
+  const affordable = cash >= requirements.coins && !missingMaterials && current < 10
+  const downgradeRisk = target >= 4 && !useStabilization
+  const isPickaxeItem = selected.endsWith('pickaxe')
+  const isBasketItem = selected === 'basket' || selected === 'reinforced-basket' || selected === 'master-basket'
+  const attempt = () => {
+    if (!affordable) return
+    if (downgradeRisk && !confirming) { setConfirming(true); return }
+    const before = enhancementLevel(useGameStore.getState().enhancements, selected)
+    enhance(selected, useStabilization)
+    const after = enhancementLevel(useGameStore.getState().enhancements, selected)
+    playGameSfx(after > before ? 'unlock' : 'error', volumes.master * volumes.effects)
+    setConfirming(false)
+  }
+  const secondaryCurrent = isPickaxeItem
+    ? `+${Math.round(miningSpeedBonus(current) * 1000) / 10}%`
+    : isBasketItem
+      ? String(enhancedBasketCapacity(selected, current))
+      : null
+  const secondaryTarget = isPickaxeItem
+    ? `+${Math.round(miningSpeedBonus(target) * 1000) / 10}%`
+    : isBasketItem
+      ? String(enhancedBasketCapacity(selected, target))
+      : null
+  return <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}>
+    <section className="panel enhancement-panel">
+      <header><div className="panel-title"><span className="enhancement-mark">+</span><span>ENHANCEMENT</span></div><div className="shop-balance"><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div><CloseButton onClick={() => close(false)} /></header>
+      <div className="enhancement-layout">
+        <aside className="enhancement-items">
+          {owned.map((item) => {
+            const itemLevel = enhancementLevel(enhancements, item)
+            return <button className={item === selected ? 'active' : ''} key={item} onClick={() => { setSelected(item); setStabilized(false); setConfirming(false) }}><img src={ITEMS[item].icon} alt={enhancementName(item, itemLevel)} /><b>+{itemLevel}</b><HoverTip lines={itemTooltip(item, itemLevel)} /></button>
+          })}
+        </aside>
+        <section className="enhancement-attempt">
+          <div className="enhancement-current"><span className="enhancement-current-icon"><img src={ITEMS[selected].icon} alt="" /><HoverTip lines={itemTooltip(selected, current)} /></span><strong>{enhancementName(selected, current)}</strong><span>{atMax ? 'MAX' : '→'}</span>{!atMax && <b>+{target}</b>}</div>
+          <div className="enhancement-materials">{materialRows.map(([id, quantity]) => <span className={(inventory[id] ?? 0) < quantity ? 'missing' : ''} key={id} tabIndex={0}><img src={ITEMS[id].icon} alt={ITEMS[id].name} /><b>{quantity}</b><small>{inventory[id] ?? 0}</small><HoverTip lines={[ITEMS[id].name, `${inventory[id] ?? 0} / ${quantity}`]} /></span>)}</div>
+          <div className="enhancement-cost">{atMax ? <strong>MAX LEVEL</strong> : <><Icon name="coin" /><strong>{formatCoins(requirements.coins, true)}</strong><b>{Math.round(enhancementChance(target) * 100)}%</b></>}</div>
+          {stabilizationAvailable && <button className={`stabilize-toggle ${useStabilization ? 'active' : ''}`} onClick={() => { setStabilized((value) => !value); setConfirming(false) }}>STABILIZE</button>}
+          <small className="enhancement-fail">{atMax ? '' : target <= 3 || useStabilization ? `FAIL · STAYS +${current}` : `FAIL · +${current} → +${Math.max(0, current - 1)}`}</small>
+          <button className="enhance-button" disabled={!affordable} onClick={attempt}>{confirming ? 'CONFIRM' : current >= 10 ? 'MAX' : 'ENHANCE'}</button>
+        </section>
+        <section className="enhancement-preview">
+          <span className="enhancement-preview-icon"><img src={ITEMS[selected].icon} alt="" /><HoverTip lines={itemTooltip(selected, target)} /></span>
+          <strong>{enhancementName(selected, target)}</strong>
+          <div><span>FORTUNE</span><b>{expectedFortune(selected, current).toFixed(2)} → {expectedFortune(selected, target).toFixed(2)}</b></div>
+          {secondaryCurrent && secondaryTarget && <div><span>{isPickaxeItem ? 'SPEED' : 'CAPACITY'}</span><b>{secondaryCurrent} → {secondaryTarget}</b></div>}
+        </section>
+      </div>
+    </section>
+  </div>
 }
 
 function TravelPanel() {
@@ -965,9 +1053,10 @@ function TravelPanel() {
 function ForageCapacity() {
   const zone = useGameStore((state) => state.zone)
   const inventory = useGameStore((state) => state.inventory)
+  const enhancements = useGameStore((state) => state.enhancements)
   if (zone !== 'forage') return null
   const carrier = (inventory['master-basket'] ?? 0) > 0 ? 'master-basket' : (inventory['reinforced-basket'] ?? 0) > 0 ? 'reinforced-basket' : (inventory.basket ?? 0) > 0 ? 'basket' : 'hand'
-  const capacity = BASKET_CONFIG[carrier].capacity
+  const capacity = carrier === 'hand' ? BASKET_CONFIG.hand.capacity : enhancedBasketCapacity(carrier, enhancementLevel(enhancements, carrier))
   const stored = (inventory.apple ?? 0) + (inventory.orange ?? 0)
   return <div className="forage-capacity" title={BASKET_CONFIG[carrier].name}><span>FRUIT</span><i><b style={{ width: `${Math.min(100, stored / capacity * 100)}%` }} /></i><strong>{stored}/{capacity}</strong></div>
 }
@@ -1081,6 +1170,7 @@ function Interface() {
   const setTravelOpen = useGameStore((state) => state.setTravelOpen)
   const setSecretOpen = useGameStore((state) => state.setSecretOpen)
   const setCookbookOpen = useGameStore((state) => state.setCookbookOpen)
+  const setEnhancementOpen = useGameStore((state) => state.setEnhancementOpen)
   const setSelected = useGameStore((state) => state.setSelectedHotbar)
   const setZone = useGameStore((state) => state.setZone)
   const setToast = useGameStore((state) => state.setToast)
@@ -1110,7 +1200,8 @@ function Interface() {
       }
       if (miningFrame.current !== null) return
       playGameSfx('mine-start', state.audioVolumes.master * state.audioVolumes.effects)
-      const duration = rush ? 760 : miningDuration(held, ore)
+      const heldEnhancement = !rush && isEnhanceableItem(held) ? enhancementLevel(state.enhancements, held) : 0
+      const duration = rush ? 760 : miningDuration(held, ore, heldEnhancement)
       miningTarget.current = id
       miningStartedAt.current = performance.now()
       const tick = (now: number) => {
@@ -1153,6 +1244,7 @@ function Interface() {
         setTravelOpen(false)
         setSecretOpen(false)
         setCookbookOpen(false)
+        setEnhancementOpen(false)
         if (useGameStore.getState().inventoryOpen) toggleInventory()
       }
     }
@@ -1205,10 +1297,10 @@ function Interface() {
       window.removeEventListener('pointercancel', resetMining)
       window.removeEventListener('blur', resetMining)
     }
-  }, [setCookbookOpen, setLotteryOpen, setMenuOpen, setPlayerPanelOpen, setProgress, setSecretOpen, setSelected, setShopOpen, setStockOpen, setTicketInspectOpen, setToast, setTravelOpen, setZone, toggleInventory])
+  }, [setCookbookOpen, setEnhancementOpen, setLotteryOpen, setMenuOpen, setPlayerPanelOpen, setProgress, setSecretOpen, setSelected, setShopOpen, setStockOpen, setTicketInspectOpen, setToast, setTravelOpen, setZone, toggleInventory])
   if (!sessionStarted) return <div className="interface"><LobbyPanel /><Toast /></div>
   if (minigameOpen) return <div className="interface"><Crosshair /><InteractionPrompt /><MinigameWorldHud /><Hotbar /><InventoryPanel /><CookbookPanel /><Toast /></div>
-  return <div className="interface"><HUD /><Crosshair /><InteractionPrompt /><ForageCapacity /><Hotbar /><InventoryPanel /><ShopPanel /><LotteryPanel /><TicketInspectPanel /><NoteInspectPanel /><TravelPanel /><SecretDealPanel /><StocksPanel /><PlayerTradePanel /><MenuPanel /><CookbookPanel /><ResultsPanel /><MinigameResultCard /><Toast /></div>
+  return <div className="interface"><HUD /><Crosshair /><InteractionPrompt /><ForageCapacity /><Hotbar /><InventoryPanel /><ShopPanel /><LotteryPanel /><TicketInspectPanel /><NoteInspectPanel /><TravelPanel /><SecretDealPanel /><StocksPanel /><PlayerTradePanel /><MenuPanel /><CookbookPanel /><EnhancementPanel /><ResultsPanel /><MinigameResultCard /><Toast /></div>
 }
 
 export function App() {

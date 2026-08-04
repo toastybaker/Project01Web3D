@@ -33,7 +33,7 @@ async function waitForServer(process: ChildProcessWithoutNullStreams) {
 const port = 26_572
 const server = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
   cwd: process.cwd(),
-  env: { ...process.env, PORT: String(port), TEST_FARM_GROWTH_MS: '140' },
+  env: { ...process.env, PORT: String(port), TEST_FARM_GROWTH_MS: '140', TEST_RAIN_COOLDOWN_MS: '0' },
   stdio: ['pipe', 'pipe', 'pipe'],
 })
 const rooms: Room[] = []
@@ -136,7 +136,22 @@ try {
   const [harvest] = await Promise.all([harvestResult, harvestUpdateA, harvestUpdateB])
   assert(harvest.ok && harvest.quantity === 1, 'Harvest award was wrong')
 
-  console.log(JSON.stringify({ status: 'pass', maxPlayers: 6, farms: 8, personalDeeds: true, sharedExpansionDeeds: 2, leaderCanOwn: leaderPersonal.quantity + leaderDeeds.quantity, personalProtected: protectedDeed.quantity, deedRetryIdempotent: true, oneOwner: true, nonOwnerRejected: true, sharedCrop: true, lateJoin: true, harvestQuantity: harvest.quantity }, null, 2))
+  const dryPlantA = message<{ farmId: number; cellIndex: number; cell: { stage: string; crop: string } }>(farmerA, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 1 && update.cell?.stage === 'planted')
+  const dryPlantB = message<{ farmId: number; cellIndex: number; cell: { stage: string; crop: string } }>(farmerB, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 1 && update.cell?.stage === 'planted')
+  const dryPlantResult = message<{ requestId: string; ok: boolean }>(owner, 'farm:result', (result) => result.requestId === 'owner-dry-plant')
+  owner.send('farm:action', { requestId: 'owner-dry-plant', op: 'plant', farmId: 0, cellIndex: 1, crop: 'wheat', watered: false })
+  await Promise.all([dryPlantResult, dryPlantA, dryPlantB])
+
+  const rainWaterA = message<{ farmId: number; cellIndex: number; cell: { stage: string } }>(farmerA, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 1 && update.cell?.stage === 'watered')
+  const rainWaterB = message<{ farmId: number; cellIndex: number; cell: { stage: string } }>(farmerB, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 1 && update.cell?.stage === 'watered')
+  farmerB.send('farm:rain', {})
+  await Promise.all([rainWaterA, rainWaterB])
+
+  const rainReadyA = message<{ farmId: number; cellIndex: number; cell: { stage: string } }>(farmerA, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 1 && update.cell?.stage === 'ready')
+  const rainReadyB = message<{ farmId: number; cellIndex: number; cell: { stage: string } }>(farmerB, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 1 && update.cell?.stage === 'ready')
+  await Promise.all([rainReadyA, rainReadyB])
+
+  console.log(JSON.stringify({ status: 'pass', maxPlayers: 6, farms: 8, personalDeeds: true, sharedExpansionDeeds: 2, leaderCanOwn: leaderPersonal.quantity + leaderDeeds.quantity, personalProtected: protectedDeed.quantity, deedRetryIdempotent: true, oneOwner: true, nonOwnerRejected: true, sharedCrop: true, sharedRainWatering: true, lateJoin: true, harvestQuantity: harvest.quantity }, null, 2))
 } finally {
   await Promise.allSettled(rooms.map((room) => room.leave()))
   server.kill()
