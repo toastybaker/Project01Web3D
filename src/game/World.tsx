@@ -261,9 +261,9 @@ function WeatherEffect() {
 function applyOreAppearance(object: THREE.Object3D, id: string, readyAt: number, forcedKind?: keyof typeof ORE_COLORS) {
   if (!id.startsWith('MineOre') && !id.startsWith('RushOre')) return
   const kind = forcedKind ?? oreKindAtDepth(id, object.position.z)
-  if (object.userData.oreKind === kind && object.userData.oreAppearanceVersion === 2) return
+  if (object.userData.oreKind === kind && object.userData.oreAppearanceVersion === 3) return
   object.userData.oreKind = kind
-  object.userData.oreAppearanceVersion = 2
+  object.userData.oreAppearanceVersion = 3
   object.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return
     const oreMeshName = child.name.replaceAll('_', ' ')
@@ -277,20 +277,19 @@ function applyOreAppearance(object: THREE.Object3D, id: string, readyAt: number,
     materials.forEach((material) => {
       if ('color' in material && material.color instanceof THREE.Color) {
         if (oreMeshName.startsWith('Ore Vein') || oreMeshName.startsWith('Ore Fleck') || oreMeshName.startsWith('Ore Shard')) material.color.set(ORE_COLORS[kind])
-        else if (id.startsWith('RushOre') && oreMeshName.startsWith('Ore Boulder')) material.color.set('#625e57').lerp(new THREE.Color(ORE_COLORS[kind]), .34)
-        else if (id.startsWith('RushOre') && oreMeshName.startsWith('Embedded Ore')) material.color.set('#56524c').lerp(new THREE.Color(ORE_COLORS[kind]), .08)
-        else material.color.set(oreMeshName.startsWith('Embedded Ore') ? '#625e57' : '#786f63')
+        else if (oreMeshName.startsWith('Ore Boulder')) material.color.set(id.startsWith('RushOre') ? '#625e57' : '#786f63').lerp(new THREE.Color(ORE_COLORS[kind]), id.startsWith('RushOre') ? .34 : .18)
+        else if (oreMeshName.startsWith('Embedded Ore')) material.color.set(id.startsWith('RushOre') ? '#56524c' : '#625e57').lerp(new THREE.Color(ORE_COLORS[kind]), id.startsWith('RushOre') ? .08 : .04)
       }
       if ('emissive' in material && material.emissive instanceof THREE.Color) {
         if (oreMeshName.startsWith('Ore Vein') || oreMeshName.startsWith('Ore Fleck') || oreMeshName.startsWith('Ore Shard')) {
           material.emissive.set(ORE_COLORS[kind])
-          material.emissiveIntensity = id.startsWith('RushOre') ? 0.38 : 0.1
-        } else if (id.startsWith('RushOre') && oreMeshName.startsWith('Ore Boulder')) {
+          material.emissiveIntensity = id.startsWith('RushOre') ? 0.38 : 0.22
+        } else if (oreMeshName.startsWith('Ore Boulder')) {
           material.emissive.set(ORE_COLORS[kind])
-          material.emissiveIntensity = 0.05
-        } else if (id.startsWith('RushOre') && oreMeshName.startsWith('Embedded Ore')) {
+          material.emissiveIntensity = id.startsWith('RushOre') ? 0.05 : 0.018
+        } else if (oreMeshName.startsWith('Embedded Ore')) {
           material.emissive.set(ORE_COLORS[kind])
-          material.emissiveIntensity = 0.01
+          material.emissiveIntensity = id.startsWith('RushOre') ? 0.01 : 0.004
         }
       }
       if ('roughness' in material) material.roughness = kind === 'gold-ore' || kind === 'ancient-ore' ? 0.42 : 0.58

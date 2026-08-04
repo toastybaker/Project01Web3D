@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as THREE from 'three'
@@ -980,18 +980,18 @@ function oreNode(id, x, z) {
   bed.position.y = 0.13
   bed.rotation.y = seeded(seed, 6110) * Math.PI
   group.add(bed)
-  const boulderPositions = [[-0.34, 0.34, 0.04], [0.08, 0.46, -0.06], [0.39, 0.3, 0.12]]
+  const boulderPositions = [[-0.34, 0.39, 0.04], [0.08, 0.52, -0.06], [0.39, 0.35, 0.12]]
   for (let index = 0; index < boulderPositions.length; index += 1) {
     const radius = 0.3 + seeded(index, seed + 6130) * 0.09
     const boulder = mesh(new THREE.DodecahedronGeometry(radius, 1), mats.stoneOre, 'Ore Boulder')
     const [bx, by, bz] = boulderPositions[index]
     boulder.position.set(bx, by, bz)
-    boulder.scale.set(1 + seeded(index, seed + 6140) * 0.22, 0.82 + seeded(index, seed + 6150) * 0.16, 0.9 + seeded(index, seed + 6160) * 0.2)
+    boulder.scale.set(1.06 + seeded(index, seed + 6140) * 0.24, 1.02 + seeded(index, seed + 6150) * 0.18, 0.96 + seeded(index, seed + 6160) * 0.22)
     boulder.rotation.set(seeded(index, seed + 6170) * 0.28, seeded(index, seed + 6180) * Math.PI, seeded(index, seed + 6190) * 0.24)
     group.add(boulder)
     const vein = mesh(new THREE.DodecahedronGeometry(radius * .43, 0), mats.richOre, 'Ore Vein')
     vein.position.set(bx + (seeded(index, seed + 6201) - .5) * radius * .45, by + radius * .72, bz + radius * .42)
-    vein.scale.set(1.12, .44, .72)
+    vein.scale.set(1.28, .62, .9)
     vein.rotation.set(.18 + seeded(index, seed + 6211) * .4, seeded(index, seed + 6221) * Math.PI, .1)
     group.add(vein)
   }
@@ -1806,8 +1806,8 @@ function miningRushScene() {
       node.traverse((child) => {
         if (!child.isMesh) return
         if (child.name === 'Embedded Ore Bed') { child.scale.set(.86, .16, .74); child.position.y = .11 }
-        if (child.name === 'Ore Boulder') { child.scale.multiply(new THREE.Vector3(1.32, 2.18, 1.32)); child.position.y += .34 }
-        if (child.name === 'Ore Vein') { child.scale.multiply(new THREE.Vector3(2.55, 2.1, 2.35)); child.position.y += .5 }
+        if (child.name === 'Ore Boulder') { child.scale.multiply(new THREE.Vector3(1.24, 1.78, 1.24)); child.position.y += .29 }
+        if (child.name === 'Ore Vein') { child.scale.multiply(new THREE.Vector3(2.18, 1.58, 1.92)); child.position.y += .43 }
       })
       scene.add(node)
     }
@@ -2000,10 +2000,12 @@ async function exportScene(scene, filename) {
   const exporter = new GLTFExporter()
   const binary = await exporter.parseAsync(scene, { binary: true, onlyVisible: false, trs: true })
   const outputPath = path.join(out, filename)
-  await writeFile(outputPath, Buffer.from(binary))
+  const rawPath = `${outputPath}.raw.glb`
+  const nextPath = `${outputPath}.next.glb`
+  await writeFile(rawPath, Buffer.from(binary))
 
   const io = new NodeIO().registerExtensions([EXTMeshGPUInstancing])
-  const document = await io.read(outputPath)
+  const document = await io.read(rawPath)
   document.createExtension(EXTMeshGPUInstancing).setRequired(true)
   const woodlandSource = await readFile(path.join(root, 'public', 'assets', 'textures', 'woodland-ground-v1.png'))
   const caveStoneSource = await readFile(path.join(root, 'public', 'assets', 'textures', 'storybook-cave-stone-v1.png'))
@@ -2033,7 +2035,9 @@ async function exportScene(scene, filename) {
   // recolor/hide one player's ore or crop without affecting every matching mesh.
   if (filename === 'farm-rush.glb' || filename === 'mining-rush.glb') await document.transform(dedup())
   else await document.transform(dedup(), instance({ min: filename === 'forage.glb' ? 3 : 5 }))
-  await io.write(outputPath, document)
+  await io.write(nextPath, document)
+  await rm(rawPath, { force: true })
+  await rename(nextPath, outputPath)
   console.log(`Authored ${filename}`)
 }
 

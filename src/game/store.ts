@@ -180,7 +180,13 @@ const bypassLobby = query.has('gate') || requestedPanel !== null || requestedZon
 const balanceRound = Number.isInteger(requestedBalanceRound) && requestedBalanceRound >= 1 && requestedBalanceRound <= 20 ? requestedBalanceRound : null
 const initialZone: ZoneId = requestedZone === 'forage' || requestedZone === 'farm' || requestedZone === 'mine' ? requestedZone : 'hub'
 const savedVolumes = readJson<Partial<{ master: number; music: number; ambience: number; effects: number }>>('project01-audio')
-const initialVolumes = { master: 0.55, music: 0.42, ambience: 0.38, effects: 0.62, ...savedVolumes }
+const clampVolume = (value: unknown, fallback: number) => typeof value === 'number' && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback
+const initialVolumes = {
+  master: clampVolume(savedVolumes?.master, 0.55),
+  music: clampVolume(savedVolumes?.music, 0.42),
+  ambience: clampVolume(savedVolumes?.ambience, 0.38),
+  effects: clampVolume(savedVolumes?.effects, 0.62),
+}
 const savedSensitivity = (() => {
   const value = Number(localStorage.getItem('project01-camera-sensitivity'))
   return Number.isFinite(value) && value >= 0.35 && value <= 1.8 ? value : 1
@@ -833,7 +839,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
   setToast: (toast) => set({ toast }),
   setVolume: (channel, value) => {
-    const audioVolumes = { ...get().audioVolumes, [channel]: value }
+    const audioVolumes = { ...get().audioVolumes, [channel]: clampVolume(value, get().audioVolumes[channel]) }
     localStorage.setItem('project01-audio', JSON.stringify(audioVolumes))
     set({ audioVolumes })
   },

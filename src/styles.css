@@ -288,8 +288,9 @@ button { color: inherit; }
 .world-label.shop { color: #f0d18b; }
 .world-label.assigned-plot { height: 29px; padding: 0 13px; border-color: rgba(239,199,109,.68); background: rgba(31,38,29,.92); box-shadow: 0 6px 18px rgba(17,23,18,.3), 0 0 0 3px rgba(239,199,109,.1); color: #efc76d; font-size: 10px; line-height: 29px; }
 .settings-panel { width: min(470px, calc(100vw - 40px)); }
-.volume-row { height: 58px; display: grid; grid-template-columns: 105px 1fr; align-items: center; gap: 18px; border-top: 1px solid rgba(244, 232, 198, 0.1); font-size: 12px; font-weight: 900; letter-spacing: 0.1em; }
+.volume-row { height: 58px; display: grid; grid-template-columns: 105px 1fr 40px; align-items: center; gap: 12px; border-top: 1px solid rgba(244, 232, 198, 0.1); font-size: 12px; font-weight: 900; letter-spacing: 0.1em; }
 .volume-row input { width: 100%; accent-color: var(--amber); }
+.volume-row output { color: rgba(244,232,198,.7); font-size: 10px; letter-spacing: .03em; text-align: right; }
 .camera-options { min-height: 50px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: center; border-top: 1px solid rgba(244,232,198,.1); }
 .camera-options button { height: 32px; border: 1px solid var(--line); border-radius: 9px; background: rgba(244,232,198,.055); color: rgba(244,232,198,.64); font: 900 10px/1 'Nunito Sans',sans-serif; letter-spacing: .07em; cursor: pointer; }
 .camera-options button.active { border-color: rgba(227,181,94,.62); background: rgba(227,181,94,.18); color: var(--ivory); }

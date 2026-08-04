@@ -88,6 +88,8 @@ function MineSync() {
 
 function AudioBed() {
   const zone = useGameStore((state) => state.zone)
+  const minigameOpen = useGameStore((state) => state.minigameOpen)
+  const minigameKind = useGameStore((state) => state.minigameKind)
   const volumes = useGameStore((state) => state.audioVolumes)
   const musicRef = useRef<HTMLAudioElement | null>(null)
   const ambienceRef = useRef<HTMLAudioElement | null>(null)
@@ -132,19 +134,20 @@ function AudioBed() {
       farm: ['/assets/audio/Faure_Fantasie_FlutePiano.ogg', '/assets/audio/Faure_Sicilienne_FlutePiano.mp3'],
       mine: ['/assets/audio/Faure_Sicilienne_FlutePiano.mp3', '/assets/audio/Faure_Fantasie_FlutePiano.ogg'],
     } as const
-    const tracks = playlists[zone]
+    const audioZone = minigameOpen ? (minigameKind === 'mining' ? 'mine' : minigameKind) : zone
+    const tracks = playlists[audioZone]
     playlistIndex.current = 0
     music.loop = false
     const playTrack = () => {
       music.src = tracks[playlistIndex.current]
-      if (zone === 'forage' && playlistIndex.current === 0) music.addEventListener('loadedmetadata', () => { music.currentTime = Math.min(96, music.duration * 0.3) }, { once: true })
+      if (audioZone === 'forage' && playlistIndex.current === 0) music.addEventListener('loadedmetadata', () => { music.currentTime = Math.min(96, music.duration * 0.3) }, { once: true })
       if (unlocked.current) void music.play().catch(() => undefined)
     }
     const nextTrack = () => {
       playlistIndex.current = (playlistIndex.current + 1) % tracks.length
       playTrack()
     }
-    const ambienceSource = zone === 'mine' ? '/assets/audio/Cave_Water_Drips_CC-BY-SA.ogg' : zone === 'hub' ? '/assets/audio/Forest_Ambience_PD.ogg' : '/assets/audio/Forest_Ambience_PD.mp3'
+    const ambienceSource = audioZone === 'mine' ? '/assets/audio/Cave_Water_Drips_CC-BY-SA.ogg' : audioZone === 'hub' ? '/assets/audio/Forest_Ambience_PD.ogg' : '/assets/audio/Forest_Ambience_PD.mp3'
     music.addEventListener('ended', nextTrack)
     playTrack()
     if (!ambience.src.endsWith(ambienceSource)) ambience.src = ambienceSource
@@ -153,7 +156,7 @@ function AudioBed() {
       void ambience.play().catch(() => undefined)
     }
     return () => music.removeEventListener('ended', nextTrack)
-  }, [zone])
+  }, [minigameKind, minigameOpen, zone])
   return null
 }
 
@@ -191,13 +194,14 @@ function FeedbackBed() {
     previousCash.current = cash
     if (!toast) return
     const feedback = feedbackFor(toast, zone, delta, minigameKind)
-    playGameSfx(feedback.sound, volumes.master * volumes.effects)
+    const liveVolumes = useGameStore.getState().audioVolumes
+    playGameSfx(feedback.sound, liveVolumes.master * liveVolumes.effects)
     if (!feedback.burst) return
     const next = { id: Date.now(), kind: feedback.burst }
     setBurst(next)
     const timer = window.setTimeout(() => setBurst((current) => current?.id === next.id ? null : current), 720)
     return () => window.clearTimeout(timer)
-  }, [cash, minigameKind, toast, volumes.effects, volumes.master, zone])
+  }, [cash, minigameKind, toast, zone])
 
   useEffect(() => {
     const now = Date.now()
@@ -766,7 +770,7 @@ function MenuPanel() {
       <section className="panel settings-panel">
         <header><div className="panel-title"><Icon name="menu" /><span>SETTINGS</span></div><CloseButton onClick={() => close(false)} /></header>
         {(['master', 'music', 'ambience', 'effects'] as const).map((channel) => (
-          <label className="volume-row" key={channel}><span>{channel.toUpperCase()}</span><input type="range" min="0" max="1" step="0.01" value={volumes[channel]} onChange={(event) => setVolume(channel, Number(event.target.value))} /></label>
+          <label className="volume-row" key={channel}><span>{channel.toUpperCase()}</span><input type="range" min="0" max="1" step="0.01" value={volumes[channel]} onChange={(event) => setVolume(channel, Number(event.target.value))} /><output>{Math.round(volumes[channel] * 100)}%</output></label>
         ))}
         <label className="volume-row"><span>SENSITIVITY</span><input aria-label="Camera sensitivity" type="range" min="0.35" max="1.8" step="0.05" value={sensitivity} onChange={(event) => setSensitivity(Number(event.target.value))} /></label>
         <div className="camera-options"><button className={shiftLocked ? 'active' : ''} onClick={() => setShiftLocked(!shiftLocked)}>SHIFT LOCK</button><button className={invertY ? 'active' : ''} onClick={() => setInvertY(!invertY)}>INVERT Y</button></div>
