@@ -188,6 +188,13 @@ const requestedEvent = query.get('event')
 const requestedMinigame: MinigameKind = requestedEvent === 'farm' || requestedEvent === 'forage' ? requestedEvent : 'mining'
 const requestedShop = requestedPanel && requestedPanel in SHOPS ? requestedPanel as ShopKind : null
 const requestedBalanceRound = query.get('gate') === 'balance' ? Number(query.get('round')) : 0
+const enhancementTestLevel = requestedPanel === 'enhance' && query.has('enhanceTest')
+  ? Math.max(0, Math.min(10, Math.floor(Number(query.get('enhanceTest')) || 0)))
+  : null
+const enhancementTestInventory: Partial<Record<ItemId, number>> = query.get('enhanceReady') === '1' ? {
+  'copper-ore': 999, 'iron-ore': 999, 'silver-ore': 999, 'gold-ore': 999, 'crystal-ore': 999, 'ancient-ore': 999,
+  apple: 999, orange: 999, wheat: 999, tomato: 999, lettuce: 999, pumpkin: 999, watermelon: 999, truffle: 999, 'natural-discovery': 999,
+} : {}
 const bypassLobby = query.has('gate') || requestedPanel !== null || requestedZone !== null
 const balanceRound = Number.isInteger(requestedBalanceRound) && requestedBalanceRound >= 1 && requestedBalanceRound <= 20 ? requestedBalanceRound : null
 const initialZone: ZoneId = requestedZone === 'forage' || requestedZone === 'farm' || requestedZone === 'mine' ? requestedZone : 'hub'
@@ -199,6 +206,7 @@ const initialVolumes = {
   ambience: clampVolume(savedVolumes?.ambience, 0.38),
   effects: clampVolume(savedVolumes?.effects, 0.62),
 }
+const initialInventory = { ...defaultInventory, ...saved?.inventory, ...enhancementTestInventory }
 const savedSensitivity = (() => {
   const value = Number(localStorage.getItem('project01-camera-sensitivity'))
   return Number.isFinite(value) && value >= 0.35 && value <= 1.8 ? value : 1
@@ -521,8 +529,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   restockSeconds: saved?.restockSeconds ?? MATCH_CONFIG.worldCycleSeconds,
   roundSeconds: saved?.roundSeconds ?? MATCH_CONFIG.worldCycleSeconds,
   roundNumber: balanceRound ?? saved?.roundNumber ?? 1,
-  inventory: { ...defaultInventory, ...saved?.inventory },
-  hotbar: cleanedHotbar(saved?.hotbar?.slice(0, 9) ?? ['water-can', 'worn-pickaxe', null, null, null, null, null, null, 'home-charm'], { ...defaultInventory, ...saved?.inventory }),
+  inventory: initialInventory,
+  hotbar: cleanedHotbar(saved?.hotbar?.slice(0, 9) ?? ['water-can', 'worn-pickaxe', null, null, null, null, null, null, 'home-charm'], initialInventory),
   inventoryOrder: initialOrder,
   prompt: null,
   interactionProgress: 0,
@@ -579,7 +587,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   noteInspectOpen: false,
   cookbookOpen: requestedPanel === 'cookbook',
   enhancementOpen: requestedPanel === 'enhance',
-  enhancements: saved?.enhancements ?? {},
+  enhancements: enhancementTestLevel === null ? saved?.enhancements ?? {} : { 'worn-pickaxe': enhancementTestLevel },
   knownRecipes: saved?.knownRecipes ?? [],
   recipeCards: saved?.recipeCards ?? {},
   cookQueue: (saved?.cookQueue ?? []).map((job) => ({ ...job, quantity: job.quantity ?? 1, furnaceIndex: job.furnaceIndex ?? saved?.claimedFarms?.[0] ?? saved?.claimedFarm ?? 0 })),
@@ -1072,18 +1080,18 @@ export const useGameStore = create<GameState>((set, get) => ({
   enhanceEquipment: (item, requestedStabilized = false) => set((state) => {
     if (state.minigameOpen || (state.inventory[item] ?? 0) !== 1) return { toast: 'Item not owned' }
     const current = enhancementLevel(state.enhancements, item)
-    if (current >= 10) return { toast: 'Maximum enhancement' }
+    if (current >= 10) return { toast: 'Max level' }
     const target = current + 1
     const stabilized = requestedStabilized && canStabilize(target)
     const result = resolveEnhancementAttempt(item, current, state.cash, state.inventory, stabilized)
-    if (!result.ok) return { toast: result.reason === 'coins' ? 'Not enough coins' : result.reason === 'materials' ? 'Missing materials' : 'Maximum enhancement' }
+    if (!result.ok) return { toast: result.reason === 'coins' ? 'Not enough coins' : result.reason === 'materials' ? 'Missing materials' : 'Max level' }
     const inventory = result.inventory
     const enhancements = { ...state.enhancements, [item]: result.level }
     const toast = result.success
-      ? enhancementName(item, result.level)
+      ? `Upgraded · ${enhancementName(item, result.level)}`
       : result.level === current
-        ? `Enhancement failed · remained +${current}`
-        : `Enhancement failed · +${current} → +${result.level}`
+        ? `Upgrade failed · kept +${current}`
+        : `Upgrade failed · dropped to +${result.level}`
     return { cash: result.cash, inventory, hotbar: cleanedHotbar(state.hotbar, inventory), enhancements, toast }
   }),
   cookRecipe: (recipeId, requestedQuantity = 1) => set((state) => {

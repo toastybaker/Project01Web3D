@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { GameWorld } from './game/World'
 import { ITEMS, SHOPS, STOCKS, itemTooltip, type ItemId, type ShopKind, type StockId } from './game/items'
 import { commodityPrice, formatCoins, lotteryJackpot, lotteryPrice, lotteryTwoMatch, sessionSecondsRemaining } from './game/economy'
@@ -9,7 +9,7 @@ import { economyProgressValue, inventoryLayout, lotteryDraw, preparedFoodValue, 
 import { RECIPES, RECIPE_IDS, type RecipeId } from './game/recipes'
 import { FARM_RUSH_CROPS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, FORAGE_RUSH_REQUIREMENTS, MINIGAME_DURATION, MINING_RUSH_POINTS, farmRushOrders, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MiningRushOre } from './game/minigame'
 import { playGameSfx, type GameSfx } from './game/sfx'
-import { ENHANCEABLE_ITEMS, canStabilize, enhancedBasketCapacity, enhancementChance, enhancementLevel, enhancementName, enhancementRequirements, expectedFortune, isEnhanceableItem, miningSpeedBonus, type EnhanceableItem } from './game/enhancement'
+import { ENHANCEABLE_ITEMS, canStabilize, enhancedBasketCapacity, enhancementChance, enhancementLevel, enhancementName, enhancementRequirements, fortuneFor, isEnhanceableItem, miningSpeedBonus, type EnhanceableItem } from './game/enhancement'
 
 function forageItem(anchorId: string): ItemId | null {
   if (anchorId.startsWith('ForageApple')) return 'apple'
@@ -192,6 +192,7 @@ function AudioBed() {
 type BurstKind = 'stone' | 'leaf' | 'water' | 'gold' | 'spark'
 
 function feedbackFor(toast: string, zone: ReturnType<typeof useGameStore.getState>['zone'], cashDelta: number, minigameKind: ReturnType<typeof useGameStore.getState>['minigameKind']): { sound: GameSfx; burst?: BurstKind } | null {
+  if (toast.startsWith('Upgraded') || toast.startsWith('Upgrade failed')) return null
   if (/^(Need|Not enough|Sold out|None owned|Select|Missing|Gone|Own a farm|Not your|Pickaxe tier|Fruit storage|Recipe not|Furnace queue)/.test(toast)) return { sound: 'error' }
   if (toast.startsWith('Unlocked')) return { sound: 'unlock', burst: 'spark' }
   if (toast.startsWith('Planted')) return { sound: 'plant', burst: 'leaf' }
@@ -972,6 +973,7 @@ function EnhancementPanel() {
   const [selected, setSelected] = useState<EnhanceableItem>('worn-pickaxe')
   const [stabilized, setStabilized] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const [resultFx, setResultFx] = useState<{ id: number; success: boolean } | null>(null)
   useEffect(() => {
     if (open && !owned.includes(selected) && owned[0]) setSelected(owned[0])
   }, [open, owned, selected])
@@ -994,7 +996,11 @@ function EnhancementPanel() {
     const before = enhancementLevel(useGameStore.getState().enhancements, selected)
     enhance(selected, useStabilization)
     const after = enhancementLevel(useGameStore.getState().enhancements, selected)
-    playGameSfx(after > before ? 'unlock' : 'error', volumes.master * volumes.effects)
+    const success = after > before
+    playGameSfx(success ? 'upgrade-success' : 'upgrade-fail', volumes.master * volumes.effects)
+    const effect = { id: Date.now(), success }
+    setResultFx(effect)
+    window.setTimeout(() => setResultFx((active) => active?.id === effect.id ? null : active), 900)
     setConfirming(false)
   }
   const secondaryCurrent = isPickaxeItem
@@ -1007,29 +1013,66 @@ function EnhancementPanel() {
     : isBasketItem
       ? String(enhancedBasketCapacity(selected, target))
       : null
+  const chanceLabel = isPickaxeItem ? 'ORE CHANCES' : 'HARVEST CHANCES'
+  const currentOutcomes = fortuneFor(selected, current)
+  const targetOutcomes = fortuneFor(selected, target)
+  const actionLabel = atMax
+    ? 'MAX LEVEL'
+    : missingMaterials
+      ? 'NEED MATERIALS'
+      : cash < requirements.coins
+        ? 'NEED COINS'
+        : confirming
+          ? 'CONFIRM UPGRADE'
+          : 'UPGRADE'
+  const failureLabel = atMax || enhancementChance(target) >= 1
+    ? null
+    : useStabilization || target <= 3
+      ? `Failure keeps +${current}`
+      : `Failure drops to +${Math.max(0, current - 1)}`
   return <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}>
     <section className="panel enhancement-panel">
-      <header><div className="panel-title"><span className="enhancement-mark">+</span><span>ENHANCEMENT</span></div><div className="shop-balance"><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div><CloseButton onClick={() => close(false)} /></header>
+      <header><div className="panel-title"><span className="enhancement-mark">+</span><span>UPGRADE</span></div><div className="shop-balance"><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div><CloseButton onClick={() => close(false)} /></header>
       <div className="enhancement-layout">
-        <aside className="enhancement-items">
+        <aside className="enhancement-items" aria-label="Gear">
           {owned.map((item) => {
             const itemLevel = enhancementLevel(enhancements, item)
-            return <button className={item === selected ? 'active' : ''} key={item} onClick={() => { setSelected(item); setStabilized(false); setConfirming(false) }}><img src={ITEMS[item].icon} alt={enhancementName(item, itemLevel)} /><b>+{itemLevel}</b><HoverTip lines={itemTooltip(item, itemLevel)} /></button>
+            return <button className={item === selected ? 'active' : ''} key={item} onClick={() => { setSelected(item); setStabilized(false); setConfirming(false) }}>
+              <img src={ITEMS[item].icon} alt="" />
+              <span><strong>{ITEMS[item].name}</strong><small>+{itemLevel}</small></span>
+            </button>
           })}
         </aside>
-        <section className="enhancement-attempt">
-          <div className="enhancement-current"><span className="enhancement-current-icon"><img src={ITEMS[selected].icon} alt="" /><HoverTip lines={itemTooltip(selected, current)} /></span><strong>{enhancementName(selected, current)}</strong><span>{atMax ? 'MAX' : '→'}</span>{!atMax && <b>+{target}</b>}</div>
-          <div className="enhancement-materials">{materialRows.map(([id, quantity]) => <span className={(inventory[id] ?? 0) < quantity ? 'missing' : ''} key={id} tabIndex={0}><img src={ITEMS[id].icon} alt={ITEMS[id].name} /><b>{quantity}</b><small>{inventory[id] ?? 0}</small><HoverTip lines={[ITEMS[id].name, `${inventory[id] ?? 0} / ${quantity}`]} /></span>)}</div>
-          <div className="enhancement-cost">{atMax ? <strong>MAX LEVEL</strong> : <><Icon name="coin" /><strong>{formatCoins(requirements.coins, true)}</strong><b>{Math.round(enhancementChance(target) * 100)}%</b></>}</div>
-          {stabilizationAvailable && <button className={`stabilize-toggle ${useStabilization ? 'active' : ''}`} onClick={() => { setStabilized((value) => !value); setConfirming(false) }}>STABILIZE</button>}
-          <small className="enhancement-fail">{atMax ? '' : target <= 3 || useStabilization ? `FAIL · STAYS +${current}` : `FAIL · +${current} → +${Math.max(0, current - 1)}`}</small>
-          <button className="enhance-button" disabled={!affordable} onClick={attempt}>{confirming ? 'CONFIRM' : current >= 10 ? 'MAX' : 'ENHANCE'}</button>
-        </section>
-        <section className="enhancement-preview">
-          <span className="enhancement-preview-icon"><img src={ITEMS[selected].icon} alt="" /><HoverTip lines={itemTooltip(selected, target)} /></span>
-          <strong>{enhancementName(selected, target)}</strong>
-          <div><span>FORTUNE</span><b>{expectedFortune(selected, current).toFixed(2)} → {expectedFortune(selected, target).toFixed(2)}</b></div>
-          {secondaryCurrent && secondaryTarget && <div><span>{isPickaxeItem ? 'SPEED' : 'CAPACITY'}</span><b>{secondaryCurrent} → {secondaryTarget}</b></div>}
+        <section className={`enhancement-attempt ${resultFx ? resultFx.success ? 'upgrade-success' : 'upgrade-fail' : ''}`}>
+          {resultFx && <span className={`enhancement-result-fx ${resultFx.success ? 'success' : 'fail'}`} aria-hidden="true">{Array.from({ length: 12 }, (_, index) => <i key={index} />)}</span>}
+          <div className="enhancement-current">
+            <span className="enhancement-current-icon"><img src={ITEMS[selected].icon} alt="" /></span>
+            <span className="enhancement-current-name">{atMax && <small>MAX LEVEL</small>}<strong>{ITEMS[selected].name}</strong></span>
+            {!atMax && <span className={`enhancement-chance ${resultFx ? `result ${resultFx.success ? 'success' : 'fail'}` : ''}`}><small>{resultFx ? 'RESULT' : 'SUCCESS'}</small><b>{resultFx ? resultFx.success ? 'UPGRADED' : 'FAILED' : `${Math.round(enhancementChance(target) * 100)}%`}</b></span>}
+          </div>
+          <small className="enhancement-compare-title">{chanceLabel}</small>
+          <div className={`enhancement-comparison ${atMax ? 'maxed' : ''}`}>
+            <div className="enhancement-column current">
+              <header><span>CURRENT</span><b>+{current}</b></header>
+              <div className="enhancement-chances">{currentOutcomes.map((outcome, index) => <div key={index}><span>{index + 1}×</span><i style={{ '--chance': `${outcome.chance * 100}%` } as CSSProperties} /><b>{Math.round(outcome.chance * 100)}%</b></div>)}</div>
+              {secondaryCurrent && <footer><span>{isPickaxeItem ? 'MINING SPEED' : 'STORAGE'}</span><b>{secondaryCurrent}</b></footer>}
+            </div>
+            {!atMax && <><span className="enhancement-compare-arrow">→</span><div className="enhancement-column target">
+              <header><span>UPGRADED</span><b>+{target}</b></header>
+              <div className="enhancement-chances">{targetOutcomes.map((outcome, index) => <div key={index}><span>{index + 1}×</span><i style={{ '--chance': `${outcome.chance * 100}%` } as CSSProperties} /><b>{Math.round(outcome.chance * 100)}%</b></div>)}</div>
+              {secondaryTarget && <footer><span>{isPickaxeItem ? 'MINING SPEED' : 'STORAGE'}</span><b>{secondaryTarget}</b></footer>}
+            </div></>}
+          </div>
+          {!atMax && <div className="enhancement-payment">
+            <div className="enhancement-materials">{materialRows.map(([id, quantity]) => {
+              const held = inventory[id] ?? 0
+              return <span className={held < quantity ? 'missing' : ''} key={id}><img src={ITEMS[id].icon} alt="" /><span><strong>{ITEMS[id].name}</strong><small>{held} OF {quantity}</small></span></span>
+            })}</div>
+            <div className={`enhancement-cost ${cash < requirements.coins ? 'missing' : ''}`}><Icon name="coin" /><span><small>COST</small><strong>{formatCoins(requirements.coins, true)}</strong></span></div>
+          </div>}
+          {stabilizationAvailable && <button className={`stabilize-toggle ${useStabilization ? 'active' : ''}`} onClick={() => { setStabilized((value) => !value); setConfirming(false) }}>{useStabilization ? `PROTECTED +${current}` : `PROTECT +${current}`}</button>}
+          {failureLabel && <small className={`enhancement-fail ${downgradeRisk && !useStabilization ? 'danger' : ''}`}>{failureLabel}</small>}
+          <button className="enhance-button" disabled={!affordable} onClick={attempt}>{actionLabel}</button>
         </section>
       </div>
     </section>

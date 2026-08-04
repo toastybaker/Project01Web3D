@@ -8,6 +8,8 @@ export type GameSfx =
   | 'buy'
   | 'teleport'
   | 'unlock'
+  | 'upgrade-success'
+  | 'upgrade-fail'
   | 'ready'
   | 'error'
   | 'jump'
@@ -56,6 +58,24 @@ function tone(ctx: AudioContext, at: number, from: number, to: number, duration:
 
 export function playGameSfx(kind: GameSfx, volume = 0.5) {
   if (volume <= 0) return
+  if ((kind === 'upgrade-success' || kind === 'upgrade-fail') && typeof Audio !== 'undefined') {
+    const layers = kind === 'upgrade-success'
+      ? [
+          { file: '/assets/audio/sfx/impactMining_004.ogg', delay: 0, gain: .36, rate: .92 },
+          { file: '/assets/audio/sfx/handleCoins.ogg', delay: 90, gain: .34, rate: 1.08 },
+        ]
+      : [
+          { file: '/assets/audio/sfx/impactSoft_medium_002.ogg', delay: 0, gain: .34, rate: .82 },
+          { file: '/assets/audio/sfx/click5.ogg', delay: 80, gain: .24, rate: .9 },
+        ]
+    layers.forEach(({ file, delay, gain, rate }) => window.setTimeout(() => {
+      const sound = new Audio(file)
+      sound.volume = Math.min(1, Math.max(0, volume)) * gain
+      sound.playbackRate = rate
+      void sound.play().catch(() => playSynth(kind, volume))
+    }, delay))
+    return
+  }
   const authored = authoredSounds[kind]
   if (authored?.length && typeof Audio !== 'undefined') {
     const previous = lastSoundIndex.get(kind) ?? -1
@@ -103,8 +123,11 @@ function playSynth(kind: GameSfx, volume: number) {
   } else if (kind === 'teleport') {
     tone(ctx, now, 230, 760, 0.26, level * 0.48, 'sine')
     tone(ctx, now + 0.04, 330, 980, 0.22, level * 0.28, 'triangle')
-  } else if (kind === 'unlock') {
+  } else if (kind === 'unlock' || kind === 'upgrade-success') {
     ;[440, 610, 820].forEach((frequency, index) => tone(ctx, now + index * 0.075, frequency, frequency * 1.06, 0.18, level * (0.5 - index * 0.07), 'sine'))
+  } else if (kind === 'upgrade-fail') {
+    tone(ctx, now, 180, 92, 0.18, level * .54, 'triangle')
+    tone(ctx, now + .055, 120, 72, .16, level * .36, 'square')
   } else if (kind === 'ready') {
     tone(ctx, now, 570, 760, 0.18, level * 0.5, 'sine')
     tone(ctx, now + 0.1, 760, 980, 0.2, level * 0.38, 'sine')

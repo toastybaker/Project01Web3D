@@ -1303,7 +1303,7 @@ function WorldLabels() {
         { key: 'mine', text: 'MINE', point: anchors.PortalMine, lift: 5.75 },
         { key: 'shop', text: 'COMMON SHOP', point: anchors.Shop, lift: 3.2 },
         { key: 'stocks', text: 'STOCK EXCHANGE', point: anchors.Stocks, lift: 3.2 },
-        { key: 'enhance', text: 'ENHANCE', point: anchors.LabelEnhance, lift: 2.45 },
+        { key: 'enhance', text: 'UPGRADE', point: anchors.LabelEnhance, lift: 2.45 },
       ] : zone === 'farm' ? [
         { key: 'home', text: 'HOME', point: anchors.Home, lift: 5.75 },
         ...ownedFarms.map((farm) => ({ key: `owned-farm-${farm}`, text: 'YOUR FARM', point: anchors[`FarmPlot${farm}`] ?? anchors.FarmPlot, lift: 2.2 })),
