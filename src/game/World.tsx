@@ -681,6 +681,7 @@ function Player() {
   const playerRoot = useRef<THREE.Group>(null)
   const visual = useRef<THREE.Group>(null)
   const position = useRef(new THREE.Vector3(0, 0.86, 14))
+  const horizontalVelocity = useRef(new THREE.Vector3())
   const verticalVelocity = useRef(0)
   const keys = useRef<Record<string, boolean>>({})
   const yaw = useRef(0)
@@ -695,6 +696,7 @@ function Player() {
   const footstepPhase = useRef(0)
   const footstepAnimation = useRef('')
   const grounded = useRef(true)
+  const landingAnimationUntil = useRef(0)
   const spawnedZone = useRef<string | null>(null)
   const zone = useGameStore((state) => state.zone)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
@@ -791,7 +793,10 @@ function Player() {
       pitch.current = 0.28
     }
     position.current.set(spawn[0], (minigameOpen ? minigameGroundHeight(minigameKind, spawn[0], spawn[2]) : groundHeight(zone, spawn[0], spawn[2])) + 0.86, spawn[2])
+    horizontalVelocity.current.set(0, 0, 0)
     verticalVelocity.current = 0
+    grounded.current = true
+    landingAnimationUntil.current = 0
     const target = new THREE.Vector3(position.current.x, position.current.y + 0.82, position.current.z)
     const horizontalDistance = Math.cos(pitch.current) * distance.current
     const desired = target.clone().add(new THREE.Vector3(
@@ -892,33 +897,59 @@ function Player() {
   useFrame((state, delta) => {
     const liveUi = useGameStore.getState()
     const movementLocked = !liveUi.sessionStarted || liveUi.shopOpen || liveUi.stockOpen || liveUi.inventoryOpen || liveUi.menuOpen || liveUi.playerPanelOpen || liveUi.lotteryOpen || liveUi.ticketInspectOpen || liveUi.noteInspectOpen || liveUi.travelOpen || liveUi.secretOpen || liveUi.cookbookOpen || liveUi.enhancementOpen || liveUi.sessionComplete
-    if (movementLocked) keys.current = {}
+    if (movementLocked) {
+      keys.current = {}
+      horizontalVelocity.current.set(0, 0, 0)
+    }
     const inputX = movementLocked ? 0 : Number(Boolean(keys.current.KeyD)) - Number(Boolean(keys.current.KeyA))
     const inputZ = movementLocked ? 0 : Number(Boolean(keys.current.KeyW)) - Number(Boolean(keys.current.KeyS))
     const cameraForward = new THREE.Vector3(-Math.sin(yaw.current), 0, -Math.cos(yaw.current))
     const right = new THREE.Vector3(Math.cos(yaw.current), 0, -Math.sin(yaw.current))
     const direction = cameraForward.clone().multiplyScalar(inputZ).add(right.multiplyScalar(inputX))
-    const moving = direction.lengthSq() > 0
-    if (moving) direction.normalize()
-    const sprinting = moving && Boolean(keys.current.ShiftLeft || keys.current.ShiftRight)
+    const hasMovementInput = direction.lengthSq() > 0
+    if (hasMovementInput) direction.normalize()
+    const sprinting = hasMovementInput && Boolean(keys.current.ShiftLeft || keys.current.ShiftRight)
     const speed = sprinting ? 8.4 : 3.9
-    const next = position.current.clone().addScaledVector(direction, speed * delta)
+    const targetVelocity = direction.clone().multiplyScalar(speed)
+    const movementResponse = hasMovementInput
+      ? grounded.current ? (sprinting ? 9 : 11) : 4.5
+      : grounded.current ? 16 : 2.5
+    horizontalVelocity.current.lerp(targetVelocity, 1 - Math.exp(-movementResponse * delta))
+    if (!hasMovementInput && horizontalVelocity.current.lengthSq() < 0.0025) horizontalVelocity.current.set(0, 0, 0)
+    const locomotionSpeed = horizontalVelocity.current.length()
+    const moving = locomotionSpeed > 0.15
+    const next = position.current.clone().addScaledVector(horizontalVelocity.current, delta)
     if (liveUi.minigameOpen) {
       const eventLimit = liveUi.minigameKind === 'forage' ? 216 : liveUi.minigameKind === 'farm' ? 49 : 57
+      const eventNextX = next.x
+      const eventNextZ = next.z
       next.x = THREE.MathUtils.clamp(next.x, -eventLimit, eventLimit)
       next.z = THREE.MathUtils.clamp(next.z, liveUi.minigameKind === 'forage' ? -219 : liveUi.minigameKind === 'farm' ? -34 : -40, liveUi.minigameKind === 'forage' ? 46 : liveUi.minigameKind === 'farm' ? 40 : 42)
+      if (next.x !== eventNextX) horizontalVelocity.current.x = 0
+      if (next.z !== eventNextZ) horizontalVelocity.current.z = 0
       if (liveUi.minigameKind === 'mining') {
         const [bayX, bayZ] = MINING_RUSH_BAY_CENTERS[liveUi.eventBay] ?? MINING_RUSH_BAY_CENTERS[0]
+        const bayNextX = next.x
+        const bayNextZ = next.z
         next.x = THREE.MathUtils.clamp(next.x, bayX - 10.55, bayX + 10.55)
         next.z = THREE.MathUtils.clamp(next.z, bayZ - 10.55, bayZ + 10.55)
+        if (next.x !== bayNextX) horizontalVelocity.current.x = 0
+        if (next.z !== bayNextZ) horizontalVelocity.current.z = 0
       }
     } else if (zone === 'forage') {
+      const forageNextX = next.x
+      const forageNextZ = next.z
       next.x = THREE.MathUtils.clamp(next.x, -216, 216)
       next.z = THREE.MathUtils.clamp(next.z, -219, 46)
+      if (next.x !== forageNextX) horizontalVelocity.current.x = 0
+      if (next.z !== forageNextZ) horizontalVelocity.current.z = 0
     } else if (zone === 'mine') {
       next.x = THREE.MathUtils.clamp(next.x, -68, 68)
       next.z = THREE.MathUtils.clamp(next.z, -199, 77)
-      if (!pointInMine(next.x, next.z)) next.copy(position.current)
+      if (!pointInMine(next.x, next.z)) {
+        next.copy(position.current)
+        horizontalVelocity.current.set(0, 0, 0)
+      }
     } else {
       const limit = zone === 'hub' ? 66 : 98
       const radialDistance = Math.hypot(next.x, next.z)
@@ -933,8 +964,15 @@ function Player() {
       const minimum = collider.radius + 0.42
       const separation = Math.hypot(dx, dz)
       if (separation < minimum && separation > 0.0001) {
-        next.x = collider.x + (dx / separation) * minimum
-        next.z = collider.z + (dz / separation) * minimum
+        const normalX = dx / separation
+        const normalZ = dz / separation
+        next.x = collider.x + normalX * minimum
+        next.z = collider.z + normalZ * minimum
+        const inwardSpeed = horizontalVelocity.current.x * normalX + horizontalVelocity.current.z * normalZ
+        if (inwardSpeed < 0) {
+          horizontalVelocity.current.x -= inwardSpeed * normalX
+          horizontalVelocity.current.z -= inwardSpeed * normalZ
+        }
       }
     }
     position.current.x = next.x
@@ -949,14 +987,29 @@ function Player() {
       position.current.y = standingY
       verticalVelocity.current = 0
       grounded.current = true
-      if (!wasGrounded && landingSpeed > 1.1) playGameSfx('land', liveUi.audioVolumes.master * liveUi.audioVolumes.effects)
+      if (!wasGrounded && landingSpeed > 1.1) {
+        landingAnimationUntil.current = performance.now() + 340
+        playGameSfx('land', liveUi.audioVolumes.master * liveUi.audioVolumes.effects)
+      }
     } else {
       grounded.current = false
     }
-    const requestedAnimation = interactionProgress > 0 && prompt ? 'Armature|Interact' : !grounded.current ? 'Armature|Idle_Loop' : sprinting ? 'Armature|Sprint_Loop' : moving ? 'Armature|Walk_Loop' : 'Armature|Idle_Loop'
+    const requestedAnimation = interactionProgress > 0 && prompt
+      ? 'Armature|Interact'
+      : !grounded.current
+        ? 'Armature|Crouch_Idle_Loop'
+        : performance.now() < landingAnimationUntil.current
+          ? 'Armature|Jump_Land'
+          : sprinting && locomotionSpeed > 4.6
+            ? 'Armature|Sprint_Loop'
+            : moving ? 'Armature|Walk_Loop' : 'Armature|Idle_Loop'
     if (requestedAnimation !== activeAnimation.current || !actions[requestedAnimation]?.isRunning()) {
       actions[activeAnimation.current]?.fadeOut(0.18)
-      actions[requestedAnimation]?.reset().fadeIn(0.18).play()
+      const nextAction = actions[requestedAnimation]
+      if (nextAction) {
+        nextAction.timeScale = requestedAnimation === 'Armature|Jump_Land' ? 3.4 : 1
+        nextAction.reset().fadeIn(0.18).play()
+      }
       activeAnimation.current = requestedAnimation
     }
     const locomotion = grounded.current && moving && (requestedAnimation === 'Armature|Walk_Loop' || requestedAnimation === 'Armature|Sprint_Loop') ? requestedAnimation : ''
@@ -981,7 +1034,7 @@ function Player() {
       const angle = Math.atan2(cameraForward.x, cameraForward.z)
       if (playerRoot.current) playerRoot.current.rotation.y = angle
     } else if (moving) {
-      const angle = Math.atan2(direction.x, direction.z)
+      const angle = Math.atan2(horizontalVelocity.current.x, horizontalVelocity.current.z)
       if (playerRoot.current) playerRoot.current.rotation.y = angle
     }
     if (visual.current) {
