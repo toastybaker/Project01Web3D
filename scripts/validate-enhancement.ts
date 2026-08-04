@@ -53,8 +53,27 @@ for (const item of ['basket', 'reinforced-basket', 'master-basket'] as const) {
 assert.equal(enhancedBasketCapacity('master-basket', 6), Math.floor(BASKET_CONFIG['master-basket'].capacity * 1.13))
 assert.equal(basketCapacityBonus(10), .40)
 assert.equal(miningSpeedBonus(10), .20)
-assert.equal(canMineOre('worn-pickaxe', 'gold-ore'), false)
-assert.equal(canMineOre('crystal-pickaxe', 'ancient-ore'), true)
+const oreIds = ['copper-ore', 'iron-ore', 'silver-ore', 'gold-ore', 'crystal-ore', 'ancient-ore'] as const
+for (const [item, config] of Object.entries(PICKAXE_CONFIG) as Array<[keyof typeof PICKAXE_CONFIG, (typeof PICKAXE_CONFIG)[keyof typeof PICKAXE_CONFIG]]>) {
+  for (const ore of oreIds) assert.equal(canMineOre(item, ore), (config.unlocks as readonly string[]).includes(ore), `${item} ore limit drifted`)
+}
+const multiplierLimits: Record<EnhanceableItem, number> = {
+  'worn-pickaxe': 2,
+  'iron-pickaxe': 3,
+  'steel-pickaxe': 4,
+  'crystal-pickaxe': 5,
+  basket: 3,
+  'reinforced-basket': 4,
+  'master-basket': 5,
+  'harvest-charm': 3,
+}
+for (const [item, maximum] of Object.entries(multiplierLimits) as Array<[EnhanceableItem, number]>) {
+  assert.equal(Math.max(...fortuneFor(item, 10).map((entry) => entry.bonus + 1)), maximum, `${item} Fortune limit drifted`)
+  assert.equal(enhancementLevel({ [item]: 99 }, item), 10, `${item} level cap drifted`)
+}
+for (const item of ['basket', 'reinforced-basket', 'master-basket'] as const) {
+  assert.equal(enhancedBasketCapacity(item, 10), Math.floor(BASKET_CONFIG[item].capacity * 1.4), `${item} capacity cap drifted`)
+}
 assert.ok(miningDuration('worn-pickaxe', 'copper-ore', 10) < miningDuration('worn-pickaxe', 'copper-ore', 0))
 
 const successInventory = fullInventory('iron-pickaxe', 1)

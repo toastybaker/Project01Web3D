@@ -972,7 +972,6 @@ function EnhancementPanel() {
   const owned = ENHANCEABLE_ITEMS.filter((item) => (inventory[item] ?? 0) > 0)
   const [selected, setSelected] = useState<EnhanceableItem>('worn-pickaxe')
   const [stabilized, setStabilized] = useState(false)
-  const [confirming, setConfirming] = useState(false)
   const [resultFx, setResultFx] = useState<{ id: number; success: boolean } | null>(null)
   useEffect(() => {
     if (open && !owned.includes(selected) && owned[0]) setSelected(owned[0])
@@ -992,7 +991,6 @@ function EnhancementPanel() {
   const isBasketItem = selected === 'basket' || selected === 'reinforced-basket' || selected === 'master-basket'
   const attempt = () => {
     if (!affordable) return
-    if (downgradeRisk && !confirming) { setConfirming(true); return }
     const before = enhancementLevel(useGameStore.getState().enhancements, selected)
     enhance(selected, useStabilization)
     const after = enhancementLevel(useGameStore.getState().enhancements, selected)
@@ -1001,7 +999,6 @@ function EnhancementPanel() {
     const effect = { id: Date.now(), success }
     setResultFx(effect)
     window.setTimeout(() => setResultFx((active) => active?.id === effect.id ? null : active), 900)
-    setConfirming(false)
   }
   const secondaryCurrent = isPickaxeItem
     ? `+${Math.round(miningSpeedBonus(current) * 1000) / 10}%`
@@ -1021,10 +1018,8 @@ function EnhancementPanel() {
     : missingMaterials
       ? 'NEED MATERIALS'
       : cash < requirements.coins
-        ? 'NEED COINS'
-        : confirming
-          ? 'CONFIRM UPGRADE'
-          : 'UPGRADE'
+      ? 'NEED COINS'
+        : 'UPGRADE'
   const failureLabel = atMax || enhancementChance(target) >= 1
     ? null
     : useStabilization || target <= 3
@@ -1037,7 +1032,7 @@ function EnhancementPanel() {
         <aside className="enhancement-items" aria-label="Gear">
           {owned.map((item) => {
             const itemLevel = enhancementLevel(enhancements, item)
-            return <button className={item === selected ? 'active' : ''} key={item} onClick={() => { setSelected(item); setStabilized(false); setConfirming(false) }}>
+            return <button className={item === selected ? 'active' : ''} key={item} onClick={() => { setSelected(item); setStabilized(false) }}>
               <img src={ITEMS[item].icon} alt="" />
               <span><strong>{ITEMS[item].name}</strong><small>+{itemLevel}</small></span>
             </button>
@@ -1070,7 +1065,7 @@ function EnhancementPanel() {
             })}</div>
             <div className={`enhancement-cost ${cash < requirements.coins ? 'missing' : ''}`}><Icon name="coin" /><span><small>COST</small><strong>{formatCoins(requirements.coins, true)}</strong></span></div>
           </div>}
-          {stabilizationAvailable && <button className={`stabilize-toggle ${useStabilization ? 'active' : ''}`} onClick={() => { setStabilized((value) => !value); setConfirming(false) }}>{useStabilization ? `PROTECTED +${current}` : `PROTECT +${current}`}</button>}
+          {stabilizationAvailable && <button className={`stabilize-toggle ${useStabilization ? 'active' : ''}`} onClick={() => setStabilized((value) => !value)}>{useStabilization ? `PROTECTED +${current}` : `PROTECT +${current}`}</button>}
           {failureLabel && <small className={`enhancement-fail ${downgradeRisk && !useStabilization ? 'danger' : ''}`}>{failureLabel}</small>}
           <button className="enhance-button" disabled={!affordable} onClick={attempt}>{actionLabel}</button>
         </section>

@@ -12,6 +12,7 @@ const storage = {
 Object.assign(globalThis, { localStorage: storage, window: { location: { search: '?gate=final' } } })
 
 const { useGameStore } = await import('../src/game/store')
+const { ITEMS } = await import('../src/game/items')
 const { activeRareForageIds } = await import('../src/game/config')
 const { FARM_RUSH_MAX_ORDERS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, farmRushOrders, minigameMilestones, minigameRewardPackage, scheduledMinigame } = await import('../src/game/minigame')
 
@@ -159,6 +160,23 @@ for (let ticket = 0; ticket < 10; ticket += 1) {
   useGameStore.getState().buyLotteryTicket()
 }
 assert.equal(useGameStore.getState().lotteryTickets.length, 10, 'active lottery tickets are never discarded by the UI history cap')
+
+const uniqueEquipment = [
+  ['iron-pickaxe', 'mine'], ['steel-pickaxe', 'mine'], ['crystal-pickaxe', 'mine'],
+  ['basket', 'forage'], ['reinforced-basket', 'forage'], ['master-basket', 'forage'], ['harvest-charm', 'farm'],
+] as const
+for (const [item, shopKind] of uniqueEquipment) {
+  const price = ITEMS[item].buyPrice ?? 0
+  useGameStore.setState({ cash: 100_000_000, inventory: {}, hotbar: Array(9).fill(null), shopKind, enhancements: {}, shopStock: { ...useGameStore.getState().shopStock, [item]: 8 } })
+  useGameStore.getState().trade(item, 10)
+  assert.equal(useGameStore.getState().inventory[item], 1, `${item} purchase limit must be one per player`)
+  assert.equal(useGameStore.getState().cash, 100_000_000 - price, `${item} charges for exactly one tool`)
+  assert.equal(useGameStore.getState().enhancements[item], 0, `${item} starts at +0`)
+  const cashAfterFirst = useGameStore.getState().cash
+  useGameStore.getState().trade(item, 1)
+  assert.equal(useGameStore.getState().inventory[item], 1, `${item} cannot be duplicated`)
+  assert.equal(useGameStore.getState().cash, cashAfterFirst, `${item} duplicate attempt cannot charge coins`)
+}
 
 useGameStore.setState({
   sessionSeed: 445566,
