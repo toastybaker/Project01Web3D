@@ -973,7 +973,7 @@ function oreNode(id, x, z) {
   group.position.set(x, mineGroundHeight(x, z), z)
   group.position.y -= 0.04
   // Ore beds are ankle-height interaction targets, not navigation blockers.
-  const seed = Number(id.slice(-3))
+  const seed = Number(id.match(/\d+$/)?.[0] ?? 0)
   const bed = mesh(new THREE.DodecahedronGeometry(0.78, 1), mats.mineWall, 'Embedded Ore Bed')
   bed.scale.set(1.15, 0.22, 0.9)
   bed.position.y = 0.13
@@ -1789,20 +1789,27 @@ function miningRushScene() {
   const bayCenters = [[-36, 18], [-12, 18], [12, 18], [36, 18], [-36, -18], [-12, -18], [12, -18], [36, -18]]
   const baySites = []
   bayCenters.forEach(([bx, bz], bayIndex) => {
-    scene.add(mineTrack(bx, bz + 10.8, 11.5, Math.PI / 2), caveLantern(bx - 9.2, bz + 8.6, 1), caveLantern(bx + 9.2, bz - 8.6, -1))
-    scene.add(caveRubble(bx - 10.6, bz - 10.3, .82, 9800 + bayIndex), caveRubble(bx + 10.4, bz + 10.2, .86, 9850 + bayIndex))
+    scene.add(caveLantern(bx - 9.2, bz + 8.6, 1), caveLantern(bx + 9.2, bz - 8.6, -1))
+    scene.add(
+      caveRubble(bx - 10.6, bz - 10.3, .82, 9800 + bayIndex),
+      caveRubble(bx + 10.4, bz + 10.2, .86, 9850 + bayIndex),
+      caveRubble(bx - 9.8, bz + 1.2, .68, 9860 + bayIndex),
+      caveRubble(bx + 9.7, bz - 2.4, .72, 9870 + bayIndex),
+      caveRubble(bx + (bayIndex % 2 ? 4.8 : -4.8), bz - 10.1, .76, 9880 + bayIndex),
+    )
     const sites = []
     for (let row = 0; row < 5; row += 1) for (let column = 0; column < 5; column += 1) {
       const socket = row * 5 + column + bayIndex * 25
-      const x = bx + (column - 2) * 3.8 + (seeded(socket, 9911) - .5) * .72
-      const z = bz + 6.9 - row * 3.45 + (seeded(socket, 9921) - .5) * .72
+      const x = bx + (column - 2) * 3.7 + (seeded(socket, 9911) - .5) * 1.65 + Math.sin(row * 1.71 + column * .43) * .38
+      const z = bz + 6.75 - row * 3.4 + (seeded(socket, 9921) - .5) * 1.45 + (column % 2 ? .32 : -.32)
       sites.push([x, z])
       const node = oreNode(`RushOre${bayIndex}_${String(row * 5 + column).padStart(2, '0')}`, x, z)
       node.position.set(x, floorHeight(x, z) + .04, z)
       node.traverse((child) => {
         if (!child.isMesh) return
-        if (child.name === 'Embedded Ore Bed') { child.scale.set(1.16, .38, 1); child.position.y = .19 }
-        if (child.name === 'Ore Boulder') { child.scale.multiply(new THREE.Vector3(1.28, 1.72, 1.28)); child.position.y += .28 }
+        if (child.name === 'Embedded Ore Bed') { child.scale.set(.86, .16, .74); child.position.y = .11 }
+        if (child.name === 'Ore Boulder') { child.scale.multiply(new THREE.Vector3(1.32, 2.18, 1.32)); child.position.y += .34 }
+        if (child.name === 'Ore Vein') { child.scale.multiply(new THREE.Vector3(2.55, 2.1, 2.35)); child.position.y += .5 }
       })
       scene.add(node)
     }
@@ -1819,18 +1826,37 @@ function miningRushScene() {
 function farmRushScene() {
   const scene = new THREE.Scene()
   scene.name = 'Sunmeadow Kitchen Rush Fields'
-  const floorHeight = (x, z) => Math.sin(x * .045) * .34 + Math.cos(z * .052) * .28 + Math.sin((x - z) * .085) * .1
-  scene.add(maskedTerrain('Sunmeadow Rush Terrain', [-52, 52, -36, 42], 1.1, floorHeight, mats.ground, () => true))
+  const plots = [[-36, 16], [-12, 16], [12, 16], [36, 16], [-36, -16], [-12, -16], [12, -16], [36, -16]]
+  const rollingHeight = (x, z) => Math.sin(x * .045) * .34 + Math.cos(z * .052) * .28 + Math.sin((x - z) * .085) * .1
+  const floorHeight = (x, z) => {
+    let height = rollingHeight(x, z)
+    for (const [plotX, plotZ] of plots) {
+      const distance = Math.max(Math.abs(x - plotX), Math.abs(z - plotZ))
+      const influence = 1 - smoothstep(6.15, 9.25, distance)
+      height = THREE.MathUtils.lerp(height, rollingHeight(plotX, plotZ), influence)
+    }
+    return height
+  }
+  const plotMarkerMaterial = material('Assigned Plot Copper', 0xc8974f, { roughness: 0.68, metalness: 0.08 })
+  scene.add(maskedTerrain('Sunmeadow Rush Terrain', [-52, 52, -36, 42], 1.1, floorHeight, mats.ground, (x, z) => !plots.some(([plotX, plotZ]) => Math.max(Math.abs(x - plotX), Math.abs(z - plotZ)) < 5.45)))
   scene.add(pathRibbon([[-48, 0], [-24, 0], [0, 0], [24, 0], [48, 0]], 2.1, 'Sunmeadow Rush Lane', floorHeight, mats.path))
   scene.add(pathRibbon([[-36, 34], [-36, 0], [-36, -28]], 1.5, 'Sunmeadow West Work Lane', floorHeight, mats.path))
   scene.add(pathRibbon([[-12, 34], [-12, 0], [-12, -28]], 1.5, 'Sunmeadow Inner Work Lane', floorHeight, mats.path))
   scene.add(pathRibbon([[12, 34], [12, 0], [12, -28]], 1.5, 'Sunmeadow East Work Lane', floorHeight, mats.path))
   scene.add(pathRibbon([[36, 34], [36, 0], [36, -28]], 1.5, 'Sunmeadow Far Work Lane', floorHeight, mats.path))
-  const plots = [[-36, 16], [-12, 16], [12, 16], [36, 16], [-36, -16], [-12, -16], [12, -16], [36, -16]]
   const cellsByBay = []
   plots.forEach(([x, z], index) => {
     const parcel = farmParcel(x, z, index)
     parcel.position.set(x, floorHeight(x, z), z)
+    parcel.traverse((object) => {
+      if (object.name.includes('Soil Bed')) object.position.y = 0.045
+      if (object.name === 'Farm Gate Path') object.position.y = 0.035
+    })
+    for (let furrow = -2; furrow <= 2; furrow += 1) {
+      const strip = mesh(new RoundedBoxGeometry(10.8, 0.035, 0.15, 3, 0.045), mats.soilFurrow, 'Kitchen Rush Tilled Furrow')
+      strip.position.set(0, 0.11, furrow * 2.05)
+      parcel.add(strip)
+    }
     scene.add(parcel)
     const furnace = farmFurnacePad(x - 8.8, z + 4.8, 80 + index)
     furnace.name = `Rush Farm Furnace ${index + 1}`
@@ -1840,6 +1866,54 @@ function farmRushScene() {
       else delete object.userData.furnaceIndex
     })
     scene.add(furnace)
+    const marker = new THREE.Group()
+    marker.name = `RushPlotMarker${index}`
+    marker.userData.rushPlot = index
+    marker.position.set(x, floorHeight(x, z), z)
+    const north = mesh(new RoundedBoxGeometry(12.15, 0.1, 0.16, 4, 0.06), plotMarkerMaterial, 'Assigned Plot Border')
+    north.position.set(0, 0.12, -6.15)
+    const south = north.clone()
+    south.position.z = 6.15
+    const west = mesh(new RoundedBoxGeometry(0.16, 0.1, 12.15, 4, 0.06), plotMarkerMaterial, 'Assigned Plot Border')
+    west.position.set(-6.15, 0.12, 0)
+    const east = west.clone()
+    east.position.x = 6.15
+    marker.add(north, south, west, east)
+    for (const [cornerX, cornerZ] of [[-6.15, -6.15], [6.15, -6.15], [-6.15, 6.15], [6.15, 6.15]]) {
+      const stake = mesh(new THREE.CylinderGeometry(0.075, 0.09, 0.58, 7), mats.bark, 'Assigned Plot Stake')
+      stake.position.set(cornerX, 0.29, cornerZ)
+      const cap = mesh(new THREE.OctahedronGeometry(0.14, 0), plotMarkerMaterial, 'Assigned Plot Marker')
+      cap.position.set(cornerX, 0.67, cornerZ)
+      marker.add(stake, cap)
+    }
+    const gateLeft = mesh(new THREE.CylinderGeometry(0.1, 0.13, 1.9, 7), mats.bark, 'Assigned Plot Gate Post')
+    gateLeft.position.set(-1.3, 0.95, 7.05)
+    const gateRight = gateLeft.clone()
+    gateRight.position.x = 1.3
+    const gateTop = mesh(new RoundedBoxGeometry(2.8, 0.18, 0.18, 4, 0.07), plotMarkerMaterial, 'Assigned Plot Gate Marker')
+    gateTop.position.set(0, 1.84, 7.05)
+    const gateBadge = mesh(new THREE.OctahedronGeometry(0.25, 0), plotMarkerMaterial, 'Assigned Plot Badge')
+    gateBadge.position.set(0, 2.18, 7.05)
+    const beacon = new THREE.Group()
+    beacon.name = 'Assigned Plot Beacon'
+    beacon.position.set(0, 2.85, 0)
+    const beaconRing = mesh(new THREE.TorusGeometry(0.72, 0.09, 8, 22), mats.furnaceFire, 'Assigned Plot Hover Ring')
+    beaconRing.rotation.x = Math.PI / 2
+    const beaconGem = mesh(new THREE.OctahedronGeometry(0.36, 0), mats.furnaceFire, 'Assigned Plot Hover Gem')
+    beaconGem.position.y = -0.08
+    const pointer = mesh(new THREE.ConeGeometry(0.24, 0.52, 7), mats.furnaceFire, 'Assigned Plot Pointer')
+    pointer.position.y = -0.88
+    pointer.rotation.z = Math.PI
+    beacon.add(beaconRing, beaconGem, pointer)
+    marker.add(gateLeft, gateRight, gateTop, gateBadge, beacon)
+    marker.traverse((child) => {
+      if (!child.isMesh) return
+      child.geometry = child.geometry.clone()
+      const positions = child.geometry.getAttribute('position')
+      positions.setX(0, positions.getX(0) + (index + 1) * 1e-7)
+      positions.needsUpdate = true
+    })
+    scene.add(marker)
     const cells = []
     for (let row = 0; row < 5; row += 1) for (let column = 0; column < 5; column += 1) cells.push([x + (column - 2) * 2.12, z + (row - 2) * 2.12])
     cellsByBay.push(cells)
@@ -1853,7 +1927,7 @@ function farmRushScene() {
     if (index % 2 === 0) scene.add(natureBush(x + (index % 3 - 1) * 1.35, z - .9, .75 + seeded(index, 9230) * .35, index, floorHeight, index + 230))
   }
   scene.add(
-    ...plots.map(([x, z], bay) => anchor(`Spawn${bay}`, [x, floorHeight(x, z + 12), z + 12])),
+    ...plots.map(([x, z], bay) => anchor(`Spawn${bay}`, [x, floorHeight(x, z + 9.5), z + 9.5])),
     ...plots.map(([x, z], bay) => anchor(`FarmRushCooker${bay}`, [x - 8.8, floorHeight(x - 8.8, z + 4.8), z + 4.8])),
     ...cellsByBay.flatMap((cells, bay) => cells.map(([x, z], index) => anchor(`FarmRushCell${bay}_${String(index).padStart(2, '0')}`, [x, floorHeight(x, z) + .15, z]))),
   )
@@ -1882,12 +1956,12 @@ function forageRushScene() {
   eventApples.forEach(([x,z], index) => {
     const id = `ForageRushApple${String(index + 100).padStart(3, '0')}`
     scene.add(fruitBirch(id, x, z, 1.02 + (index % 3) * .06, index * .73, forageGroundHeight, false, index + 810))
-    scene.add(anchor(id, [x, forageGroundHeight(x, z) + 2.45, z]))
+    scene.add(anchor(id, [x, forageGroundHeight(x, z), z]))
   })
   eventOranges.forEach(([x,z], index) => {
     const id = `ForageRushOrange${String(index + 100).padStart(3, '0')}`
     scene.add(fruitBirch(id, x, z, .98 + (index % 3) * .06, index * .81, forageGroundHeight, true, index + 830))
-    scene.add(anchor(id, [x, forageGroundHeight(x, z) + 2.45, z]))
+    scene.add(anchor(id, [x, forageGroundHeight(x, z), z]))
   })
   eventTruffles.forEach(([x,z], index) => {
     const id = `ForageRushTruffle${String(index + 20).padStart(3, '0')}`
@@ -1909,10 +1983,10 @@ function forageRushScene() {
 async function exportScene(scene, filename) {
   let dynamicResourceIndex = 0
   scene.traverse((object) => {
-    if (!object.name.startsWith('Resource_ForageApple') && !object.name.startsWith('Resource_ForageOrange') && !object.name.startsWith('Resource_ForageRush') && !object.name.startsWith('Resource_RushOre')) return
+    if (!object.name.startsWith('Resource_ForageApple') && !object.name.startsWith('Resource_ForageOrange') && !object.name.startsWith('Resource_ForageTruffle') && !object.name.startsWith('Resource_ForageDiscovery') && !object.name.startsWith('Resource_ForageRush') && !object.name.startsWith('Resource_RushOre')) return
     const marker = ++dynamicResourceIndex
     object.traverse((child) => {
-      if (!child.isMesh || (!child.name.includes('Woodland Apples') && !child.name.includes('Woodland Oranges') && !object.name.startsWith('Resource_RushOre') && !object.name.startsWith('Resource_ForageRush'))) return
+      if (!child.isMesh || (!child.name.includes('Woodland Apples') && !child.name.includes('Woodland Oranges') && !object.name.startsWith('Resource_ForageTruffle') && !object.name.startsWith('Resource_ForageDiscovery') && !object.name.startsWith('Resource_RushOre') && !object.name.startsWith('Resource_ForageRush'))) return
       child.geometry = child.geometry.clone()
       const position = child.geometry.getAttribute('position')
       position.setX(0, position.getX(0) + marker * 1e-7)
@@ -1957,7 +2031,10 @@ async function exportScene(scene, filename) {
     if (mat.getName() === 'Mine Path') mat.setBaseColorTexture(mineTexture).setBaseColorFactor([0.92, 0.82, 0.66, 1]).setRoughnessFactor(1).setMetallicFactor(0)
     if (['Mine Wall', 'Mine Strata', 'Cavern Roof Stone', 'Cavern Perimeter Stone'].includes(mat.getName())) mat.setBaseColorTexture(mineTexture).setBaseColorFactor(mat.getName() === 'Mine Strata' ? [0.5, 0.48, 0.45, 1] : [0.68, 0.7, 0.66, 1]).setRoughnessFactor(1).setMetallicFactor(0)
   }
-  await document.transform(dedup(), instance({ min: filename === 'forage.glb' ? 3 : 5 }))
+  // Event resources must keep their authored parent hierarchy so runtime state can
+  // recolor/hide one player's ore or crop without affecting every matching mesh.
+  if (filename === 'farm-rush.glb' || filename === 'mining-rush.glb') await document.transform(dedup())
+  else await document.transform(dedup(), instance({ min: filename === 'forage.glb' ? 3 : 5 }))
   await io.write(outputPath, document)
   console.log(`Authored ${filename}`)
 }

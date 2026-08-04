@@ -5,9 +5,9 @@ import { commodityPrice, formatCoins, lotteryJackpot, lotteryPrice, lotteryTwoMa
 import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, MATCH_CONFIG, PICKAXE_CONFIG, type CommodityId } from './game/config'
 import { canMineOre, miningDuration, oreKindAtDepth, requiredPickaxe } from './game/ore'
 import { onMultiplayer, sendMultiplayer } from './game/multiplayer'
-import { lotteryDraw, preparedFoodValue, secretStockOffer, useGameStore } from './game/store'
+import { economyProgressValue, lotteryDraw, preparedFoodValue, secretStockOffer, useGameStore } from './game/store'
 import { RECIPES, RECIPE_IDS, type RecipeId } from './game/recipes'
-import { FARM_RUSH_CROPS, FORAGE_RUSH_REQUIREMENTS, MINIGAME_DURATION, farmRushOrders, miningRushOre, type FarmRushTool, type ForageRushKind } from './game/minigame'
+import { FARM_RUSH_CROPS, FARM_RUSH_ORDER_LIFETIME_MS, FORAGE_RUSH_REQUIREMENTS, MINIGAME_DURATION, MINING_RUSH_POINTS, farmRushOrders, minigameRewardPackage, miningRushOre, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MiningRushOre } from './game/minigame'
 
 function forageItem(anchorId: string): ItemId | null {
   if (anchorId.startsWith('ForageApple')) return 'apple'
@@ -144,6 +144,7 @@ function HUD() {
   const restock = useGameStore((state) => state.restockSeconds)
   const round = useGameStore((state) => state.roundSeconds)
   const roundNumber = useGameStore((state) => state.roundNumber)
+  const sessionDuration = useGameStore((state) => state.sessionDurationSeconds)
   const weather = useGameStore((state) => state.weather)
   const weatherSeconds = useGameStore((state) => state.weatherSeconds)
   const marketCorrectionName = useGameStore((state) => state.marketCorrectionName)
@@ -157,7 +158,7 @@ function HUD() {
   }, [tickGame])
   const minutes = Math.floor(restock / 60).toString().padStart(2, '0')
   const seconds = (restock % 60).toString().padStart(2, '0')
-  const remaining = sessionSecondsRemaining(roundNumber, round)
+  const remaining = sessionSecondsRemaining(roundNumber, round, sessionDuration)
   const roundMinutes = Math.floor(remaining / 60).toString().padStart(2, '0')
   const roundSeconds = (remaining % 60).toString().padStart(2, '0')
   const locations = { hub: 'LANTERN HOLLOW', forage: 'MOSSWOOD', farm: 'SUNMEADOW', mine: 'STONEWAKE' }
@@ -177,17 +178,53 @@ function HUD() {
   )
 }
 
+function LobbyPanel() {
+  const started = useGameStore((state) => state.sessionStarted)
+  const connected = useGameStore((state) => state.lobbyConnected)
+  const isHost = useGameStore((state) => state.isHost)
+  const duration = useGameStore((state) => state.sessionDurationSeconds)
+  const nickname = useGameStore((state) => state.nickname)
+  const players = useGameStore((state) => state.onlinePlayers)
+  const setNickname = useGameStore((state) => state.setNickname)
+  const [draftName, setDraftName] = useState(nickname)
+  if (started) return null
+  const chooseDuration = (seconds: number) => {
+    if (!isHost) return
+    sendMultiplayer('lobby:update', { durationSeconds: seconds })
+  }
+  const start = () => {
+    if (!isHost) return
+    sendMultiplayer('lobby:start', {})
+  }
+  return <div className="modal-scrim lobby-scrim"><section className="panel lobby-panel">
+    <header><div className="panel-title"><span className="lobby-mark">P1</span><span>WOODLAND RUN</span></div><b>{players.length + 1}/32</b></header>
+    <label className="lobby-name"><span>NAME</span><input aria-label="Nickname" value={draftName} maxLength={18} onChange={(event) => setDraftName(event.target.value)} onBlur={() => setNickname(draftName)} onKeyDown={(event) => { if (event.key === 'Enter') { setNickname(draftName); event.currentTarget.blur() } }} /></label>
+    <div className="lobby-duration"><span>TIME</span><div>{MATCH_CONFIG.selectableDurationsSeconds.map((seconds) => <button className={duration === seconds ? 'active' : ''} disabled={!isHost} key={seconds} onClick={() => chooseDuration(seconds)}>{seconds / 60}</button>)}</div></div>
+    {isHost ? <button className="lobby-start" disabled={!connected} onClick={start}>{connected ? 'START GAME' : 'CONNECTING'}</button> : <div className="lobby-wait">{connected ? 'WAITING FOR HOST' : 'CONNECTING'}</div>}
+  </section></div>
+}
+
 function Hotbar() {
-  const hotbar = useGameStore((state) => state.hotbar)
-  const inventory = useGameStore((state) => state.inventory)
-  const selected = useGameStore((state) => state.selectedHotbar)
+  const realHotbar = useGameStore((state) => state.hotbar)
+  const realInventory = useGameStore((state) => state.inventory)
+  const minigameOpen = useGameStore((state) => state.minigameOpen)
+  const minigameKind = useGameStore((state) => state.minigameKind)
+  const farmRushInventory = useGameStore((state) => state.farmRushInventory)
+  const forageRushInventory = useGameStore((state) => state.forageRushInventory)
+  const selectedHotbar = useGameStore((state) => state.selectedHotbar)
+  const farmRushTool = useGameStore((state) => state.farmRushTool)
   const setSelected = useGameStore((state) => state.setSelectedHotbar)
+  const setFarmRushTool = useGameStore((state) => state.setFarmRushTool)
   const setSlot = useGameStore((state) => state.setHotbarSlot)
   const swapSlots = useGameStore((state) => state.swapHotbarSlots)
   const inspectTickets = useGameStore((state) => state.setTicketInspectOpen)
   const inspectNotes = useGameStore((state) => state.setNoteInspectOpen)
   const setTravelOpen = useGameStore((state) => state.setTravelOpen)
   const useCookbookBox = useGameStore((state) => state.useCookbookBox)
+  const eventView = minigameOpen ? eventInventoryView(minigameKind, farmRushInventory, forageRushInventory) : null
+  const hotbar = eventView?.hotbar ?? realHotbar
+  const inventory = eventView?.inventory ?? realInventory
+  const selected = minigameOpen && minigameKind === 'farm' ? FARM_RUSH_TOOLS.indexOf(farmRushTool) : minigameOpen ? 0 : selectedHotbar
   return (
     <div className="hotbar" aria-label="Hotbar">
       {hotbar.map((storedItem, index) => {
@@ -195,29 +232,34 @@ function Hotbar() {
         return <button
           className={`hotbar-slot ${index === selected ? 'selected' : ''}`}
           key={index}
-          onClick={() => setSelected(index)}
-          onDoubleClick={() => setSlot(index, null)}
+          onClick={() => {
+            if (minigameOpen && minigameKind === 'farm' && FARM_RUSH_TOOLS[index]) setFarmRushTool(FARM_RUSH_TOOLS[index])
+            else if (!minigameOpen) setSelected(index)
+          }}
+          onDoubleClick={() => { if (!minigameOpen) setSlot(index, null) }}
           onContextMenu={(event) => {
             event.preventDefault()
+            if (minigameOpen) return
             if (item === 'lottery-ticket') inspectTickets(true)
             if (item === 'information-note') inspectNotes(true)
             if (item === 'home-charm') setTravelOpen(true)
             if (item === 'cookbook-box') useCookbookBox()
           }}
-          onDragOver={(event) => event.preventDefault()}
+          onDragOver={(event) => { if (!minigameOpen) event.preventDefault() }}
           onDrop={(event) => {
+            if (minigameOpen) return
             event.preventDefault()
             const sourceSlot = event.dataTransfer.getData('hotbar-slot')
             const droppedItem = event.dataTransfer.getData('item-id') as ItemId
             if (sourceSlot) swapSlots(Number(sourceSlot), index)
             else if (droppedItem) setSlot(index, droppedItem)
           }}
-          draggable={Boolean(item)}
-          onDragStart={(event) => { event.dataTransfer.setData('hotbar-slot', String(index)) }}
+          draggable={!minigameOpen && Boolean(item)}
+          onDragStart={(event) => { if (!minigameOpen) event.dataTransfer.setData('hotbar-slot', String(index)) }}
           aria-label={item ? `${index + 1}: ${ITEMS[item].name}` : `Slot ${index + 1}`}
         >
           {item && <img src={ITEMS[item].icon} alt={ITEMS[item].name} />}
-          {item && (inventory[item] ?? 0) > 1 && <span className="quantity">{inventory[item]}</span>}
+          {item && minigameOpen && minigameKind === 'farm' && index < FARM_RUSH_TOOLS.length - 1 ? <span className="quantity">∞</span> : item && (inventory[item] ?? 0) > 1 && <span className="quantity">{inventory[item]}</span>}
           {item && <HoverTip lines={itemTooltip(item)} />}
         </button>
       })}
@@ -226,37 +268,27 @@ function Hotbar() {
 }
 
 const FARM_RUSH_TOOLS: FarmRushTool[] = [...FARM_RUSH_CROPS, 'water']
-function FarmRushHotbar() {
-  const tool = useGameStore((state) => state.farmRushTool)
-  const setTool = useGameStore((state) => state.setFarmRushTool)
-  return <div className="hotbar rush-hotbar" aria-label="Event tools">{FARM_RUSH_TOOLS.map((id) => {
-    const itemId = id === 'water' ? 'water-can' : `${id}-seeds` as ItemId
-    return <button key={id} className={`hotbar-slot ${tool === id ? 'selected' : ''}`} onClick={() => setTool(id)} aria-label={id === 'water' ? 'Watering Can' : ITEMS[itemId].name}>
-      <img src={ITEMS[itemId].icon} alt="" />
-      {id !== 'water' && <span className="quantity">∞</span>}
-    </button>
-  })}</div>
-}
 
-function MinigameHotbar() {
-  const kind = useGameStore((state) => state.minigameKind)
-  const forageInventory = useGameStore((state) => state.forageRushInventory)
-  if (kind === 'farm') return <FarmRushHotbar />
-  const slots: { id: ItemId; quantity?: number; label: string }[] = kind === 'mining'
-    ? [{ id: 'crystal-pickaxe', label: 'Event pickaxe' }]
-    : [
-        { id: 'apple', quantity: forageInventory.apple, label: 'Apples' },
-        { id: 'orange', quantity: forageInventory.orange, label: 'Oranges' },
-        { id: 'truffle', quantity: forageInventory.truffle, label: 'Truffles' },
-        { id: 'natural-discovery', quantity: forageInventory.discovery, label: 'Discoveries' },
-      ]
-  return <div className={`hotbar rush-hotbar rush-hotbar-${kind}`} aria-label="Event bag">
-    {slots.map(({ id, quantity, label }, index) => <div className={`hotbar-slot ${index === 0 ? 'selected' : ''}`} key={id} aria-label={label}>
-      <img src={ITEMS[id].icon} alt="" />
-      {quantity !== undefined && quantity > 0 && <span className="quantity">{quantity}</span>}
-      <HoverTip lines={[ITEMS[id].name]} />
-    </div>)}
-  </div>
+function eventInventoryView(kind: 'mining' | 'farm' | 'forage', farmInventory: Record<string, number>, forageInventory: Record<string, number>) {
+  const hotbar: Array<ItemId | null> = Array(9).fill(null)
+  const inventory: Partial<Record<ItemId, number>> = {}
+  if (kind === 'mining') {
+    hotbar[0] = 'crystal-pickaxe'
+    inventory['crystal-pickaxe'] = 1
+  } else if (kind === 'farm') {
+    FARM_RUSH_TOOLS.forEach((tool, index) => {
+      hotbar[index] = tool === 'water' ? 'water-can' : `${tool}-seeds` as ItemId
+      inventory[hotbar[index]!] = 1
+    })
+    FARM_RUSH_CROPS.forEach((id) => { inventory[id as ItemId] = farmInventory[id] ?? 0 })
+    const collected = FARM_RUSH_CROPS.filter((id) => (farmInventory[id] ?? 0) > 0)
+    collected.slice(0, 3).forEach((id, offset) => { hotbar[6 + offset] = id as ItemId })
+  } else {
+    const forageItems: Array<[ItemId, string]> = [['apple', 'apple'], ['orange', 'orange'], ['truffle', 'truffle'], ['natural-discovery', 'discovery']]
+    forageItems.forEach(([id, key], index) => { hotbar[index] = id; inventory[id] = forageInventory[key] ?? 0 })
+  }
+  const inventoryOrder = [...hotbar, ...Object.keys(inventory).filter((id) => !hotbar.includes(id as ItemId))] as Array<ItemId | null>
+  return { hotbar, inventory, inventoryOrder }
 }
 
 function InteractionPrompt() {
@@ -293,7 +325,7 @@ function InteractionPrompt() {
     const label = ready ? 'Harvest' : cell.stage === 'empty' ? `Plant ${farmRushTool === 'water' ? '' : farmRushTool}` : cell.stage === 'planted' ? 'Water' : `${Math.max(1, Math.ceil((cell.readyAt - Date.now()) / 1000))}s`
     return <div className="interaction"><kbd>LMB</kbd><span>{label}</span></div>
   }
-  if (prompt.id.startsWith('FarmRushCooker')) return <div className="interaction"><kbd>F</kbd><span>{farmRushCooking ? farmRushCooking.readyAt <= Date.now() ? 'Serve' : `${Math.ceil((farmRushCooking.readyAt - Date.now()) / 1000)}s` : 'Cook'}</span></div>
+  if (prompt.id.startsWith('FarmRushCooker')) return <div className="interaction"><kbd>F</kbd><span>{farmRushCooking ? farmRushCooking.readyAt <= Date.now() ? 'Submit in menu' : `${Math.ceil((farmRushCooking.readyAt - Date.now()) / 1000)}s` : 'Cook'}</span></div>
   if (prompt.id.startsWith('ForageRush')) return <div className="interaction"><kbd>F</kbd><span>{prompt.label}</span></div>
   return <div className="interaction"><kbd>F</kbd><span>{prompt.label}</span></div>
 }
@@ -310,9 +342,13 @@ function HoverTip({ lines }: { lines: string[] | null }) {
 function InventoryPanel() {
   const open = useGameStore((state) => state.inventoryOpen)
   const toggle = useGameStore((state) => state.toggleInventory)
-  const inventory = useGameStore((state) => state.inventory)
-  const inventoryOrder = useGameStore((state) => state.inventoryOrder)
-  const hotbar = useGameStore((state) => state.hotbar)
+  const realInventory = useGameStore((state) => state.inventory)
+  const realInventoryOrder = useGameStore((state) => state.inventoryOrder)
+  const realHotbar = useGameStore((state) => state.hotbar)
+  const minigameOpen = useGameStore((state) => state.minigameOpen)
+  const minigameKind = useGameStore((state) => state.minigameKind)
+  const farmRushInventory = useGameStore((state) => state.farmRushInventory)
+  const forageRushInventory = useGameStore((state) => state.forageRushInventory)
   const moveInventorySlot = useGameStore((state) => state.moveInventorySlot)
   const equipItem = useGameStore((state) => state.equipItem)
   const inspectTickets = useGameStore((state) => state.setTicketInspectOpen)
@@ -320,6 +356,10 @@ function InventoryPanel() {
   const setTravelOpen = useGameStore((state) => state.setTravelOpen)
   const useCookbookBox = useGameStore((state) => state.useCookbookBox)
   const dragging = useRef<number | null>(null)
+  const eventView = minigameOpen ? eventInventoryView(minigameKind, farmRushInventory, forageRushInventory) : null
+  const inventory = eventView?.inventory ?? realInventory
+  const inventoryOrder = eventView?.inventoryOrder ?? realInventoryOrder
+  const hotbar = eventView?.hotbar ?? realHotbar
   if (!open) return null
   return (
     <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && toggle()}>
@@ -333,65 +373,14 @@ function InventoryPanel() {
             return <div
               className="inventory-slot"
               key={index}
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={() => { if (dragging.current !== null) moveInventorySlot(dragging.current, index); dragging.current = null }}
-            >{id && quantity > 0 && <><img draggable src={ITEMS[id].icon} alt={ITEMS[id].name} onClick={() => id === 'lottery-ticket' ? inspectTickets(true) : id === 'information-note' ? inspectNotes(true) : id === 'cookbook-box' ? useCookbookBox() : equipItem(id)} onContextMenu={(event) => { event.preventDefault(); if (id === 'lottery-ticket') inspectTickets(true); if (id === 'information-note') inspectNotes(true); if (id === 'home-charm') setTravelOpen(true); if (id === 'cookbook-box') useCookbookBox() }} onDragStart={(event) => { dragging.current = index; event.dataTransfer.setData('item-id', id) }} onDragEnd={() => { dragging.current = null }} /><span>{quantity}</span><HoverTip lines={itemTooltip(id)} /></>}</div>
+              onDragOver={(event) => { if (!minigameOpen) event.preventDefault() }}
+              onDrop={() => { if (!minigameOpen && dragging.current !== null) moveInventorySlot(dragging.current, index); dragging.current = null }}
+            >{id && quantity > 0 && <><img draggable={!minigameOpen} src={ITEMS[id].icon} alt={ITEMS[id].name} onClick={() => { if (minigameOpen) return; if (id === 'lottery-ticket') inspectTickets(true); else if (id === 'information-note') inspectNotes(true); else if (id === 'cookbook-box') useCookbookBox(); else equipItem(id) }} onContextMenu={(event) => { event.preventDefault(); if (minigameOpen) return; if (id === 'lottery-ticket') inspectTickets(true); if (id === 'information-note') inspectNotes(true); if (id === 'home-charm') setTravelOpen(true); if (id === 'cookbook-box') useCookbookBox() }} onDragStart={(event) => { if (!minigameOpen) { dragging.current = index; event.dataTransfer.setData('item-id', id) } }} onDragEnd={() => { dragging.current = null }} /><span>{minigameOpen && minigameKind === 'farm' && index < FARM_RUSH_TOOLS.length - 1 ? '∞' : quantity}</span><HoverTip lines={itemTooltip(id)} /></>}</div>
           })}
         </div>
       </section>
     </div>
   )
-}
-
-function MinigameBag() {
-  const open = useGameStore((state) => state.inventoryOpen)
-  const toggle = useGameStore((state) => state.toggleInventory)
-  const kind = useGameStore((state) => state.minigameKind)
-  const inventory = useGameStore((state) => state.inventory)
-  const inventoryOrder = useGameStore((state) => state.inventoryOrder)
-  const hotbar = useGameStore((state) => state.hotbar)
-  const forageInventory = useGameStore((state) => state.forageRushInventory)
-  const eventItems: { id: ItemId; quantity?: number; unlimited?: boolean }[] = kind === 'mining'
-    ? [{ id: 'crystal-pickaxe' }]
-    : kind === 'farm'
-      ? [...FARM_RUSH_CROPS.map((crop) => ({ id: `${crop}-seeds` as ItemId, unlimited: true })), { id: 'water-can' }]
-      : [
-          { id: 'apple', quantity: forageInventory.apple },
-          { id: 'orange', quantity: forageInventory.orange },
-          { id: 'truffle', quantity: forageInventory.truffle },
-          { id: 'natural-discovery', quantity: forageInventory.discovery },
-        ]
-  if (!open) return null
-  return <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && toggle()}>
-    <section className="panel minigame-bag">
-      <header><div className="panel-title"><Icon name="pack" /><span>BAG</span></div><CloseButton onClick={toggle} /></header>
-      <div className="minigame-bag-layout">
-        <section className="minigame-bag-section event-bag-section">
-          <small>EVENT</small>
-          <div className="event-bag-grid">
-            {eventItems.map(({ id, quantity, unlimited }) => <div className="inventory-slot" key={id}>
-              <img src={ITEMS[id].icon} alt={ITEMS[id].name} />
-              {unlimited ? <span>∞</span> : quantity !== undefined && quantity > 0 ? <span>{quantity}</span> : null}
-              <HoverTip lines={[ITEMS[id].name]} />
-            </div>)}
-          </div>
-        </section>
-        <section className="minigame-bag-section saved-bag-section">
-          <small>SAVED</small>
-          <div className="inventory-grid minigame-saved-grid" aria-label="Saved inventory">
-            {Array.from({ length: 36 }, (_, index) => {
-              const ordered = inventoryOrder[index]
-              const id = index < 9 ? hotbar[index] : ordered && !hotbar.includes(ordered) ? ordered : null
-              const quantity = id ? inventory[id] ?? 0 : 0
-              return <div className="inventory-slot" key={index}>
-                {id && quantity > 0 && <><img src={ITEMS[id].icon} alt={ITEMS[id].name} /><span>{quantity}</span><HoverTip lines={itemTooltip(id)} /></>}
-              </div>
-            })}
-          </div>
-        </section>
-      </div>
-    </section>
-  </div>
 }
 
 function ShopPanel() {
@@ -499,7 +488,8 @@ function SecretDealPanel() {
   const cash = useGameStore((state) => state.cash)
   const purchases = useGameStore((state) => state.brokerPurchases)
   if (!open || zone === 'hub') return null
-  const offers = [0, 1].map((slot) => secretStockOffer(round, prices, sessionSeed, corrections, slot))
+  const duration = useGameStore((state) => state.sessionDurationSeconds)
+  const offers = [0, 1].map((slot) => secretStockOffer(round, prices, sessionSeed, corrections, slot, duration))
   return (
     <div className="modal-scrim secret-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}>
       <section className="panel secret-panel">
@@ -758,6 +748,7 @@ function ResultsPanel() {
   const stats = useGameStore((state) => state.stats)
   const nickname = useGameStore((state) => state.nickname)
   const players = useGameStore((state) => state.onlinePlayers)
+  const duration = useGameStore((state) => state.sessionDurationSeconds)
   const [selected, setSelected] = useState(0)
   if (!complete) return null
   const leaderboard = [{ id: 'self', nickname, cash, stats }, ...players].sort((a, b) => b.cash - a.cash)
@@ -766,7 +757,7 @@ function ResultsPanel() {
     localStorage.removeItem('project01-save-v11')
     window.location.assign('/?gate=final')
   }
-  return <div className="modal-scrim results-scrim"><section className="panel results-panel"><header><div className="panel-title"><span className="results-mark">60</span><span>FINAL LEDGER</span></div></header><div className="leaderboard-list">{leaderboard.map((player, index) => <button className={selected === index ? 'active' : ''} key={player.id} onClick={() => setSelected(index)}><b>{index + 1}</b><span>{player.nickname}</span><strong>{formatCoins(player.cash, true)}</strong></button>)}</div><strong className="final-cash"><Icon name="coin" />{formatCoins(focused.cash)}</strong><div className="result-stats"><span>FORAGED<strong>{focused.stats.foraged}</strong></span><span>MINED<strong>{focused.stats.mined}</strong></span><span>HARVESTED<strong>{focused.stats.harvested}</strong></span><span>SOLD<strong>{focused.stats.sold}</strong></span></div><button onClick={restart}>NEW RUN</button></section></div>
+  return <div className="modal-scrim results-scrim"><section className="panel results-panel"><header><div className="panel-title"><span className="results-mark">{duration / 60}</span><span>FINAL LEDGER</span></div></header><div className="leaderboard-list">{leaderboard.map((player, index) => <button className={selected === index ? 'active' : ''} key={player.id} onClick={() => setSelected(index)}><b>{index + 1}</b><span>{player.nickname}</span><strong>{formatCoins(player.cash, true)}</strong></button>)}</div><strong className="final-cash"><Icon name="coin" />{formatCoins(focused.cash)}</strong><div className="result-stats"><span>FORAGED<strong>{focused.stats.foraged}</strong></span><span>MINED<strong>{focused.stats.mined}</strong></span><span>HARVESTED<strong>{focused.stats.harvested}</strong></span><span>SOLD<strong>{focused.stats.sold}</strong></span></div><button onClick={restart}>NEW RUN</button></section></div>
 }
 
 function TravelPanel() {
@@ -793,116 +784,6 @@ function ForageCapacity() {
   return <div className="forage-capacity" title={BASKET_CONFIG[carrier].name}><span>FRUIT</span><i><b style={{ width: `${Math.min(100, stored / capacity * 100)}%` }} /></i><strong>{stored}/{capacity}</strong></div>
 }
 
-function MinigamePanel() {
-  const open = useGameStore((state) => state.minigameOpen)
-  const milestone = useGameStore((state) => state.minigameMilestone)
-  const finish = useGameStore((state) => state.finishMinigame)
-  const [phase, setPhase] = useState<'warning' | 'playing' | 'waiting'>('warning')
-  const [warning, setWarning] = useState(5)
-  const [seconds, setSeconds] = useState(165)
-  const [score, setScore] = useState(0)
-  const [combo, setCombo] = useState(0)
-  const [progress, setProgress] = useState(0)
-  const [sockets, setSockets] = useState(() => Array.from({ length: 25 }, (_, index) => ({ kind: legacyMiningRushOre(20 * 60, index, 0), generation: 0, readyAt: 0 })))
-  const mining = useRef<{ index: number; startedAt: number } | null>(null)
-  const miningFrame = useRef<number | null>(null)
-  const lastMineAt = useRef(0)
-  const submitted = useRef(false)
-
-  useEffect(() => {
-    if (!open) return
-    setPhase('warning')
-    setWarning(5)
-    setSeconds(165)
-    setScore(0)
-    setCombo(0)
-    setProgress(0)
-    submitted.current = false
-    setSockets(Array.from({ length: 25 }, (_, index) => ({ kind: legacyMiningRushOre(milestone, index, 0), generation: 0, readyAt: 0 })))
-  }, [milestone, open])
-
-  useEffect(() => {
-    if (!open) return
-    const timer = window.setInterval(() => {
-      if (phase === 'warning') setWarning((value) => { if (value <= 1) { setPhase('playing'); return 0 }; return value - 1 })
-      if (phase === 'playing') setSeconds((value) => Math.max(0, value - 1))
-      if (phase === 'playing' && lastMineAt.current && Date.now() - lastMineAt.current > 1800) setCombo(0)
-    }, 1000)
-    return () => window.clearInterval(timer)
-  }, [open, phase])
-
-  useEffect(() => {
-    if (!open) return
-    const off = onMultiplayer('minigame:result', (raw) => {
-      const result = raw as { milestone: number; score: number; placement: number; economyReference: number }
-      if (result.milestone === milestone) finish(result.score, result.placement, result.economyReference)
-    })
-    return off
-  }, [finish, milestone, open])
-
-  useEffect(() => {
-    if (!open || seconds > 0 || submitted.current) return
-    submitted.current = true
-    setPhase('waiting')
-    const state = useGameStore.getState()
-    const ownedValue = (Object.keys(state.inventory) as ItemId[]).reduce((sum, id) => sum + (ITEMS[id].buyPrice ?? 0) * (state.inventory[id] ?? 0), 0)
-    const stockBasis = (Object.keys(STOCKS) as StockId[]).reduce((sum, id) => sum + STOCKS[id].basePrice * (state.portfolio[id] ?? 0), 0)
-    const plantedValue = Object.values(state.farmCells).reduce((sum, cell) => sum + (cell.crop ? CROP_CONFIG[cell.crop].seedPrice : 0), 0)
-    const progressValue = state.cash + ownedValue + stockBasis + plantedValue
-    sendMultiplayer('minigame:finish', { milestone, score, progressValue })
-    const fallback = window.setTimeout(() => {
-      if (useGameStore.getState().minigameOpen) finish(score, 1, progressValue)
-    }, 6500)
-    return () => window.clearTimeout(fallback)
-  }, [finish, milestone, open, score, seconds])
-
-  useEffect(() => () => { if (miningFrame.current !== null) cancelAnimationFrame(miningFrame.current) }, [])
-  if (!open) return null
-
-  const stopMining = (miss = false) => {
-    mining.current = null
-    setProgress(0)
-    if (miningFrame.current !== null) cancelAnimationFrame(miningFrame.current)
-    miningFrame.current = null
-    if (miss) setCombo(0)
-  }
-  const startMining = (index: number) => {
-    if (phase !== 'playing') return
-    const socket = sockets[index]
-    if (socket.readyAt > Date.now()) return stopMining(true)
-    mining.current = { index, startedAt: performance.now() }
-    const duration = { copper: 520, iron: 640, silver: 760, gold: 900, crystal: 1080 }[socket.kind]
-    const frame = (now: number) => {
-      if (!mining.current || mining.current.index !== index) return
-      const value = Math.min(1, (now - mining.current.startedAt) / duration)
-      setProgress(value)
-      if (value < 1) { miningFrame.current = requestAnimationFrame(frame); return }
-      const nextCombo = combo + 1
-      const base = { copper: 1, iron: 2, silver: 4, gold: 7, crystal: 12 }[socket.kind]
-      const bonus = 1 + Math.min(0.3, Math.floor(nextCombo / 5) * 0.05)
-      setScore((current) => current + Math.round(base * bonus))
-      setCombo(nextCombo)
-      lastMineAt.current = Date.now()
-      setSockets((current) => current.map((entry, socketIndex) => socketIndex === index ? { ...entry, generation: entry.generation + 1, readyAt: Date.now() + 420, kind: legacyMiningRushOre(milestone, index, entry.generation + 1) } : entry))
-      stopMining()
-    }
-    miningFrame.current = requestAnimationFrame(frame)
-  }
-  return <div className="modal-scrim minigame-scrim"><section className="panel minigame-panel mining-rush"><header><div className="panel-title"><span className="minigame-mark">⛏</span><span>MINING RUSH</span></div><strong>{phase === 'warning' ? warning : phase === 'waiting' ? 'RESULTS' : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`}</strong></header>{phase === 'warning' ? <div className="rush-warning"><b>{warning}</b><span>HOLD LMB</span></div> : <><div className="rush-score"><span>SCORE <b>{score}</b></span><span>COMBO <b>×{combo}</b></span></div><div className="ore-bay">{sockets.map((socket, index) => {
-    const depleted = socket.readyAt > Date.now()
-    const active = mining.current?.index === index
-    return <button key={index} className={`${socket.kind} ${depleted ? 'depleted' : ''} ${active ? 'active' : ''}`} onPointerDown={(event) => { if (event.button === 0) startMining(index) }} onPointerUp={() => stopMining()} onPointerLeave={() => stopMining()} onContextMenu={(event) => event.preventDefault()} aria-label={`${socket.kind} ore`}><i /><small>{socket.kind.toUpperCase()}</small>{active && <em style={{ width: `${progress * 100}%` }} />}</button>
-  })}</div><footer>{phase === 'waiting' ? 'CALCULATING PLACEMENT' : 'Equal tools · event points only'}</footer></>}</section></div>
-}
-
-type MiningRushOre = 'copper' | 'iron' | 'silver' | 'gold' | 'crystal'
-function legacyMiningRushOre(milestone: number, socket: number, generation: number): MiningRushOre {
-  let value = Math.imul(milestone + generation * 104729 + socket * 7919, 48271) >>> 0
-  value ^= value >>> 16
-  const roll = (value >>> 0) / 4294967296
-  return roll < .46 ? 'copper' : roll < .72 ? 'iron' : roll < .88 ? 'silver' : roll < .97 ? 'gold' : 'crystal'
-}
-
 function MinigameWorldHud() {
   const open = useGameStore((state) => state.minigameOpen)
   const milestone = useGameStore((state) => state.minigameMilestone)
@@ -913,22 +794,32 @@ function MinigameWorldHud() {
   const combo = useGameStore((state) => state.rushCombo)
   const activeOrders = useGameStore((state) => state.farmRushOrders)
   const cooking = useGameStore((state) => state.farmRushCooking)
+  const farmInventory = useGameStore((state) => state.farmRushInventory)
+  const eventBay = useGameStore((state) => state.eventBay)
+  const submitOrder = useGameStore((state) => state.farmRushSubmit)
   const forageInventory = useGameStore((state) => state.forageRushInventory)
   const forageDelivered = useGameStore((state) => state.forageRushDelivered)
   const tickFarmRush = useGameStore((state) => state.tickFarmRush)
   const syncForageRush = useGameStore((state) => state.syncForageRush)
   const finish = useGameStore((state) => state.finishMinigame)
-  const [warning, setWarning] = useState(5)
+  const nickname = useGameStore((state) => state.nickname)
+  const players = useGameStore((state) => state.onlinePlayers)
+  const [warning, setWarning] = useState(9)
   const [seconds, setSeconds] = useState(MINIGAME_DURATION.mining)
   const [, refresh] = useState(0)
   const [waiting, setWaiting] = useState(false)
+  const [leaveConfirm, setLeaveConfirm] = useState(false)
   const submitted = useRef(false)
   const score = kind === 'mining' ? miningScore : kind === 'farm' ? farmScore : forageScore
   const title = kind === 'mining' ? 'MINING RUSH' : kind === 'farm' ? 'KITCHEN RUSH' : 'FORAGE RACE'
   const forageComplete = Object.values(forageDelivered).every(Boolean)
+  const standings = [
+    { id: 'self', nickname, score },
+    ...players.filter((player) => player.minigameOpen && player.minigameKind === kind && player.minigameMilestone === milestone).map((player) => ({ id: player.id, nickname: player.nickname, score: player.minigameScore ?? 0 })),
+  ].sort((a, b) => b.score - a.score || a.nickname.localeCompare(b.nickname)).slice(0, 5)
   useEffect(() => {
     if (!open) return
-    setWarning(5); setSeconds(MINIGAME_DURATION[kind]); setWaiting(false); submitted.current = false
+    setWarning(9); setSeconds(MINIGAME_DURATION[kind]); setWaiting(false); setLeaveConfirm(false); submitted.current = false
     const warningTimer = window.setInterval(() => setWarning((value) => Math.max(0, value - 1)), 1000)
     return () => window.clearInterval(warningTimer)
   }, [kind, open, milestone])
@@ -939,9 +830,19 @@ function MinigameWorldHud() {
   }, [kind, open, tickFarmRush, waiting, warning])
   useEffect(() => {
     if (!open) return
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.code !== 'Escape' || event.repeat) return
+      event.preventDefault()
+      setLeaveConfirm((value) => !value)
+    }
+    window.addEventListener('keydown', onEscape)
+    return () => window.removeEventListener('keydown', onEscape)
+  }, [open])
+  useEffect(() => {
+    if (!open) return
     return onMultiplayer('minigame:result', (raw) => {
-      const result = raw as { milestone: number; score: number; placement: number; economyReference: number }
-      if (result.milestone === milestone) finish(result.score, result.placement, result.economyReference)
+      const result = raw as { milestone: number; score: number; placement: number; economyReference: number; cashReward: number; cookbookBoxes: number }
+      if (result.milestone === milestone) finish(result.score, result.placement, result.economyReference, { cash: result.cashReward, boxes: result.cookbookBoxes })
     })
   }, [finish, milestone, open])
   useEffect(() => {
@@ -955,32 +856,45 @@ function MinigameWorldHud() {
     if (!open || (seconds > 0 && !(kind === 'forage' && forageComplete)) || submitted.current) return
     submitted.current = true; setWaiting(true)
     const state = useGameStore.getState()
-    const ownedValue = (Object.keys(state.inventory) as ItemId[]).reduce((sum, id) => sum + (ITEMS[id].buyPrice ?? 0) * (state.inventory[id] ?? 0), 0)
-    const stockBasis = (Object.keys(STOCKS) as StockId[]).reduce((sum, id) => sum + STOCKS[id].basePrice * (state.portfolio[id] ?? 0), 0)
-    const plantedValue = Object.values(state.farmCells).reduce((sum, cell) => sum + (cell.crop ? CROP_CONFIG[cell.crop].seedPrice : 0), 0)
-    const progressValue = state.cash + ownedValue + stockBasis + plantedValue
+    const progressValue = economyProgressValue(state)
     const eventScore = kind === 'mining' ? state.rushScore : kind === 'farm' ? state.farmRushScore : state.forageRushScore + (forageComplete ? 10_000 + seconds * 10 : Object.values(state.forageRushInventory).reduce((sum, value) => sum + value, 0))
-    sendMultiplayer('minigame:finish', { milestone, score: eventScore, progressValue })
-    const fallback = window.setTimeout(() => { if (useGameStore.getState().minigameOpen) finish(eventScore, 1, progressValue) }, 6500)
+    const submittedOnline = sendMultiplayer('minigame:finish', { milestone, score: eventScore, progressValue })
+    if (!submittedOnline) { finish(eventScore, 1, progressValue); return }
+    const fallback = window.setTimeout(() => { if (useGameStore.getState().minigameOpen) finish(eventScore, 1, progressValue) }, (seconds + 15) * 1000)
     return () => window.clearTimeout(fallback)
   }, [finish, forageComplete, kind, milestone, open, seconds])
   if (!open) return null
   const orderDefinitions = farmRushOrders(milestone)
+  const currentState = useGameStore.getState()
+  const selfProgress = economyProgressValue(currentState)
+  const lobbyProgress = [selfProgress, ...players.filter((player) => player.minigameOpen && player.minigameMilestone === milestone).map((player) => player.progressValue ?? player.cash)].sort((a, b) => a - b)
+  const progressMiddle = Math.floor(lobbyProgress.length / 2)
+  const estimatedReference = lobbyProgress.length % 2 ? lobbyProgress[progressMiddle] : Math.round((lobbyProgress[progressMiddle - 1] + lobbyProgress[progressMiddle]) / 2)
+  const leaderCash = Math.max(currentState.cash, ...players.map((player) => player.cash))
+  const prizeRows = ['1ST', '2ND', '3RD', 'FINISH'].map((place, index) => ({ place, ...minigameRewardPackage(estimatedReference, index + 1, currentState.cash, leaderCash) }))
   return <>
-    {warning > 0 && <div className="rush-countdown"><strong>{warning}</strong><span>{title}</span></div>}
+    {leaveConfirm && <div className="modal-scrim event-leave-scrim"><section className="panel event-leave-panel"><strong>LEAVE EVENT?</strong><div><button className="quiet-button" onClick={() => setLeaveConfirm(false)}>STAY</button><button onClick={() => finish(0, 0)}>LEAVE</button></div></section></div>}
+    {warning > 5 && <div className="rush-prize-reveal"><strong>PRIZES</strong><div>{prizeRows.map((prize) => <article key={prize.place}><b>{prize.place}</b>{prize.cash > 0 && <span><Icon name="coin" />{formatCoins(prize.cash, true)}</span>}{prize.boxes > 0 && <span><img src={ITEMS['cookbook-box'].icon} alt="Cookbook Box" />COOKBOOK ×{prize.boxes}</span>}</article>)}</div></div>}
+    {warning > 0 && warning <= 5 && <div className="rush-countdown"><strong>{warning}</strong><span>{title}</span></div>}
+    {warning === 0 && <div className="event-standings"><span>LEADERBOARD</span>{standings.map((player, index) => <div className={player.id === 'self' ? 'self' : ''} key={player.id}><b>{index + 1}</b><span>{player.nickname}</span><strong>{player.score}</strong></div>)}</div>}
+    {kind === 'mining' && warning === 0 && <div className="mining-points">{(Object.keys(MINING_RUSH_POINTS) as MiningRushOre[]).map((ore) => <span key={ore}><img src={ITEMS[ore].icon} alt="" /><b>{MINING_RUSH_POINTS[ore]}</b></span>)}</div>}
     {kind === 'farm' && <div className="event-orders">{activeOrders.map((ticket) => {
       const order = orderDefinitions[ticket.orderIndex % orderDefinitions.length]
       const remaining = Math.max(0, ticket.expiresAt - Date.now())
-      return <div className={cooking?.orderIndex === ticket.orderIndex ? 'cooking' : ''} key={ticket.orderIndex}><header><strong>{order.name}</strong><b>{Math.ceil(remaining / 1000)}</b></header><span>{Object.entries(order.ingredients).map(([crop, quantity]) => `${quantity} ${crop}`).join(' · ')}</span><i><b style={{ width: `${remaining / 420}%` }} /></i><small>{order.points} PTS</small></div>
+      const ingredients = Object.entries(order.ingredients) as Array<[FarmRushCrop, number]>
+      const isCooking = cooking?.orderIndex === ticket.orderIndex
+      const ready = isCooking && cooking.readyAt <= Date.now()
+      const state = ready ? 'ready' : isCooking ? 'cooking' : ''
+      return <div className={state} key={ticket.orderIndex}><header><div className="event-order-food"><img src={ITEMS[order.food].icon} alt={order.name} /><strong>{order.name}</strong></div><b>{Math.ceil(remaining / 1000)}</b></header><div className="event-order-ingredients">{ingredients.map(([crop, quantity]) => <span className={farmInventory[crop] >= quantity ? 'owned' : ''} key={crop}><img src={ITEMS[crop as ItemId].icon} alt={ITEMS[crop as ItemId].name} /><b>{quantity}</b></span>)}</div><i><b style={{ width: `${remaining / FARM_RUSH_ORDER_LIFETIME_MS * 100}%` }} /></i><footer><small>{order.points} PTS</small>{ready && <button onClick={() => submitOrder(ticket.orderIndex)}>SUBMIT</button>}{isCooking && !ready && <small>{Math.max(1, Math.ceil((cooking.readyAt - Date.now()) / 1000))}s</small>}</footer></div>
     })}</div>}
     {kind === 'forage' && <div className="event-deliveries">{(['apple', 'orange', 'truffle', 'discovery'] as ForageRushKind[]).map((id) => <div className={forageDelivered[id] ? 'complete' : ''} key={id}><img src={id === 'discovery' ? ITEMS['natural-discovery'].icon : ITEMS[id].icon} alt="" /><strong>{forageDelivered[id] ? '✓' : `${forageInventory[id]}/${FORAGE_RUSH_REQUIREMENTS[id]}`}</strong></div>)}</div>}
-    <div className="rush-world-hud"><span>{title}</span><strong>{score}</strong><small>SCORE</small><b>{waiting ? 'RESULTS' : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`}</b>{kind === 'mining' && <img src={ITEMS['crystal-pickaxe'].icon} alt="Crystal Pickaxe" />}{kind === 'mining' && combo > 1 && <em>×{combo}</em>}</div>
+    <div className="rush-world-hud"><span>{title}{kind === 'farm' ? ` · PLOT ${eventBay + 1}` : ''}</span><strong>{score}</strong><small>SCORE</small><b>{waiting ? 'RESULTS' : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`}</b>{kind === 'mining' && <img src={ITEMS['crystal-pickaxe'].icon} alt="Crystal Pickaxe" />}{kind === 'mining' && combo > 1 && <em>×{combo}</em>}</div>
   </>
 }
 
 function Interface() {
+  const sessionStarted = useGameStore((state) => state.sessionStarted)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
-  const minigameKind = useGameStore((state) => state.minigameKind)
   const toggleInventory = useGameStore((state) => state.toggleInventory)
   const setShopOpen = useGameStore((state) => state.setShopOpen)
   const setStockOpen = useGameStore((state) => state.setStockOpen)
@@ -1043,8 +957,9 @@ function Interface() {
       if (/^Digit[1-9]$/.test(event.code) && !event.repeat) {
         const index = Number(event.code.slice(-1)) - 1
         const live = useGameStore.getState()
-        if (live.minigameOpen && live.minigameKind === 'farm' && FARM_RUSH_TOOLS[index]) live.setFarmRushTool(FARM_RUSH_TOOLS[index])
-        else setSelected(index)
+        if (live.minigameOpen) {
+          if (live.minigameKind === 'farm' && FARM_RUSH_TOOLS[index]) live.setFarmRushTool(FARM_RUSH_TOOLS[index])
+        } else setSelected(index)
       }
       if (event.code === 'KeyF' && !event.repeat) {
         const prompt = useGameStore.getState().prompt
@@ -1068,6 +983,12 @@ function Interface() {
       const canvasFocused = event.target instanceof HTMLCanvasElement || document.pointerLockElement instanceof HTMLCanvasElement
       if (!canvasFocused) return
       const state = useGameStore.getState()
+      if (state.minigameOpen) {
+        if (event.button !== 0 || !state.prompt) return
+        if (state.prompt.id.startsWith('Mine') || state.prompt.id.startsWith('RushOre')) startMining(state.prompt.id)
+        else activatePrompt(state.prompt.id)
+        return
+      }
       const held = state.hotbar[state.selectedHotbar]
       if (event.button === 2 && held === 'home-charm') {
         event.preventDefault()
@@ -1108,7 +1029,8 @@ function Interface() {
       window.removeEventListener('blur', resetMining)
     }
   }, [setCookbookOpen, setLotteryOpen, setMenuOpen, setPlayerPanelOpen, setProgress, setSecretOpen, setSelected, setShopOpen, setStockOpen, setTicketInspectOpen, setToast, setTravelOpen, setZone, toggleInventory])
-  if (minigameOpen) return <div className="interface"><Crosshair /><InteractionPrompt /><MinigameWorldHud /><MinigameHotbar /><MinigameBag /><Toast /></div>
+  if (!sessionStarted) return <div className="interface"><LobbyPanel /><Toast /></div>
+  if (minigameOpen) return <div className="interface"><Crosshair /><InteractionPrompt /><MinigameWorldHud /><Hotbar /><InventoryPanel /><Toast /></div>
   return <div className="interface"><HUD /><Crosshair /><InteractionPrompt /><ForageCapacity /><Hotbar /><InventoryPanel /><ShopPanel /><LotteryPanel /><TicketInspectPanel /><NoteInspectPanel /><TravelPanel /><SecretDealPanel /><StocksPanel /><PlayerTradePanel /><MenuPanel /><CookbookPanel /><ResultsPanel /><Toast /></div>
 }
 

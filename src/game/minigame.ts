@@ -1,18 +1,40 @@
 import type { OreItem } from './ore'
+import type { FoodItemId } from './recipes'
 
 export type MinigameKind = 'mining' | 'farm' | 'forage'
 
 export const MINIGAME_DURATION: Record<MinigameKind, number> = {
   mining: 180,
-  farm: 240,
+  farm: 300,
   forage: 300,
 }
 
+export function minigameMilestones(durationSeconds: number) {
+  const duration = Math.max(60, Math.floor(durationSeconds))
+  return [Math.round(duration / 3), Math.round(duration * 2 / 3)]
+}
+
+const MINIGAME_REWARD_SHARES = [0.12, 0.07, 0.04, 0.015] as const
+const MINIGAME_REWARD_CAPS = [8_000_000, 5_000_000, 3_000_000, 1_000_000] as const
+export const COOKBOOK_BOX_REWARD_VALUE = 600_000
+
+export function minigameRewardPackage(economyReference: number, placement: number, playerCash?: number, leaderCash?: number) {
+  if (placement < 1) return { budget: 0, boxes: 0, cash: 0 }
+  const rankIndex = Math.min(3, Math.max(0, placement - 1))
+  const budget = Math.min(MINIGAME_REWARD_CAPS[rankIndex], Math.round(Math.max(1, economyReference) * MINIGAME_REWARD_SHARES[rankIndex]))
+  const boxes = placement === 1 ? 2 : placement === 2 ? 1 : 0
+  let cash = Math.max(0, budget - boxes * COOKBOOK_BOX_REWARD_VALUE)
+  if (placement > 1 && playerCash !== undefined && leaderCash !== undefined && playerCash < leaderCash) cash = Math.min(cash, Math.max(0, Math.floor((leaderCash - playerCash) / 2)))
+  return { budget, boxes, cash }
+}
+
 /** The two scheduled events are always different, while direct test URLs can pick any event. */
-export function scheduledMinigame(milestone: number): MinigameKind {
-  const first: MinigameKind = ['mining', 'farm', 'forage'][Math.abs(Math.floor(milestone / 1200)) % 3] as MinigameKind
-  if (milestone <= 20 * 60) return first
-  return ({ mining: 'farm', farm: 'forage', forage: 'mining' } as const)[first]
+export function scheduledMinigame(milestone: number, sessionSeed = 9731, durationSeconds = 60 * 60): MinigameKind {
+  const kinds: MinigameKind[] = ['mining', 'farm', 'forage']
+  const seededIndex = Math.abs(Math.imul(Math.floor(sessionSeed) ^ 0x45d9f3b, 2654435761)) % kinds.length
+  if (milestone <= minigameMilestones(durationSeconds)[0]) return kinds[seededIndex]
+  const secondOffset = 1 + (Math.abs(Math.imul(Math.floor(sessionSeed) ^ 0x27d4eb2d, 1597334677)) % 2)
+  return kinds[(seededIndex + secondOffset) % kinds.length]
 }
 
 export type MiningRushOre = 'copper-ore' | 'iron-ore' | 'silver-ore' | 'gold-ore' | 'crystal-ore'
@@ -25,20 +47,25 @@ export const MINING_RUSH_POINTS: Record<MiningRushOre, number> = {
   'crystal-ore': 12,
 }
 
+// Long enough that waiting on one socket breaks the combo, while a nearby socket
+// remains faster. This keeps the compact bay active without adding travel time.
+export const MINING_RUSH_RESPAWN_MS = 2_600
+
 export const FARM_RUSH_CROPS = ['wheat', 'tomato', 'lettuce', 'pumpkin', 'watermelon'] as const
 export type FarmRushCrop = typeof FARM_RUSH_CROPS[number]
 export type FarmRushTool = FarmRushCrop | 'water'
 export type FarmRushCell = { crop: FarmRushCrop | null; stage: 'empty' | 'planted' | 'watered' | 'ready'; readyAt: number }
-export type FarmRushOrder = { name: string; ingredients: Partial<Record<FarmRushCrop, number>>; cookSeconds: number; points: number }
+export type FarmRushOrder = { name: string; food: FoodItemId; ingredients: Partial<Record<FarmRushCrop, number>>; cookSeconds: number; points: number }
 
 const FARM_INGREDIENT_POINTS: Record<FarmRushCrop, number> = { wheat: 1, tomato: 2, lettuce: 3, pumpkin: 5, watermelon: 8 }
 const FARM_ORDER_BLUEPRINTS: Array<Omit<FarmRushOrder, 'points'>> = [
-  { name: 'Grain Bowl', ingredients: { wheat: 2 }, cookSeconds: 3 },
-  { name: 'Garden Plate', ingredients: { tomato: 1, lettuce: 1 }, cookSeconds: 4 },
-  { name: 'Pumpkin Bake', ingredients: { pumpkin: 1, wheat: 1 }, cookSeconds: 5 },
-  { name: 'Harvest Dish', ingredients: { pumpkin: 1, lettuce: 1, tomato: 1 }, cookSeconds: 6 },
-  { name: 'Melon Plate', ingredients: { watermelon: 1, wheat: 1 }, cookSeconds: 7 },
-  { name: 'Field Supper', ingredients: { wheat: 2, tomato: 1, lettuce: 1 }, cookSeconds: 6 },
+  { name: 'Farm Skewer', food: 'food-mushroom-skewer', ingredients: { tomato: 2, lettuce: 1 }, cookSeconds: 4 },
+  { name: 'Garden Salad', food: 'food-garden-salad', ingredients: { tomato: 2, lettuce: 2 }, cookSeconds: 4 },
+  { name: 'Meadow Stew', food: 'food-meadow-stew', ingredients: { lettuce: 2, tomato: 1, wheat: 1 }, cookSeconds: 5 },
+  { name: 'Pumpkin Bread', food: 'food-pumpkin-bread', ingredients: { pumpkin: 1, wheat: 2 }, cookSeconds: 6 },
+  { name: 'Farmhouse Plate', food: 'food-farmhouse-plate', ingredients: { wheat: 2, tomato: 1, lettuce: 1 }, cookSeconds: 6 },
+  { name: 'Melon Preserve', food: 'food-melon-preserve', ingredients: { watermelon: 1, wheat: 1 }, cookSeconds: 7 },
+  { name: 'Harvest Feast', food: 'food-harvest-feast', ingredients: { pumpkin: 1, lettuce: 1, tomato: 1, wheat: 2 }, cookSeconds: 7 },
 ]
 
 export function farmRushOrderPoints(ingredients: Partial<Record<FarmRushCrop, number>>): number {
@@ -53,7 +80,9 @@ export function farmRushOrders(milestone: number, count = 18): FarmRushOrder[] {
   return Array.from({ length: count }, (_, index) => {
     let value = Math.imul(milestone + index * 104729, 48271) >>> 0
     value ^= value >>> 16
-    const blueprint = FARM_ORDER_BLUEPRINTS[(value >>> 0) % FARM_ORDER_BLUEPRINTS.length]
+    const blueprint = index === 0
+      ? FARM_ORDER_BLUEPRINTS[0]
+      : FARM_ORDER_BLUEPRINTS[(value >>> 0) % FARM_ORDER_BLUEPRINTS.length]
     return { ...blueprint, ingredients: { ...blueprint.ingredients }, points: farmRushOrderPoints(blueprint.ingredients) }
   })
 }
@@ -65,6 +94,9 @@ export const FARM_RUSH_GROWTH_MS: Record<FarmRushCrop, number> = {
   pumpkin: 10_000,
   watermelon: 12_000,
 }
+
+export const FARM_RUSH_ORDER_INTERVAL_MS = 45_000
+export const FARM_RUSH_ORDER_LIFETIME_MS = 110_000
 
 export type ForageRushKind = 'apple' | 'orange' | 'truffle' | 'discovery'
 export const FORAGE_RUSH_REQUIREMENTS: Record<ForageRushKind, number> = { apple: 12, orange: 12, truffle: 3, discovery: 1 }

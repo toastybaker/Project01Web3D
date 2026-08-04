@@ -9,9 +9,12 @@
     "server": "tsx watch server/index.ts",
     "assets:convert": "node scripts/convert-assets.mjs",
     "assets:brands": "node scripts/build-brand-icons.mjs",
+    "assets:wheat": "node scripts/build-wheat-crop.mjs",
     "assets:scenes": "node scripts/build-scenes.mjs",
-    "assets": "npm run assets:convert && npm run assets:brands && npm run assets:scenes",
+    "assets": "npm run assets:convert && npm run assets:brands && npm run assets:wheat && npm run assets:scenes",
     "test:economy": "tsx scripts/validate-economy.ts",
+    "test:hour": "tsx scripts/validate-hour.ts",
+    "test:minigames": "tsx scripts/validate-minigames.ts",
     "build": "tsc -b && vite build",
     "preview": "concurrently -k -n web,server \"vite preview\" \"tsx server/index.ts\""
   },

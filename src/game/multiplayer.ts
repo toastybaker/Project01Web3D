@@ -8,7 +8,9 @@ export function setMultiplayerSender(next: typeof sender) {
 }
 
 export function sendMultiplayer(type: string, payload: unknown) {
-  sender?.(type, payload)
+  if (!sender) return false
+  sender(type, payload)
+  return true
 }
 
 export function emitMultiplayer(type: string, payload: unknown) {

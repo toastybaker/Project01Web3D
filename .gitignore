@@ -7,4 +7,4 @@ dist/
 *.log
 public/assets/3d/generated/
 workbench/
-
+artifacts/

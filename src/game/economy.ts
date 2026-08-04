@@ -51,16 +51,16 @@ export function marginalSale(id: CommodityId, baseValue: number, stock: number, 
   return { proceeds, stock: nextStock }
 }
 
-export function advanceCommodityCycle(market: CommodityMarket, cycle: number, weather: 'clear' | 'rain' | 'mist' | 'sunny' | 'breeze') {
+export function advanceCommodityCycle(market: CommodityMarket, cycle: number, weather: 'clear' | 'rain' | 'mist' | 'sunny' | 'breeze', matchSeed = 9731) {
   const next = { ...market }
   ;(Object.keys(COMMODITY_MARKET_CONFIG) as CommodityId[]).forEach((id, index) => {
     const config = COMMODITY_MARKET_CONFIG[id]
-    const demandRoll = seeded01(cycle * 1009 + index * 97 + 17)
+    const demandRoll = seeded01(matchSeed + cycle * 1009 + index * 97 + 17)
     let demand = config.demand[0] + Math.round((config.demand[1] - config.demand[0]) * demandRoll)
     if (weather === 'rain' && (id === 'mushroom' || id === 'wild-herbs' || id === 'wheat')) demand = Math.round(demand * 1.18)
     if (weather === 'mist' && (id === 'apple' || id === 'orange' || id === 'berries')) demand = Math.round(demand * 1.12)
-    const supplyEvent = seeded01(cycle * 2017 + index * 131 + 43) < 0.13
-      ? Math.round(config.neutral * (0.04 + seeded01(cycle * 3037 + index * 151) * 0.08))
+    const supplyEvent = seeded01(matchSeed + cycle * 2017 + index * 131 + 43) < 0.13
+      ? Math.round(config.neutral * (0.04 + seeded01(matchSeed + cycle * 3037 + index * 151) * 0.08))
       : 0
     next[id] = Math.max(config.neutral * 0.03, next[id] - demand + supplyEvent)
   })
@@ -94,6 +94,6 @@ export function nextStockPrice(stock: StockDefinition, previous: number, updateI
   return Math.min(stock.basePrice * 20, Math.max(Math.round(stock.basePrice * 0.08), next))
 }
 
-export function sessionSecondsRemaining(worldCycle: number, cycleSeconds: number) {
-  return Math.max(0, MATCH_CONFIG.defaultDurationSeconds - ((Math.max(1, worldCycle) - 1) * MATCH_CONFIG.worldCycleSeconds + (MATCH_CONFIG.worldCycleSeconds - cycleSeconds)))
+export function sessionSecondsRemaining(worldCycle: number, cycleSeconds: number, durationSeconds = MATCH_CONFIG.defaultDurationSeconds) {
+  return Math.max(0, durationSeconds - ((Math.max(1, worldCycle) - 1) * MATCH_CONFIG.worldCycleSeconds + (MATCH_CONFIG.worldCycleSeconds - cycleSeconds)))
 }

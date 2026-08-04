@@ -90,6 +90,50 @@ export function fruitTreeCapacity(id: string) {
   return 3 + (Math.abs(hash) % 3)
 }
 
+const RARE_FORAGE_ROLLS = {
+  main: {
+    truffle: { seconds: 120, chance: 0.65, count: 1 },
+    discovery: { seconds: 240, chance: 0.38, count: 1 },
+  },
+  rush: {
+    truffle: { seconds: 20, chance: 1, count: 2 },
+    discovery: { seconds: 30, chance: 1, count: 1 },
+  },
+} as const
+
+function rareHash(value: string) {
+  let hash = 2166136261
+  for (const char of value) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619)
+  return (hash >>> 0) / 4294967296
+}
+
+export function activeRareForageIds(ids: string[], rush: boolean, sessionSeed: number, matchStartedAt: number, now = Date.now()) {
+  const active = new Set<string>()
+  const mode = rush ? 'rush' : 'main'
+  for (const kind of ['truffle', 'discovery'] as const) {
+    const prefix = rush ? kind === 'truffle' ? 'ForageRushTruffle' : 'ForageRushDiscovery' : kind === 'truffle' ? 'ForageTruffle' : 'ForageDiscovery'
+    const candidates = ids.filter((id) => id.startsWith(prefix)).sort()
+    if (!candidates.length) continue
+    const settings = RARE_FORAGE_ROLLS[mode][kind]
+    const cycle = Math.max(0, Math.floor((now - matchStartedAt) / (settings.seconds * 1000)))
+    if (rareHash(`${sessionSeed}:${mode}:${kind}:${cycle}:chance`) >= settings.chance) continue
+    const ranked = [...candidates].sort((a, b) => rareHash(`${sessionSeed}:${mode}:${kind}:${cycle}:${a}`) - rareHash(`${sessionSeed}:${mode}:${kind}:${cycle}:${b}`))
+    if (settings.count === 1 && cycle > 0 && ranked.length > 1) {
+      const previous = [...candidates].sort((a, b) => rareHash(`${sessionSeed}:${mode}:${kind}:${cycle - 1}:${a}`) - rareHash(`${sessionSeed}:${mode}:${kind}:${cycle - 1}:${b}`))[0]
+      if (ranked[0] === previous) [ranked[0], ranked[1]] = [ranked[1], ranked[0]]
+    }
+    ranked.slice(0, settings.count).forEach((id) => active.add(id))
+  }
+  return active
+}
+
+export function nextRareForageRollAt(item: 'truffle' | 'natural-discovery', rush: boolean, matchStartedAt: number, now = Date.now()) {
+  const settings = RARE_FORAGE_ROLLS[rush ? 'rush' : 'main'][item === 'truffle' ? 'truffle' : 'discovery']
+  const cycleMs = settings.seconds * 1000
+  const cycle = Math.max(0, Math.floor((now - matchStartedAt) / cycleMs))
+  return matchStartedAt + (cycle + 1) * cycleMs + 50
+}
+
 export const CROP_CONFIG = {
   wheat: { name: 'Wheat', seedPrice: 10_000, growthSeconds: 30, yield: 1, value: 12_000 },
   tomato: { name: 'Tomato', seedPrice: 40_000, growthSeconds: 60, yield: 2, value: 23_000 },
