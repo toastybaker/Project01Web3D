@@ -94,6 +94,7 @@ const mats = {
   leafDeep: material('Deep Green Leaf', 0x3f673b),
   soil: material('Soil', palette.soil),
   soilFurrow: material('Tilled Soil Furrow', 0x533a2c),
+  wetSoil: material('Watered Soil', 0x5e4232, { roughness: 0.96, flatShading: false }),
   stone: material('Warm Stone', palette.stone),
   stoneDark: material('Dark Stone', palette.stoneDark),
   mineGround: material('Mine Ground', 0x77736b, { flatShading: false }),
@@ -262,6 +263,8 @@ const berryGeometries = [new THREE.IcosahedronGeometry(0.09, 1), new THREE.Icosa
 const oreRockGeometry = new THREE.DodecahedronGeometry(0.72, 1)
 const oreVeinGeometry = new THREE.OctahedronGeometry(0.15, 0)
 const quarryStoneGeometry = new THREE.DodecahedronGeometry(1, 1)
+const farmWetSoilGeometry = new RoundedBoxGeometry(1.18, 0.025, 1.18, 3, 0.08)
+const rushWetSoilGeometry = new RoundedBoxGeometry(1.78, 0.025, 1.78, 3, 0.1)
 const berryClusterGeometry = mergeGeometries(Array.from({ length: 9 }, (_, index) => {
   const angle = (index / 9) * Math.PI * 2
   return berryGeometries[index % 2].clone().translate(
@@ -362,6 +365,14 @@ function mesh(geometry, mat, name) {
   value.castShadow = true
   value.receiveShadow = true
   return value
+}
+
+function wateredSoilTile(name, x, y, z, rush) {
+  const tile = mesh(rush ? rushWetSoilGeometry : farmWetSoilGeometry, mats.wetSoil, name)
+  tile.position.set(x, y, z)
+  tile.visible = false
+  tile.castShadow = false
+  return tile
 }
 
 const forageTrail = [[0, 22], [1, 12], [-2, 0], [-8, -16], [-3, -34], [9, -52], [4, -72], [-12, -91], [-5, -112], [8, -132], [-2, -154], [10, -177], [2, -203]]
@@ -1668,6 +1679,7 @@ function farmScene() {
         const cellIndex = row * 8 + column
         const x = farmX + (column - 3.5) * 1.42
         const z = farmZ + (row - 3.5) * 1.42
+        scene.add(wateredSoilTile(`WateredSoil_${farmIndex}_${String(cellIndex).padStart(2, '0')}`, x, level + 0.145, z, false))
         scene.add(anchor(`FarmCell${farmIndex}_${String(cellIndex).padStart(2, '0')}`, [x, level + 0.14, z]))
       }
     }
@@ -1913,7 +1925,13 @@ function farmRushScene() {
     })
     scene.add(marker)
     const cells = []
-    for (let row = 0; row < 5; row += 1) for (let column = 0; column < 5; column += 1) cells.push([x + (column - 2) * 2.12, z + (row - 2) * 2.12])
+    for (let row = 0; row < 5; row += 1) for (let column = 0; column < 5; column += 1) {
+      const cellIndex = row * 5 + column
+      const cellX = x + (column - 2) * 2.12
+      const cellZ = z + (row - 2) * 2.12
+      cells.push([cellX, cellZ])
+      scene.add(wateredSoilTile(`WateredRushSoil_${index}_${String(cellIndex).padStart(2, '0')}`, cellX, floorHeight(cellX, cellZ) + .145, cellZ, true))
+    }
     cellsByBay.push(cells)
   })
   for (let index = 0; index < 54; index += 1) {
@@ -2006,6 +2024,13 @@ async function exportScene(scene, filename) {
 
   const io = new NodeIO().registerExtensions([EXTMeshGPUInstancing])
   const document = await io.read(rawPath)
+  const deferredWetTiles = filename === 'farm.glb'
+    ? document.getRoot().listNodes().filter((node) => node.getName().startsWith('WateredSoil_')).map((node) => ({ name: node.getName(), translation: [...node.getTranslation()] }))
+    : []
+  const deferredWetMesh = filename === 'farm.glb'
+    ? document.getRoot().listNodes().find((node) => node.getName().startsWith('WateredSoil_'))?.getMesh()
+    : null
+  if (deferredWetTiles.length) document.getRoot().listNodes().filter((node) => node.getName().startsWith('WateredSoil_')).forEach((node) => node.dispose())
   document.createExtension(EXTMeshGPUInstancing).setRequired(true)
   const woodlandSource = await readFile(path.join(root, 'public', 'assets', 'textures', 'woodland-ground-v1.png'))
   const caveStoneSource = await readFile(path.join(root, 'public', 'assets', 'textures', 'storybook-cave-stone-v1.png'))
@@ -2035,6 +2060,10 @@ async function exportScene(scene, filename) {
   // recolor/hide one player's ore or crop without affecting every matching mesh.
   if (filename === 'farm-rush.glb' || filename === 'mining-rush.glb') await document.transform(dedup())
   else await document.transform(dedup(), instance({ min: filename === 'forage.glb' ? 3 : 5 }))
+  if (deferredWetMesh && deferredWetTiles.length) {
+    const targetScene = document.getRoot().listScenes()[0]
+    deferredWetTiles.forEach(({ name, translation }) => targetScene.addChild(document.createNode(name).setMesh(deferredWetMesh).setTranslation(translation)))
+  }
   await io.write(nextPath, document)
   await rm(rawPath, { force: true })
   await rename(nextPath, outputPath)

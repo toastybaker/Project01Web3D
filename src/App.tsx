@@ -5,7 +5,7 @@ import { commodityPrice, formatCoins, lotteryJackpot, lotteryPrice, lotteryTwoMa
 import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, MATCH_CONFIG, PICKAXE_CONFIG, type CommodityId } from './game/config'
 import { canMineOre, miningDuration, oreKindAtDepth, requiredPickaxe } from './game/ore'
 import { onMultiplayer, sendMultiplayer } from './game/multiplayer'
-import { economyProgressValue, lotteryDraw, preparedFoodValue, secretStockOffer, useGameStore, type MineNodeState, type SharedDeedResult, type SharedDeedSnapshot, type SharedFarmResult, type SharedFarmSnapshot, type SharedFarmUpdate } from './game/store'
+import { economyProgressValue, inventoryLayout, lotteryDraw, preparedFoodValue, secretStockOffer, useGameStore, type MineNodeState, type SharedDeedResult, type SharedDeedSnapshot, type SharedFarmResult, type SharedFarmSnapshot, type SharedFarmUpdate } from './game/store'
 import { RECIPES, RECIPE_IDS, type RecipeId } from './game/recipes'
 import { FARM_RUSH_CROPS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, FORAGE_RUSH_REQUIREMENTS, MINIGAME_DURATION, MINING_RUSH_POINTS, farmRushOrders, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MiningRushOre } from './game/minigame'
 import { playGameSfx, type GameSfx } from './game/sfx'
@@ -489,7 +489,7 @@ function InventoryPanel() {
   const dragging = useRef<number | null>(null)
   const eventView = minigameOpen ? eventInventoryView(minigameKind, farmRushInventory, forageRushInventory, farmRushCooking, minigameMilestone) : null
   const inventory = eventView?.inventory ?? realInventory
-  const inventoryOrder = eventView?.inventoryOrder ?? realInventoryOrder
+  const inventoryOrder = eventView?.inventoryOrder ?? inventoryLayout({ hotbar: realHotbar, inventoryOrder: realInventoryOrder, inventory: realInventory })
   const hotbar = eventView?.hotbar ?? realHotbar
   if (!open) return null
   return (

@@ -14,11 +14,11 @@ import { playGameSfx } from './sfx'
 const SCENES: Record<ZoneId, string> = {
   hub: '/assets/3d/scenes/hub.glb?v=14',
   forage: '/assets/3d/scenes/forage.glb?v=23',
-  farm: '/assets/3d/scenes/farm.glb?v=15',
+  farm: '/assets/3d/scenes/farm.glb?v=18',
   mine: '/assets/3d/scenes/mine.glb?v=24',
 }
 const MINING_RUSH_SCENE = '/assets/3d/scenes/mining-rush.glb?v=10'
-const FARM_RUSH_SCENE = '/assets/3d/scenes/farm-rush.glb?v=10'
+const FARM_RUSH_SCENE = '/assets/3d/scenes/farm-rush.glb?v=13'
 const FORAGE_RUSH_SCENE = '/assets/3d/scenes/forage-rush.glb?v=7'
 const MINIGAME_SCENES: Record<MinigameKind, string> = { mining: MINING_RUSH_SCENE, farm: FARM_RUSH_SCENE, forage: FORAGE_RUSH_SCENE }
 
@@ -336,6 +336,10 @@ function EnvironmentScene() {
   const sharedFarmOnline = useGameStore((state) => state.sharedFarmOnline)
   const sharedFarmSelfId = useGameStore((state) => state.sharedFarmSelfId)
   const farmOwners = useGameStore((state) => state.farmOwners)
+  const localFarmCells = useGameStore((state) => state.farmCells)
+  const sharedFarmCells = useGameStore((state) => state.sharedFarmCells)
+  const farmCells = sharedFarmOnline ? sharedFarmCells : localFarmCells
+  const farmRushCells = useGameStore((state) => state.farmRushCells)
   const ownedFarms = useMemo(() => sharedFarmOnline ? Object.keys(farmOwners).map(Number).filter((farm) => farmOwners[farm] === sharedFarmSelfId) : claimedFarms, [claimedFarms, farmOwners, sharedFarmOnline, sharedFarmSelfId])
   const cookQueue = useGameStore((state) => state.cookQueue)
   const farmRushCooking = useGameStore((state) => state.farmRushCooking)
@@ -361,6 +365,24 @@ function EnvironmentScene() {
     scene.traverse((object) => { if (typeof object.userData.rushPlot === 'number') markers.push(object) })
     return markers
   }, [scene])
+  const wateredSoilTiles = useMemo(() => {
+    const tiles: THREE.Object3D[] = []
+    scene.traverse((object) => { if (object.name.startsWith('WateredSoil_') || object.name.startsWith('WateredRushSoil_')) tiles.push(object) })
+    return tiles
+  }, [scene])
+  useEffect(() => {
+    wateredSoilTiles.forEach((tile) => {
+      const rush = /^WateredRushSoil_(\d+)_(\d+)$/.exec(tile.name)
+      const main = /^WateredSoil_(\d+)_(\d+)$/.exec(tile.name)
+      const cell = rush
+        ? farmRushCells[`FarmRushCell${rush[1]}_${rush[2]}`]
+        : main
+          ? farmCells[`${Number(main[1])}:${Number(main[2])}`]
+          : null
+      const representativeMainCell = farmCellVisualGate && main?.[1] === '0' && main?.[2] === '27'
+      tile.visible = representativeMainCell || cell?.stage === 'watered' || cell?.stage === 'ready'
+    })
+  }, [farmCells, farmRushCells, wateredSoilTiles])
   rushPlotMarkers.forEach((marker) => { marker.visible = minigameOpen && minigameKind === 'farm' && Number(marker.userData.rushPlot) === eventBay })
   const assignedPlotBeacon = useMemo(() => rushPlotMarkers.find((marker) => Number(marker.userData.rushPlot) === eventBay)?.getObjectByName('Assigned Plot Beacon'), [eventBay, rushPlotMarkers])
   const assignedPlotBeaconY = useMemo(() => assignedPlotBeacon?.position.y ?? 0, [assignedPlotBeacon])
@@ -747,7 +769,7 @@ function Player() {
     if (minigameOpen && farmCellVisualGate && !eventFarmCell) return
     if (deepVisualGate && !anchors.GateDeep) return
     const resource = minigameOpen ? ((resourceVisualGate || furnaceVisualGate) ? eventResource : farmCellVisualGate && eventFarmCell ? eventFarmCell : eventSpawn ?? eventFallback) : zone === 'forage' ? anchors.ForageApple000 : zone === 'mine' ? anchors.MineOre000 : zone === 'farm' ? ((furnaceVisualGate || resourceVisualGate) ? anchors.FurnacePad0 : anchors.FarmClaim0) : null
-    const farmCell = zone === 'farm' ? anchors.FarmCell0_00 : null
+    const farmCell = zone === 'farm' ? anchors.FarmCell0_27 : null
     if ((resourceVisualGate || furnaceVisualGate) && !resource) return
     if (farmCellVisualGate && !minigameOpen && !farmCell) return
     const resourceSpawn = resource
@@ -790,7 +812,7 @@ function Player() {
     camera.position.copy(desired)
     camera.lookAt(target)
     portalReadyAt.current = performance.now() + 1500
-  }, [anchors.FarmCell0_00, anchors.FarmClaim0, anchors.ForageApple000, anchors.ForageRushApple100, anchors.FurnacePad0, anchors.GateDeep, anchors.MineOre000, camera, eventBay, eventFallback, eventFarmCell, eventResource, eventSpawn, minigameKind, minigameOpen, teleportNonce, zone])
+  }, [anchors.FarmCell0_27, anchors.FarmClaim0, anchors.ForageApple000, anchors.ForageRushApple100, anchors.FurnacePad0, anchors.GateDeep, anchors.MineOre000, camera, eventBay, eventFallback, eventFarmCell, eventResource, eventSpawn, minigameKind, minigameOpen, teleportNonce, zone])
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {

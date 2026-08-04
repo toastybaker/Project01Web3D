@@ -465,7 +465,7 @@ function hotbarWithNewItem(hotbar: Array<ItemId | null>, inventoryBefore: Partia
   return next
 }
 
-function inventoryLayout(state: Pick<GameState, 'hotbar' | 'inventoryOrder' | 'inventory'>) {
+export function inventoryLayout(state: Pick<GameState, 'hotbar' | 'inventoryOrder' | 'inventory'>) {
   const hotbar = cleanedHotbar(state.hotbar, state.inventory)
   const seen = new Set<ItemId>(hotbar.filter((item): item is ItemId => Boolean(item)))
   const lower = state.inventoryOrder.slice(9).map((item) => {
@@ -474,7 +474,7 @@ function inventoryLayout(state: Pick<GameState, 'hotbar' | 'inventoryOrder' | 'i
     return item
   })
   const missing = (Object.keys(state.inventory) as ItemId[]).filter((item) =>
-    (state.inventory[item] ?? 0) > 0 && ITEMS[item].hotbar !== false && !seen.has(item),
+    (state.inventory[item] ?? 0) > 0 && !seen.has(item),
   )
   for (const item of missing) {
     const empty = lower.findIndex((slot) => slot === null)
