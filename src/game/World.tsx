@@ -696,7 +696,6 @@ function Player() {
   const footstepPhase = useRef(0)
   const footstepAnimation = useRef('')
   const grounded = useRef(true)
-  const landingAnimationUntil = useRef(0)
   const spawnedZone = useRef<string | null>(null)
   const zone = useGameStore((state) => state.zone)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
@@ -796,7 +795,6 @@ function Player() {
     horizontalVelocity.current.set(0, 0, 0)
     verticalVelocity.current = 0
     grounded.current = true
-    landingAnimationUntil.current = 0
     const target = new THREE.Vector3(position.current.x, position.current.y + 0.82, position.current.z)
     const horizontalDistance = Math.cos(pitch.current) * distance.current
     const desired = target.clone().add(new THREE.Vector3(
@@ -988,7 +986,6 @@ function Player() {
       verticalVelocity.current = 0
       grounded.current = true
       if (!wasGrounded && landingSpeed > 1.1) {
-        landingAnimationUntil.current = performance.now() + 340
         playGameSfx('land', liveUi.audioVolumes.master * liveUi.audioVolumes.effects)
       }
     } else {
@@ -997,17 +994,15 @@ function Player() {
     const requestedAnimation = interactionProgress > 0 && prompt
       ? 'Armature|Interact'
       : !grounded.current
-        ? 'Armature|Crouch_Idle_Loop'
-        : performance.now() < landingAnimationUntil.current
-          ? 'Armature|Jump_Land'
-          : sprinting && locomotionSpeed > 4.6
-            ? 'Armature|Sprint_Loop'
-            : moving ? 'Armature|Walk_Loop' : 'Armature|Idle_Loop'
+        ? locomotionSpeed > 0.55 ? 'Armature|Jog_Fwd_Loop' : 'Armature|Walk_Loop'
+        : sprinting && locomotionSpeed > 4.6
+          ? 'Armature|Sprint_Loop'
+          : moving ? 'Armature|Walk_Loop' : 'Armature|Idle_Loop'
     if (requestedAnimation !== activeAnimation.current || !actions[requestedAnimation]?.isRunning()) {
       actions[activeAnimation.current]?.fadeOut(0.18)
       const nextAction = actions[requestedAnimation]
       if (nextAction) {
-        nextAction.timeScale = requestedAnimation === 'Armature|Jump_Land' ? 3.4 : 1
+        nextAction.timeScale = !grounded.current ? 0.85 : 1
         nextAction.reset().fadeIn(0.18).play()
       }
       activeAnimation.current = requestedAnimation
