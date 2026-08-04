@@ -2,6 +2,8 @@ import { Room, Server, type Client } from '@colyseus/core'
 import { WebSocketTransport } from '@colyseus/ws-transport'
 import { minigameMilestones, minigameRewardPackage, scheduledMinigame } from '../src/game/minigame'
 import { MATCH_CONFIG } from '../src/game/config'
+import { canMineOre, miningYield, oreKindAtDepth, oreRespawnMs, type PickaxeItem } from '../src/game/ore'
+import { MINE_NODE_BY_ID, MINE_NODE_SITES } from '../shared/mine-nodes.js'
 
 type ZoneId = 'hub' | 'forage' | 'farm' | 'mine'
 type MinigameKind = 'mining' | 'farm' | 'forage'
@@ -10,6 +12,7 @@ type Presence = { id: string; nickname: string; zone: ZoneId; position: [number,
 type TradeOffer = { cash: number; items: Record<string, number> }
 type TradeSession = { id: string; a: string; b: string; offers: Record<string, TradeOffer>; ready: Record<string, boolean> }
 type MinigameResult = { score: number; progressValue: number }
+type SharedOreNode = { generation: number; readyAt: number }
 
 const zoneBounds: Record<ZoneId, { x: number; zMin: number; zMax: number }> = {
   hub: { x: 68, zMin: -68, zMax: 68 },
@@ -32,9 +35,73 @@ class WoodlandRoom extends Room {
   private minigameTimers = new Map<number, ReturnType<typeof setTimeout>>()
   private eventBays = new Map<string, Map<string, number>>()
   private eventStartedAt = new Map<string, number>()
+  private oreNodes = new Map<string, SharedOreNode>(MINE_NODE_SITES.map(({ id }) => [id, { generation: 0, readyAt: 0 }]))
+  private oreTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private orePauseStartedAt = 0
 
   private sendTo(id: string, type: string, payload: unknown) {
     this.clients.find((client) => client.sessionId === id)?.send(type, payload)
+  }
+
+  private oreSnapshot() {
+    return {
+      seed: this.matchSeed,
+      nodes: Object.fromEntries([...this.oreNodes.entries()].map(([id, node]) => [id, { ...node }])),
+    }
+  }
+
+  private sendOreSnapshot(client: Client) {
+    client.send('mine:snapshot', this.oreSnapshot())
+  }
+
+  private clearOreTimer(id: string) {
+    const timer = this.oreTimers.get(id)
+    if (timer) clearTimeout(timer)
+    this.oreTimers.delete(id)
+  }
+
+  private scheduleOreRespawn(id: string) {
+    this.clearOreTimer(id)
+    if (this.orePauseStartedAt) return
+    const node = this.oreNodes.get(id)
+    if (!node || node.readyAt <= 0) return
+    const delay = Math.max(0, node.readyAt - Date.now())
+    this.oreTimers.set(id, setTimeout(() => {
+      this.oreTimers.delete(id)
+      const current = this.oreNodes.get(id)
+      if (!current || current.readyAt <= 0) return
+      if (this.orePauseStartedAt || current.readyAt > Date.now()) return this.scheduleOreRespawn(id)
+      current.readyAt = 0
+      this.broadcast('mine:node', { id, ...current })
+    }, delay + 15))
+  }
+
+  private resetOreNodes() {
+    this.oreTimers.forEach((timer) => clearTimeout(timer))
+    this.oreTimers.clear()
+    this.orePauseStartedAt = 0
+    this.oreNodes = new Map(MINE_NODE_SITES.map(({ id }) => [id, { generation: 0, readyAt: 0 }]))
+    if (this.clients.length) this.broadcast('mine:snapshot', this.oreSnapshot())
+  }
+
+  private pauseOreRespawns() {
+    if (this.orePauseStartedAt) return
+    this.orePauseStartedAt = Date.now()
+    this.oreTimers.forEach((timer) => clearTimeout(timer))
+    this.oreTimers.clear()
+  }
+
+  private resumeOreRespawns() {
+    if (!this.orePauseStartedAt) return
+    const pausedMs = Date.now() - this.orePauseStartedAt
+    this.orePauseStartedAt = 0
+    for (const [id, node] of this.oreNodes) {
+      if (node.readyAt > 0) {
+        node.readyAt += pausedMs
+        this.scheduleOreRespawn(id)
+      }
+    }
+    this.broadcast('mine:snapshot', this.oreSnapshot())
   }
 
   private other(trade: TradeSession, id: string) { return trade.a === id ? trade.b : trade.a }
@@ -76,6 +143,7 @@ class WoodlandRoom extends Room {
   }
 
   private finalizeMinigame(milestone: number) {
+    this.resumeOreRespawns()
     const entries = [...(this.minigameResults.get(milestone)?.entries() ?? [])].sort((a, b) => b[1].score - a[1].score || a[0].localeCompare(b[0]))
     if (!entries.length) return
     const progress = entries.map(([, result]) => result.progressValue).sort((a, b) => a - b)
@@ -100,6 +168,7 @@ class WoodlandRoom extends Room {
       client.send('lobby:state', this.lobbyStateFor(client))
       if (this.matchStarted) client.send('match:sync', { seed: this.matchSeed, startedAt: this.matchStartedAt, durationSeconds: this.matchDurationSeconds })
       client.send('presence:snapshot', [...this.players.values()].filter((player) => player.id !== client.sessionId))
+      this.sendOreSnapshot(client)
     })
     this.onMessage('lobby:update', (client, message: { durationSeconds?: number }) => {
       if (this.matchStarted || client.sessionId !== this.hostId) return
@@ -113,6 +182,7 @@ class WoodlandRoom extends Room {
       this.matchSeed = Math.floor(Math.random() * 1_000_000_000)
       this.matchStartedAt = Date.now()
       this.matchStarted = true
+      this.resetOreNodes()
       this.broadcast('match:sync', { seed: this.matchSeed, startedAt: this.matchStartedAt, durationSeconds: this.matchDurationSeconds })
       this.broadcastLobby()
     })
@@ -126,7 +196,10 @@ class WoodlandRoom extends Room {
       const bounds = minigameOpen && minigameKind === 'forage' ? zoneBounds.forage : minigameOpen ? zoneBounds.hub : zoneBounds[zone]
       const eventKey = minigameOpen ? `${minigameMilestone}:${minigameKind}` : null
       const eventBay = eventKey ? this.assignEventBay(client.sessionId, eventKey) : undefined
-      if (eventKey && !this.eventStartedAt.has(eventKey)) this.eventStartedAt.set(eventKey, Date.now())
+      if (eventKey && !this.eventStartedAt.has(eventKey)) {
+        this.eventStartedAt.set(eventKey, Date.now())
+        this.pauseOreRespawns()
+      }
       if (!eventKey) this.releaseEventBay(client.sessionId)
       const safePosition: [number, number, number] = [
         Math.max(-bounds.x, Math.min(bounds.x, Number(position[0]))),
@@ -146,6 +219,34 @@ class WoodlandRoom extends Room {
       if (eventBay !== undefined && previous?.eventBay !== eventBay) this.sendTo(client.sessionId, 'minigame:bay', { bay: eventBay })
       this.broadcast('presence:move', presence, { except: client })
     })
+    this.onMessage('mine:request', (client, message: { id?: string; tool?: string }) => {
+      const id = message?.id
+      const site = id ? MINE_NODE_BY_ID.get(id) : null
+      const player = this.players.get(client.sessionId)
+      if (!id || !site || !player || player.zone !== 'mine' || player.minigameOpen || this.orePauseStartedAt) return
+      if (Math.hypot(player.position[0] - site.x, player.position[2] - site.z) > 5.5) return
+      const node = this.oreNodes.get(id)
+      if (!node) return
+      if (node.readyAt > Date.now()) {
+        client.send('mine:node', { id, ...node })
+        return
+      }
+      if (node.readyAt > 0) node.readyAt = 0
+      const ore = oreKindAtDepth(id, site.z, node.generation, this.matchSeed)
+      const tool = message.tool as PickaxeItem
+      if (!canMineOre(tool, ore)) {
+        client.send('mine:denied', { id, reason: 'tier' })
+        return
+      }
+      const quantity = miningYield(tool)
+      const nextGeneration = node.generation + 1
+      const readyAt = Date.now() + oreRespawnMs(id, nextGeneration, this.matchSeed)
+      const next = { generation: nextGeneration, readyAt }
+      this.oreNodes.set(id, next)
+      this.broadcast('mine:node', { id, ...next })
+      client.send('mine:award', { id, ore, quantity, ...next })
+      this.scheduleOreRespawn(id)
+    })
     this.onMessage('trade:request', (client, message: { targetId?: string }) => {
       const targetId = message?.targetId
       if (!targetId || targetId === client.sessionId || !this.players.has(targetId)) return
@@ -164,7 +265,11 @@ class WoodlandRoom extends Room {
       const trade = message?.tradeId ? this.trades.get(message.tradeId) : null
       if (!trade || (trade.a !== client.sessionId && trade.b !== client.sessionId)) return
       const rawItems = message.offer?.items ?? {}
-      const items = Object.fromEntries(Object.entries(rawItems).slice(0, 12).map(([id, quantity]) => [id, Math.max(0, Math.min(999, Math.floor(Number(quantity) || 0)))]).filter(([, quantity]) => quantity > 0))
+      const items: Record<string, number> = {}
+      for (const [id, rawQuantity] of Object.entries(rawItems).slice(0, 12)) {
+        const quantity = Math.max(0, Math.min(999, Math.floor(Number(rawQuantity) || 0)))
+        if (quantity > 0) items[id] = quantity
+      }
       trade.offers[client.sessionId] = { cash: Math.max(0, Math.min(1_000_000_000, Math.floor(Number(message.offer?.cash) || 0))), items }
       trade.ready[client.sessionId] = Boolean(message.ready)
       for (const playerId of [trade.a, trade.b]) this.sendTo(playerId, 'trade:update', { tradeId: trade.id, offers: trade.offers, ready: trade.ready })
@@ -214,6 +319,7 @@ class WoodlandRoom extends Room {
     client.send('lobby:state', this.lobbyStateFor(client))
     if (this.matchStarted) client.send('match:sync', { seed: this.matchSeed, startedAt: this.matchStartedAt, durationSeconds: this.matchDurationSeconds })
     client.send('presence:snapshot', [...this.players.values()])
+    this.sendOreSnapshot(client)
     const presence: Presence = { id: client.sessionId, nickname: `Player ${client.sessionId.slice(0, 4)}`, zone: 'hub', position: [0, 0.86, 14], cash: 100_000, stats: { foraged: 0, mined: 0, harvested: 0, sold: 0 }, seenAt: Date.now() }
     this.players.set(client.sessionId, presence)
     this.broadcast('presence:move', presence, { except: client })
@@ -229,8 +335,16 @@ class WoodlandRoom extends Room {
     this.lobbyEligible.delete(client.sessionId)
     this.releaseEventBay(client.sessionId)
     this.broadcast('presence:leave', client.sessionId)
+    if (this.orePauseStartedAt && ![...this.players.values()].some((player) => player.minigameOpen)) this.resumeOreRespawns()
     if (!this.matchStarted && client.sessionId === this.hostId) this.hostId = [...this.lobbyEligible][0] ?? null
     this.broadcastLobby()
+  }
+
+  onDispose() {
+    this.oreTimers.forEach((timer) => clearTimeout(timer))
+    this.oreTimers.clear()
+    this.minigameTimers.forEach((timer) => clearTimeout(timer))
+    this.minigameTimers.clear()
   }
 }
 

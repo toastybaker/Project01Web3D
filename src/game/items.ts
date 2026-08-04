@@ -27,11 +27,11 @@ export type ItemDefinition = {
 }
 
 export const ITEMS: Record<ItemId, ItemDefinition> = {
-  'farm-deed': { id: 'farm-deed', name: 'Farm Deed', icon: '/assets/ui/items/land-deed.png', buyPrice: 5_000_000, category: 'utility', limited: true, hotbar: false },
+  'farm-deed': { id: 'farm-deed', name: 'Farm Deed', icon: '/assets/ui/items/land-deed.png', buyPrice: 2_500_000, category: 'utility', limited: true, hotbar: false },
   'lottery-ticket': { id: 'lottery-ticket', name: 'Lottery', icon: '/assets/ui/items/lottery-ticket.png', buyPrice: 30_000, category: 'utility' },
   'information-note': { id: 'information-note', name: 'Broker Note', icon: '/assets/ui/cooking/cookbook.png', category: 'utility' },
   'cookbook-box': { id: 'cookbook-box', name: 'Cookbook Box', icon: '/assets/ui/cooking/cookbook.png', buyPrice: 600_000, category: 'cooking' },
-  furnace: { id: 'furnace', name: 'Farm Furnace', icon: '/assets/ui/cooking/furnace-idle-v2.png', buyPrice: 2_000_000, category: 'cooking', hotbar: false },
+  furnace: { id: 'furnace', name: 'Farm Furnace', icon: '/assets/ui/cooking/furnace-idle-v2.png', buyPrice: 1_500_000, category: 'cooking', hotbar: false },
   'water-can': { id: 'water-can', name: 'Watering Can', icon: '/assets/ui/items/water-can-v2.png', buyPrice: 90_000, category: 'tool' },
   'worn-pickaxe': { id: 'worn-pickaxe', name: PICKAXE_CONFIG['worn-pickaxe'].name, icon: '/assets/ui/items/worn-pickaxe.png', category: 'tool' },
   'iron-pickaxe': { id: 'iron-pickaxe', name: PICKAXE_CONFIG['iron-pickaxe'].name, icon: '/assets/ui/items/iron-pickaxe.png', buyPrice: PICKAXE_CONFIG['iron-pickaxe'].price, category: 'tool', limited: true },

@@ -38,16 +38,16 @@ export function oreWeightsAtDepth(z: number): Record<OreItem, number> {
   }
 }
 
-export function oreKindAtDepth(nodeId: string, z: number, spawnSeed = 0): OreItem {
+export function oreKindAtDepth(nodeId: string, z: number, generation = 0, matchSeed = 0): OreItem {
   const weights = oreWeightsAtDepth(z)
-  if (spawnSeed === 0) {
+  if (generation === 0) {
     weights['gold-ore'] = 0
     weights['crystal-ore'] = 0
     weights['ancient-ore'] = 0
   }
   const ordered = Object.entries(weights) as Array<[OreItem, number]>
   const total = ordered.reduce((sum, [, weight]) => sum + weight, 0)
-  let roll = hash01(`${nodeId}:${Math.floor(spawnSeed)}`) * total
+  let roll = hash01(`${Math.floor(matchSeed)}:${nodeId}:${Math.floor(generation)}`) * total
   for (const [item, weight] of ordered) { roll -= weight; if (roll <= 0) return item }
   return 'copper-ore'
 }
@@ -72,7 +72,7 @@ export function requiredPickaxe(ore: OreItem): PickaxeItem {
 export function miningYield(tool: ItemId | null, random = Math.random()) {
   return isPickaxe(tool) ? 1 + fortuneBonus(PICKAXE_CONFIG[tool].fortune, random) : 0
 }
-export function oreRespawnMs(ore: OreItem, nodeId = '') {
-  const [minimum, maximum] = ORE_CONFIG[ore].respawn
-  return Math.round((minimum + hash01(`${nodeId}:${ore}:respawn`) * (maximum - minimum)) * 1000)
+export function oreRespawnMs(nodeId = '', generation = 0, matchSeed = 0) {
+  const [minimum, maximum] = MATCH_CONFIG.oreRespawnSeconds
+  return Math.round((minimum + hash01(`${Math.floor(matchSeed)}:${nodeId}:${Math.floor(generation)}:respawn`) * (maximum - minimum)) * 1000)
 }

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { ITEMS, SHOPS, STOCKS, type ItemId, type ShopKind, type StockId } from './items'
 import { isPickaxe, canMineOre, miningYield, oreRespawnMs, type OreItem } from './ore'
-import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, FORAGE_CONFIG, MATCH_CONFIG, forageSiteAvailability, fortuneBonus, nextRareForageRollAt, type CommodityId } from './config'
+import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, FORAGE_CONFIG, MATCH_CONFIG, ORE_CONFIG, forageSiteAvailability, fortuneBonus, nextRareForageRollAt, type CommodityId } from './config'
 import { advanceCommodityCycle, commodityPrice, formatCoins, initialCommodityMarket, lotteryJackpot, lotteryPrice, lotteryTwoMatch, marginalSale, nextStockPrice, scaledValue, seeded01, stockAvailable, stockWaveQuantity, type CommodityMarket } from './economy'
 import { RECIPES, RECIPE_IDS, type FoodItemId, type RecipeId } from './recipes'
 import { COOKBOOK_BOX_REWARD_VALUE, FARM_RUSH_GROWTH_MS, FARM_RUSH_ORDER_INTERVAL_MS, FARM_RUSH_ORDER_LIFETIME_MS, FORAGE_RUSH_DELIVERY_POINTS, FORAGE_RUSH_REQUIREMENTS, MINING_RUSH_POINTS, MINING_RUSH_RESPAWN_MS, farmRushOrders, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCell, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MinigameKind } from './minigame'
@@ -18,6 +18,7 @@ export type LotteryTicket = { id: string; numbers: number[]; drawRound: number; 
 export type BrokerNote = { id: string; title: string; text: string; round: number }
 export type CookJob = { id: string; recipe: RecipeId; quantity: number; furnaceIndex: number; readyAt: number }
 export type RushNodeState = { generation: number; readyAt: number }
+export type MineNodeState = { generation: number; readyAt: number }
 type MinigameSnapshot = { zone: ZoneId; playerPosition: Vec3; hotbar: Array<ItemId | null>; selectedHotbar: number; inventoryOpen: boolean; startedAt: number }
 export type FarmRushCooking = { orderIndex: number; readyAt: number } | null
 export type FarmRushTicket = { orderIndex: number; expiresAt: number }
@@ -48,6 +49,14 @@ export const SECRET_DEALS: Record<Exclude<ZoneId, 'hub'>, SecretDeal[]> = {
 
 export function secretZoneForRound(round: number): Exclude<ZoneId, 'hub'> {
   return (['forage', 'farm', 'mine'] as const)[(Math.max(1, round) - 1) % 3]
+}
+
+export function secretSiteForRound(zone: Exclude<ZoneId, 'hub'>, round: number, sessionSeed = 9731) {
+  const zoneIndex = ({ forage: 0, farm: 1, mine: 2 } as const)[zone]
+  const visit = Math.floor((Math.max(1, round) - 1) / 3)
+  const start = Math.floor(seeded01(sessionSeed + zoneIndex * 6151) * 3)
+  const direction = seeded01(sessionSeed + zoneIndex * 9157 + 31) < 0.5 ? 1 : 2
+  return (start + visit * direction) % 3
 }
 
 export function secretDealForRound(zone: Exclude<ZoneId, 'hub'>, round: number) {
@@ -170,7 +179,8 @@ const requestedBalanceRound = query.get('gate') === 'balance' ? Number(query.get
 const bypassLobby = query.has('gate') || requestedPanel !== null || requestedZone !== null
 const balanceRound = Number.isInteger(requestedBalanceRound) && requestedBalanceRound >= 1 && requestedBalanceRound <= 20 ? requestedBalanceRound : null
 const initialZone: ZoneId = requestedZone === 'forage' || requestedZone === 'farm' || requestedZone === 'mine' ? requestedZone : 'hub'
-const savedVolumes = readJson<{ master: number; music: number; ambience: number }>('project01-audio')
+const savedVolumes = readJson<Partial<{ master: number; music: number; ambience: number; effects: number }>>('project01-audio')
+const initialVolumes = { master: 0.55, music: 0.42, ambience: 0.38, effects: 0.62, ...savedVolumes }
 const savedSensitivity = (() => {
   const value = Number(localStorage.getItem('project01-camera-sensitivity'))
   return Number.isFinite(value) && value >= 0.35 && value <= 1.8 ? value : 1
@@ -208,6 +218,8 @@ type GameState = {
   claimedFarms: number[]
   collectedForage: Record<string, number>
   minedNodes: Record<string, number>
+  mineGenerations: Record<string, number>
+  mineAwardGenerations: Record<string, number>
   weather: WeatherKind
   weatherSeconds: number
   marketRates: MarketRates
@@ -222,7 +234,7 @@ type GameState = {
   stats: Stats
   sessionComplete: boolean
   toast: string | null
-  audioVolumes: { master: number; music: number; ambience: number }
+  audioVolumes: { master: number; music: number; ambience: number; effects: number }
   cameraSensitivity: number
   cameraInvertY: boolean
   shiftLocked: boolean
@@ -294,11 +306,14 @@ type GameState = {
   farmAction: (farmIndex: number, index: number) => void
   claimFarm: (index: number) => void
   mineNode: (id: string, item: OreItem) => void
+  syncMineSnapshot: (seed: number, nodes: Record<string, MineNodeState>) => void
+  syncMineNode: (id: string, node: MineNodeState) => void
+  awardMineNode: (id: string, item: OreItem, quantity: number, node: MineNodeState) => void
   collectForage: (id: string, item: ItemId) => void
   setStockOpen: (open: boolean) => void
   tradeStock: (id: StockId, quantity: number) => void
   setToast: (toast: string | null) => void
-  setVolume: (channel: 'master' | 'music' | 'ambience', value: number) => void
+  setVolume: (channel: 'master' | 'music' | 'ambience' | 'effects', value: number) => void
   setCameraSensitivity: (value: number) => void
   setCameraInvertY: (value: boolean) => void
   setShiftLocked: (locked: boolean) => void
@@ -333,11 +348,19 @@ type GameState = {
   tickGame: () => void
 }
 
-export function economyProgressValue(state: Pick<GameState, 'cash' | 'inventory' | 'portfolio' | 'farmCells'>) {
+export function economyProgressValue(state: Pick<GameState, 'cash' | 'inventory' | 'portfolio' | 'farmCells' | 'claimedFarms' | 'knownRecipes'>) {
   const ownedValue = (Object.keys(state.inventory) as ItemId[]).reduce((sum, id) => sum + (ITEMS[id].buyPrice ?? 0) * (state.inventory[id] ?? 0), 0)
+  const gatheredValue = (Object.keys(state.inventory) as ItemId[]).reduce((sum, id) => sum + (ITEMS[id].sellPrice ?? 0) * (state.inventory[id] ?? 0), 0)
+  const preparedValue = RECIPE_IDS.reduce((sum, recipeId) => {
+    const recipe = RECIPES[recipeId]
+    const ingredientValue = Object.entries(recipe.ingredients).reduce((subtotal, [id, quantity]) => subtotal + (ITEMS[id as ItemId].sellPrice ?? 0) * Number(quantity), 0)
+    return sum + ingredientValue * recipe.multiplier * (state.inventory[recipe.food] ?? 0)
+  }, 0)
   const stockBasis = (Object.keys(STOCKS) as StockId[]).reduce((sum, id) => sum + STOCKS[id].basePrice * (state.portfolio[id] ?? 0), 0)
   const plantedValue = Object.values(state.farmCells).reduce((sum, cell) => sum + (cell.crop ? CROP_CONFIG[cell.crop].seedPrice : 0), 0)
-  return state.cash + ownedValue + stockBasis + plantedValue
+  const claimedFarmValue = state.claimedFarms.length * (ITEMS['farm-deed'].buyPrice ?? 0)
+  const recipeValue = state.knownRecipes.length * COOKBOOK_BOX_REWARD_VALUE
+  return Math.round(state.cash + ownedValue + gatheredValue + preparedValue + stockBasis + plantedValue + claimedFarmValue + recipeValue)
 }
 
 const emptyOrder = Array.from({ length: 36 }, () => null as ItemId | null)
@@ -473,6 +496,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   claimedFarms: saved?.claimedFarms ?? (saved?.claimedFarm === null || saved?.claimedFarm === undefined ? [] : [saved.claimedFarm]),
   collectedForage: {},
   minedNodes: {},
+  mineGenerations: {},
+  mineAwardGenerations: {},
   weather: 'rain',
   weatherSeconds: 45,
   marketRates: { crop: 1, forage: 1, ore: 1 },
@@ -487,7 +512,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   stats: saved?.stats ?? { foraged: 0, mined: 0, harvested: 0, sold: 0 },
   sessionComplete: requestedPanel === 'results' && balanceRound === MATCH_CONFIG.totalRounds,
   toast: null,
-  audioVolumes: savedVolumes ?? { master: 0.55, music: 0.42, ambience: 0.38 },
+  audioVolumes: initialVolumes,
   cameraSensitivity: savedSensitivity,
   cameraInvertY: savedInvertY,
   shiftLocked: savedShiftLock,
@@ -703,15 +728,50 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!pickaxe) return set({ toast: 'Select a pickaxe' })
     if (!canMineOre(pickaxe, item)) return set({ toast: 'Pickaxe tier too low' })
     const quantity = miningYield(pickaxe)
-    const cooldown = oreRespawnMs(item, id)
+    const nextGeneration = (state.mineGenerations[id] ?? 0) + 1
+    const cooldown = oreRespawnMs(id, nextGeneration, state.sessionSeed)
     set({
       minedNodes: { ...state.minedNodes, [id]: Date.now() + cooldown },
+      mineGenerations: { ...state.mineGenerations, [id]: nextGeneration },
+      mineAwardGenerations: { ...state.mineAwardGenerations, [id]: nextGeneration },
       inventory: { ...state.inventory, [item]: (state.inventory[item] ?? 0) + quantity },
       hotbar: hotbarWithNewItem(state.hotbar, state.inventory, item),
       stats: { ...state.stats, mined: state.stats.mined + quantity },
       toast: `+${quantity} ${ITEMS[item].name}`,
     })
   },
+  syncMineSnapshot: (seed, nodes) => set((state) => {
+    const minedNodes: Record<string, number> = {}
+    const mineGenerations: Record<string, number> = {}
+    for (const [id, node] of Object.entries(nodes ?? {})) {
+      if (!id.startsWith('MineOre') || !Number.isFinite(node?.generation) || !Number.isFinite(node?.readyAt)) continue
+      minedNodes[id] = Math.max(0, Number(node.readyAt))
+      mineGenerations[id] = Math.max(0, Math.floor(Number(node.generation)))
+    }
+    const nextSeed = Number.isFinite(seed) ? Math.floor(seed) : state.sessionSeed
+    return { sessionSeed: nextSeed, minedNodes, mineGenerations, mineAwardGenerations: nextSeed === state.sessionSeed ? state.mineAwardGenerations : {} }
+  }),
+  syncMineNode: (id, node) => set((state) => {
+    if (!id.startsWith('MineOre') || !Number.isFinite(node?.generation) || !Number.isFinite(node?.readyAt)) return state
+    return {
+      minedNodes: { ...state.minedNodes, [id]: Math.max(0, Number(node.readyAt)) },
+      mineGenerations: { ...state.mineGenerations, [id]: Math.max(0, Math.floor(Number(node.generation))) },
+    }
+  }),
+  awardMineNode: (id, item, quantity, node) => set((state) => {
+    const generation = Math.max(0, Math.floor(Number(node?.generation)))
+    if (!id.startsWith('MineOre') || !(item in ORE_CONFIG) || !Number.isFinite(node?.readyAt) || (state.mineAwardGenerations[id] ?? -1) >= generation) return state
+    const awarded = Math.max(1, Math.min(5, Math.floor(Number(quantity) || 1)))
+    return {
+      minedNodes: { ...state.minedNodes, [id]: Math.max(0, Number(node.readyAt)) },
+      mineGenerations: { ...state.mineGenerations, [id]: generation },
+      mineAwardGenerations: { ...state.mineAwardGenerations, [id]: generation },
+      inventory: { ...state.inventory, [item]: (state.inventory[item] ?? 0) + awarded },
+      hotbar: hotbarWithNewItem(state.hotbar, state.inventory, item),
+      stats: { ...state.stats, mined: state.stats.mined + awarded },
+      toast: `+${awarded} ${ITEMS[item].name}`,
+    }
+  }),
   collectForage: (id, item) => {
     const state = get()
     const now = Date.now()

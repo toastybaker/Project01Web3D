@@ -4,19 +4,20 @@ import { Html, useAnimations, useGLTF } from '@react-three/drei'
 import * as THREE from 'three'
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import { Client as ColyseusClient } from 'colyseus.js'
-import { economyProgressValue, secretZoneForRound, useGameStore, type AnchorMap, type WorldCollider, type ZoneId } from './store'
+import { economyProgressValue, secretSiteForRound, secretZoneForRound, useGameStore, type AnchorMap, type WorldCollider, type ZoneId } from './store'
 import { ORE_COLORS, oreKindAtDepth } from './ore'
 import { emitMultiplayer, setMultiplayerSender } from './multiplayer'
 import { activeRareForageIds, forageSiteAvailability, fruitTreeCapacity } from './config'
 import { miningRushOre, type MinigameKind } from './minigame'
+import { playGameSfx } from './sfx'
 
 const SCENES: Record<ZoneId, string> = {
-  hub: '/assets/3d/scenes/hub.glb?v=13',
-  forage: '/assets/3d/scenes/forage.glb?v=18',
+  hub: '/assets/3d/scenes/hub.glb?v=14',
+  forage: '/assets/3d/scenes/forage.glb?v=23',
   farm: '/assets/3d/scenes/farm.glb?v=15',
-  mine: '/assets/3d/scenes/mine.glb?v=21',
+  mine: '/assets/3d/scenes/mine.glb?v=24',
 }
-const MINING_RUSH_SCENE = '/assets/3d/scenes/mining-rush.glb?v=9'
+const MINING_RUSH_SCENE = '/assets/3d/scenes/mining-rush.glb?v=10'
 const FARM_RUSH_SCENE = '/assets/3d/scenes/farm-rush.glb?v=10'
 const FORAGE_RUSH_SCENE = '/assets/3d/scenes/forage-rush.glb?v=7'
 const MINIGAME_SCENES: Record<MinigameKind, string> = { mining: MINING_RUSH_SCENE, farm: FARM_RUSH_SCENE, forage: FORAGE_RUSH_SCENE }
@@ -259,7 +260,7 @@ function WeatherEffect() {
 
 function applyOreAppearance(object: THREE.Object3D, id: string, readyAt: number, forcedKind?: keyof typeof ORE_COLORS) {
   if (!id.startsWith('MineOre') && !id.startsWith('RushOre')) return
-  const kind = forcedKind ?? oreKindAtDepth(id, object.position.z, readyAt)
+  const kind = forcedKind ?? oreKindAtDepth(id, object.position.z)
   if (object.userData.oreKind === kind && object.userData.oreAppearanceVersion === 2) return
   object.userData.oreKind = kind
   object.userData.oreAppearanceVersion = 2
@@ -327,6 +328,7 @@ function EnvironmentScene() {
   const rushNodes = useGameStore((state) => state.rushNodes)
   const forageRushCollected = useGameStore((state) => state.forageRushCollected)
   const minedNodes = useGameStore((state) => state.minedNodes)
+  const mineGenerations = useGameStore((state) => state.mineGenerations)
   const collectedForage = useGameStore((state) => state.collectedForage)
   const setAnchors = useGameStore((state) => state.setAnchors)
   const setColliders = useGameStore((state) => state.setColliders)
@@ -387,7 +389,12 @@ function EnvironmentScene() {
       object.visible = id.startsWith('Forage') ? forageAvailable > 0 && rareActive : readyAt <= Date.now()
       if (object.visible) {
         if (id.startsWith('Forage')) applyFruitAppearance(object, id, forageAvailable)
-        applyOreAppearance(object, id, readyAt, id.startsWith('RushOre') ? miningRushOre(minigameMilestone, id, rushNode.generation) : undefined)
+        const oreKind = id.startsWith('RushOre')
+          ? miningRushOre(minigameMilestone, id, rushNode.generation)
+          : id.startsWith('MineOre')
+            ? oreKindAtDepth(id, object.position.z, mineGenerations[id] ?? 0, sessionSeed)
+            : undefined
+        applyOreAppearance(object, id, readyAt, oreKind)
         if (id.startsWith('MineOre') || id.startsWith('RushOre')) {
           if (!object.userData.restScale) object.userData.restScale = object.scale.clone()
           const live = useGameStore.getState()
@@ -446,7 +453,12 @@ function EnvironmentScene() {
         object.visible = id.startsWith('Forage') ? forageAvailable > 0 && rareActive : readyAt <= Date.now()
         if (object.visible) {
           if (id.startsWith('Forage')) applyFruitAppearance(object, id, forageAvailable)
-          applyOreAppearance(object, id, readyAt, id.startsWith('RushOre') ? miningRushOre(minigameMilestone, id, rushNode.generation) : undefined)
+          const oreKind = id.startsWith('RushOre')
+            ? miningRushOre(minigameMilestone, id, rushNode.generation)
+            : id.startsWith('MineOre')
+              ? oreKindAtDepth(id, object.position.z, mineGenerations[id] ?? 0, sessionSeed)
+              : undefined
+          applyOreAppearance(object, id, readyAt, oreKind)
         }
         }
       }
@@ -473,7 +485,7 @@ function EnvironmentScene() {
     })
     setAnchors(anchors)
     setColliders(colliders)
-  }, [claimedFarms, collectedForage, eventBay, farmRushCooking, forageRushCollected, furnaceBodies, furnaceCount, matchStartedAt, minedNodes, minigameKind, minigameMilestone, minigameOpen, rareResourceIds, rushNodes, scene, sessionSeed, setAnchors, setColliders])
+  }, [claimedFarms, collectedForage, eventBay, farmRushCooking, forageRushCollected, furnaceBodies, furnaceCount, matchStartedAt, minedNodes, mineGenerations, minigameKind, minigameMilestone, minigameOpen, rareResourceIds, rushNodes, scene, sessionSeed, setAnchors, setColliders])
 
   return <primitive object={scene} />
 }
@@ -600,7 +612,7 @@ function MultiplayerPresence() {
         room.onMessage('minigame:bay', (message: { bay?: number }) => { if (Number.isFinite(message.bay)) setEventBay(Number(message.bay)) })
         room.onMessage('presence:move', (message: PeerPresence) => mergePeer(message))
         room.onMessage('presence:leave', (id: string) => removePeer(id))
-        for (const type of ['trade:request', 'trade:opened', 'trade:update', 'trade:cancel', 'trade:commit', 'minigame:result', 'minigame:forage']) room.onMessage(type, (payload: unknown) => emitMultiplayer(type, payload))
+        for (const type of ['trade:request', 'trade:opened', 'trade:update', 'trade:cancel', 'trade:commit', 'minigame:result', 'minigame:forage', 'mine:snapshot', 'mine:node', 'mine:award', 'mine:denied']) room.onMessage(type, (payload: unknown) => emitMultiplayer(type, payload))
         setMultiplayerSender((type, payload) => room.send(type, payload))
         room.send('lobby:ready', {})
         const publish = () => {
@@ -653,6 +665,7 @@ function Player() {
   const cameraRaycaster = useRef(new THREE.Raycaster())
   const lastStoreUpdate = useRef(0)
   const portalReadyAt = useRef(0)
+  const nextFootstepAt = useRef(0)
   const spawnedZone = useRef<string | null>(null)
   const zone = useGameStore((state) => state.zone)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
@@ -856,6 +869,13 @@ function Player() {
     if (moving) direction.normalize()
     const sprinting = moving && Boolean(keys.current.ShiftLeft || keys.current.ShiftRight)
     const speed = sprinting ? 8.4 : 3.9
+    if (moving && state.clock.elapsedTime >= nextFootstepAt.current) {
+      const stoneFloor = zone === 'mine' || (liveUi.minigameOpen && liveUi.minigameKind === 'mining')
+      playGameSfx(stoneFloor ? 'footstep-stone' : 'footstep-grass', liveUi.audioVolumes.master * liveUi.audioVolumes.effects)
+      nextFootstepAt.current = state.clock.elapsedTime + (sprinting ? 0.31 : 0.48)
+    } else if (!moving) {
+      nextFootstepAt.current = state.clock.elapsedTime
+    }
     const next = position.current.clone().addScaledVector(direction, speed * delta)
     if (liveUi.minigameOpen) {
       const eventLimit = liveUi.minigameKind === 'forage' ? 216 : liveUi.minigameKind === 'farm' ? 49 : 57
@@ -986,7 +1006,8 @@ function InteractiveWorldObjects() {
   const farmRushCells = useGameStore((state) => state.farmRushCells)
   const forageRushDelivered = useGameStore((state) => state.forageRushDelivered)
   const roundNumber = useGameStore((state) => state.roundNumber)
-  const secretPoint = anchors[`SecretSite${(roundNumber - 1) % 3}`]
+  const sessionSeed = useGameStore((state) => state.sessionSeed)
+  const secretPoint = zone === 'hub' ? null : anchors[`SecretSite${secretSiteForRound(zone, roundNumber, sessionSeed)}`]
   const secretActive = zone !== 'hub' && secretZoneForRound(roundNumber) === zone && secretPoint
   return (
     <>
@@ -1118,7 +1139,7 @@ function InteractionTargeter() {
     for (const anchor of anchorIds) {
       if (minigameOpen && !anchor.startsWith('RushOre') && !anchor.startsWith('FarmRush') && !anchor.startsWith('ForageRush')) continue
       if (minigameOpen && eventBayForAnchor(anchor) !== null && eventBayForAnchor(anchor) !== eventBay) continue
-      if (anchor.startsWith('SecretSite') && (zone === 'hub' || secretZoneForRound(roundNumber) !== zone || anchor !== `SecretSite${(roundNumber - 1) % 3}`)) continue
+      if (anchor.startsWith('SecretSite') && (zone === 'hub' || secretZoneForRound(roundNumber) !== zone || anchor !== `SecretSite${secretSiteForRound(zone, roundNumber, sessionSeed)}`)) continue
       const candidate = candidateForAnchor(anchor, claimedFarms, furnaceCount)
       if (!candidate) continue
       if ((anchor.startsWith('ForageTruffle') || anchor.startsWith('ForageDiscovery') || anchor.startsWith('ForageRushTruffle') || anchor.startsWith('ForageRushDiscovery')) && !activeRares.has(anchor)) continue
@@ -1169,6 +1190,8 @@ function InteractionFocus() {
   const prompt = useGameStore((state) => state.prompt)
   const anchors = useGameStore((state) => state.anchors)
   const roundNumber = useGameStore((state) => state.roundNumber)
+  const sessionSeed = useGameStore((state) => state.sessionSeed)
+  const zone = useGameStore((state) => state.zone)
   if (!prompt) return null
   const cell = /^farm-cell:(\d+):(\d+)$/.exec(prompt.id)
   const rushCell = /^FarmRushCell\d+_\d+$/.test(prompt.id)
@@ -1179,7 +1202,7 @@ function InteractionFocus() {
       ? `FarmCell${cell[1]}_${String(Number(cell[2])).padStart(2, '0')}`
       : claim
         ? `FarmClaim${claim[1]}`
-        : ({ shop: 'NpcShop', stocks: 'NpcStocks', 'forage-shop': 'NpcForageShop', 'forage-sell': 'NpcForageBuyer', 'farm-shop': 'NpcFarmShop', 'produce-shop': 'NpcProduceBuyer', 'mine-shop': 'NpcMineShop', 'ore-shop': 'NpcOreBuyer', 'secret-npc': `SecretSite${(roundNumber - 1) % 3}` } as Record<string, string>)[prompt.id] ?? prompt.id
+        : ({ shop: 'NpcShop', stocks: 'NpcStocks', 'forage-shop': 'NpcForageShop', 'forage-sell': 'NpcForageBuyer', 'farm-shop': 'NpcFarmShop', 'produce-shop': 'NpcProduceBuyer', 'mine-shop': 'NpcMineShop', 'ore-shop': 'NpcOreBuyer', 'secret-npc': zone === 'hub' ? '' : `SecretSite${secretSiteForRound(zone, roundNumber, sessionSeed)}` } as Record<string, string>)[prompt.id] ?? prompt.id
   const furnace = /^furnace:(\d+)$/.exec(prompt.id)
   const point = anchors[furnace ? `FurnacePad${furnace[1]}` : anchorId]
   if (!point) return null

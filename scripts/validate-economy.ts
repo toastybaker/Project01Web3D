@@ -2,7 +2,7 @@ import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, FORAGE_CONFIG, MAT
 import { advanceCommodityCycle, initialCommodityMarket, lotteryJackpot, lotteryPrice, lotteryTwoMatch, marginalSale, nextStockPrice, stockWaveQuantity } from '../src/game/economy'
 import { STOCKS, type StockId } from '../src/game/items'
 import { RECIPES } from '../src/game/recipes'
-import { oreWeightsAtDepth } from '../src/game/ore'
+import { oreKindAtDepth, oreRespawnMs, oreWeightsAtDepth } from '../src/game/ore'
 
 function assert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message) }
 
@@ -12,6 +12,7 @@ assert(PICKAXE_CONFIG['steel-pickaxe'].price === 4_000_000, 'Steel pickaxe price
 assert(PICKAXE_CONFIG['crystal-pickaxe'].price === 18_000_000, 'Crystal pickaxe price drifted')
 assert(ORE_CONFIG['copper-ore'].value === 8_000 && ORE_CONFIG['ancient-ore'].value === 1_500_000, 'Ore endpoints drifted')
 assert(CROP_CONFIG.wheat.seedPrice === 10_000 && CROP_CONFIG.watermelon.seedPrice === 750_000, 'Crop prices drifted')
+assert(COMMODITY_MARKET_CONFIG.watermelon.neutral >= 100 && COMMODITY_MARKET_CONFIG.watermelon.demand[0] >= 15, 'Watermelon market cannot absorb a normal harvest')
 assert(FORAGE_CONFIG.apple.value === 4_000 && FORAGE_CONFIG.orange.value === 6_000, 'Orchard fruit values drifted')
 assert(BASKET_CONFIG.hand.capacity === 24 && BASKET_CONFIG.basket.capacity === 80 && BASKET_CONFIG['reinforced-basket'].capacity === 180 && BASKET_CONFIG['master-basket'].capacity === 360, 'Fruit storage progression drifted')
 assert(Object.values(RECIPES).every((recipe) => Object.keys(recipe.ingredients).length <= 4 && recipe.multiplier <= 1.65 && recipe.cookSeconds >= 30 && recipe.cookSeconds <= 60), 'Recipe bounds failed')
@@ -50,6 +51,16 @@ assert(deepOre['copper-ore'] > deepOre['iron-ore'] && deepOre['copper-ore'] > 0.
 assert(deepOre['ancient-ore'] > 0 && deepOre['ancient-ore'] < 0.02, 'Ancient ore depth tail is out of bounds')
 assert(middleOre['silver-ore'] > entranceOre['silver-ore'] && deepOre['silver-ore'] > middleOre['silver-ore'], 'Silver depth curve is not progressive')
 
+const rareOres = new Set(['gold-ore', 'crystal-ore', 'ancient-ore'])
+for (let seed = 0; seed < 500; seed += 1) assert(!rareOres.has(oreKindAtDepth('MineOre244', -190, 0, seed)), 'Initial rare-ore gate leaked')
+let rerolledRare = false
+for (let seed = 0; seed < 2_000; seed += 1) if (rareOres.has(oreKindAtDepth('MineOre244', -190, 1, seed))) rerolledRare = true
+assert(rerolledRare, 'Rare ores never enter deep-node rerolls')
+for (let generation = 1; generation < 40; generation += 1) {
+  const cooldown = oreRespawnMs('MineOre244', generation, 913_711)
+  assert(cooldown >= 28_000 && cooldown <= 35_000, `Ore respawn escaped target range: ${cooldown}`)
+}
+
 const lotteryEv = ((27 / 220) * lotteryTwoMatch() + (1 / 220) * lotteryJackpot()) / lotteryPrice()
 assert(lotteryEv >= 0.92 && lotteryEv <= 0.96, `Lottery EV ${(lotteryEv * 100).toFixed(2)}%`)
 
@@ -64,6 +75,8 @@ for (const id of Object.keys(COMMODITY_MARKET_CONFIG) as Array<keyof typeof COMM
   assert(flood.proceeds / floodQuantity < one.proceeds, `${id} is not marginally priced`)
   commodityRows.push({ item: id, neutral, firstUnit: one.proceeds, floodedAverage: Math.round(flood.proceeds / floodQuantity) })
 }
+const watermelonBatch = marginalSale('watermelon', CROP_CONFIG.watermelon.value, COMMODITY_MARKET_CONFIG.watermelon.neutral, 16)
+assert(watermelonBatch.proceeds > CROP_CONFIG.watermelon.seedPrice * 16, 'A normal watermelon batch loses money at neutral demand')
 
 let market = initialCommodityMarket()
 for (let cycle = 1; cycle <= MATCH_CONFIG.totalRounds; cycle += 1) market = advanceCommodityCycle(market, cycle, cycle % 3 === 0 ? 'rain' : 'clear')

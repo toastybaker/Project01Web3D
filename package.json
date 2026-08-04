@@ -15,6 +15,7 @@
     "test:economy": "tsx scripts/validate-economy.ts",
     "test:hour": "tsx scripts/validate-hour.ts",
     "test:minigames": "tsx scripts/validate-minigames.ts",
+    "test:multiplayer": "tsx scripts/validate-multiplayer-mine.ts",
     "build": "tsc -b && vite build",
     "preview": "concurrently -k -n web,server \"vite preview\" \"tsx server/index.ts\""
   },

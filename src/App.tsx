@@ -5,9 +5,10 @@ import { commodityPrice, formatCoins, lotteryJackpot, lotteryPrice, lotteryTwoMa
 import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, MATCH_CONFIG, PICKAXE_CONFIG, type CommodityId } from './game/config'
 import { canMineOre, miningDuration, oreKindAtDepth, requiredPickaxe } from './game/ore'
 import { onMultiplayer, sendMultiplayer } from './game/multiplayer'
-import { economyProgressValue, lotteryDraw, preparedFoodValue, secretStockOffer, useGameStore } from './game/store'
+import { economyProgressValue, lotteryDraw, preparedFoodValue, secretStockOffer, useGameStore, type MineNodeState } from './game/store'
 import { RECIPES, RECIPE_IDS, type RecipeId } from './game/recipes'
-import { FARM_RUSH_CROPS, FARM_RUSH_ORDER_LIFETIME_MS, FORAGE_RUSH_REQUIREMENTS, MINIGAME_DURATION, MINING_RUSH_POINTS, farmRushOrders, minigameRewardPackage, miningRushOre, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MiningRushOre } from './game/minigame'
+import { FARM_RUSH_CROPS, FARM_RUSH_ORDER_LIFETIME_MS, FORAGE_RUSH_REQUIREMENTS, MINIGAME_DURATION, MINING_RUSH_POINTS, farmRushOrders, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MiningRushOre } from './game/minigame'
+import { playGameSfx, type GameSfx } from './game/sfx'
 
 function forageItem(anchorId: string): ItemId | null {
   if (anchorId.startsWith('ForageApple')) return 'apple'
@@ -50,8 +51,39 @@ function activatePrompt(id: string) {
   }
   if (id.startsWith('MineOre')) {
     const point = state.anchors[id]
-    if (point) return state.mineNode(id, oreKindAtDepth(id, point[2], state.minedNodes[id] ?? 0))
+    if (point) {
+      const ore = oreKindAtDepth(id, point[2], state.mineGenerations[id] ?? 0, state.sessionSeed)
+      const tool = state.hotbar[state.selectedHotbar]
+      if (sendMultiplayer('mine:request', { id, tool })) return
+      return state.mineNode(id, ore)
+    }
   }
+}
+
+function MineSync() {
+  const syncSnapshot = useGameStore((state) => state.syncMineSnapshot)
+  const syncNode = useGameStore((state) => state.syncMineNode)
+  const awardNode = useGameStore((state) => state.awardMineNode)
+  const setToast = useGameStore((state) => state.setToast)
+  useEffect(() => {
+    const offSnapshot = onMultiplayer('mine:snapshot', (raw) => {
+      const message = raw as { seed?: number; nodes?: Record<string, MineNodeState> }
+      if (Number.isFinite(message.seed) && message.nodes) syncSnapshot(Number(message.seed), message.nodes)
+    })
+    const offNode = onMultiplayer('mine:node', (raw) => {
+      const message = raw as { id?: string; generation?: number; readyAt?: number }
+      if (message.id && Number.isFinite(message.generation) && Number.isFinite(message.readyAt)) syncNode(message.id, { generation: Number(message.generation), readyAt: Number(message.readyAt) })
+    })
+    const offAward = onMultiplayer('mine:award', (raw) => {
+      const message = raw as { id?: string; ore?: ItemId; quantity?: number; generation?: number; readyAt?: number }
+      if (message.id && message.ore?.endsWith('-ore') && Number.isFinite(message.generation) && Number.isFinite(message.readyAt)) awardNode(message.id, message.ore as Parameters<typeof awardNode>[1], Number(message.quantity), { generation: Number(message.generation), readyAt: Number(message.readyAt) })
+    })
+    const offDenied = onMultiplayer('mine:denied', (raw) => {
+      if ((raw as { reason?: string })?.reason === 'tier') setToast('Pickaxe tier too low')
+    })
+    return () => { offSnapshot(); offNode(); offAward(); offDenied() }
+  }, [awardNode, setToast, syncNode, syncSnapshot])
+  return null
 }
 
 function AudioBed() {
@@ -125,6 +157,57 @@ function AudioBed() {
   return null
 }
 
+type BurstKind = 'stone' | 'leaf' | 'water' | 'gold' | 'spark'
+
+function feedbackFor(toast: string, zone: ReturnType<typeof useGameStore.getState>['zone'], cashDelta: number, minigameKind: ReturnType<typeof useGameStore.getState>['minigameKind']): { sound: GameSfx; burst?: BurstKind } {
+  if (/^(Need|Not enough|Sold out|None owned|Select|Missing|Gone|Own a farm|Not your|Pickaxe tier|Fruit storage|Recipe not|Furnace queue)/.test(toast)) return { sound: 'error' }
+  if (toast.startsWith('Unlocked')) return { sound: 'unlock', burst: 'spark' }
+  if (toast.startsWith('Planted')) return { sound: 'plant', burst: 'leaf' }
+  if (toast === 'Watered') return { sound: 'water', burst: 'water' }
+  if (toast === 'Delivered') return { sound: 'coin', burst: 'gold' }
+  if (cashDelta > 0) return { sound: 'coin', burst: 'gold' }
+  if (cashDelta < 0) return { sound: 'buy', burst: 'gold' }
+  if (toast.startsWith('+')) {
+    if (zone === 'mine' || minigameKind === 'mining') return { sound: 'mine-complete', burst: 'stone' }
+    if (zone === 'forage' || minigameKind === 'forage') return { sound: 'forage', burst: 'leaf' }
+    return { sound: 'forage', burst: 'leaf' }
+  }
+  if (toast === 'Returned home') return { sound: 'teleport', burst: 'spark' }
+  return { sound: 'ready' }
+}
+
+function FeedbackBed() {
+  const toast = useGameStore((state) => state.toast)
+  const cash = useGameStore((state) => state.cash)
+  const zone = useGameStore((state) => state.zone)
+  const minigameKind = useGameStore((state) => state.minigameKind)
+  const volumes = useGameStore((state) => state.audioVolumes)
+  const cookQueue = useGameStore((state) => state.cookQueue)
+  const previousCash = useRef(cash)
+  const [burst, setBurst] = useState<{ id: number; kind: BurstKind } | null>(null)
+
+  useEffect(() => {
+    const delta = cash - previousCash.current
+    previousCash.current = cash
+    if (!toast) return
+    const feedback = feedbackFor(toast, zone, delta, minigameKind)
+    playGameSfx(feedback.sound, volumes.master * volumes.effects)
+    if (!feedback.burst) return
+    const next = { id: Date.now(), kind: feedback.burst }
+    setBurst(next)
+    const timer = window.setTimeout(() => setBurst((current) => current?.id === next.id ? null : current), 720)
+    return () => window.clearTimeout(timer)
+  }, [cash, minigameKind, toast, volumes.effects, volumes.master, zone])
+
+  useEffect(() => {
+    const now = Date.now()
+    const timers = cookQueue.filter((job) => job.readyAt > now).map((job) => window.setTimeout(() => playGameSfx('ready', volumes.master * volumes.effects), job.readyAt - now))
+    return () => timers.forEach(window.clearTimeout)
+  }, [cookQueue, volumes.effects, volumes.master])
+
+  return burst ? <div className={`action-burst ${burst.kind}`} key={burst.id} aria-hidden="true">{Array.from({ length: 8 }, (_, index) => <i key={index} />)}</div> : null
+}
+
 function Icon({ name }: { name: 'clock' | 'refresh' | 'coin' | 'menu' | 'close' | 'pack' | 'users' }) {
   const paths = {
     clock: <><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></>,
@@ -145,6 +228,7 @@ function HUD() {
   const round = useGameStore((state) => state.roundSeconds)
   const roundNumber = useGameStore((state) => state.roundNumber)
   const sessionDuration = useGameStore((state) => state.sessionDurationSeconds)
+  const sessionSeed = useGameStore((state) => state.sessionSeed)
   const weather = useGameStore((state) => state.weather)
   const weatherSeconds = useGameStore((state) => state.weatherSeconds)
   const marketCorrectionName = useGameStore((state) => state.marketCorrectionName)
@@ -162,12 +246,18 @@ function HUD() {
   const roundMinutes = Math.floor(remaining / 60).toString().padStart(2, '0')
   const roundSeconds = (remaining % 60).toString().padStart(2, '0')
   const locations = { hub: 'LANTERN HOLLOW', forage: 'MOSSWOOD', farm: 'SUNMEADOW', mine: 'STONEWAKE' }
+  const elapsed = (roundNumber - 1) * MATCH_CONFIG.worldCycleSeconds + (MATCH_CONFIG.worldCycleSeconds - round)
+  const nextEventAt = minigameMilestones(sessionDuration).find((milestone) => milestone > elapsed)
+  const eventIn = nextEventAt === undefined ? null : nextEventAt - elapsed
+  const upcomingEvent = nextEventAt === undefined ? null : scheduledMinigame(nextEventAt, sessionSeed, sessionDuration)
+  const eventIcon: ItemId | null = upcomingEvent === 'mining' ? 'crystal-pickaxe' : upcomingEvent === 'farm' ? 'wheat-seeds' : upcomingEvent === 'forage' ? 'apple' : null
   return (
     <>
       <div className="location-chip"><span className="location-dot" />{locations[zone]}</div>
       <div className="hud-modules">
         {marketCorrectionName && marketCorrectionSeconds > 0 && <div className="market-news"><span>MARKET NEWS</span><strong>{marketCorrectionName}</strong></div>}
-        {weather !== 'clear' && zone !== 'mine' && <div className="hud-chip weather"><span className="rain-mark">◆</span><span>{weather.toUpperCase()}</span><HoverTip lines={weather === 'rain' ? ['Crops water automatically.', `${weatherSeconds}s remaining`] : weather === 'sunny' ? ['Crops and fruit grow 15% faster.', `${weatherSeconds}s remaining`] : weather === 'breeze' ? ['Cooking finishes 10% faster.', `${weatherSeconds}s remaining`] : ['Soft visibility change.', `${weatherSeconds}s remaining`]} /></div>}
+        {weather !== 'clear' && zone !== 'mine' && <div className="hud-chip weather"><span className={`weather-mark ${weather}`} /><span>{weather.toUpperCase()}</span><HoverTip lines={weather === 'rain' ? ['Crops water automatically.', `${weatherSeconds}s remaining`] : weather === 'sunny' ? ['Crops and fruit grow 15% faster.', `${weatherSeconds}s remaining`] : weather === 'breeze' ? ['Cooking finishes 10% faster.', `${weatherSeconds}s remaining`] : ['Soft visibility change.', `${weatherSeconds}s remaining`]} /></div>}
+        {eventIn !== null && eventIn <= 60 && eventIcon && <div className="hud-chip upcoming-event" title={`${upcomingEvent} event`}><img src={ITEMS[eventIcon].icon} alt="" /><span>0:{String(eventIn).padStart(2, '0')}</span></div>}
         <div className="hud-chip" title="Match time"><Icon name="clock" /><span>{roundMinutes}:{roundSeconds}</span></div>
         <div className="hud-chip restock"><Icon name="refresh" /><span>{minutes}:{seconds}</span></div>
         <div className="hud-chip" title={formatCoins(cash)}><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div>
@@ -295,7 +385,8 @@ function InteractionPrompt() {
   const prompt = useGameStore((state) => state.prompt)
   const progress = useGameStore((state) => state.interactionProgress)
   const anchors = useGameStore((state) => state.anchors)
-  const minedNodes = useGameStore((state) => state.minedNodes)
+  const mineGenerations = useGameStore((state) => state.mineGenerations)
+  const sessionSeed = useGameStore((state) => state.sessionSeed)
   const rushNodes = useGameStore((state) => state.rushNodes)
   const minigameMilestone = useGameStore((state) => state.minigameMilestone)
   const hotbar = useGameStore((state) => state.hotbar)
@@ -308,7 +399,7 @@ function InteractionPrompt() {
     const point = anchors[prompt.id]
     if (!point) return null
     const rush = prompt.id.startsWith('RushOre')
-    const ore = rush ? miningRushOre(minigameMilestone, prompt.id, rushNodes[prompt.id]?.generation ?? 0) : oreKindAtDepth(prompt.id, point[2], minedNodes[prompt.id] ?? 0)
+    const ore = rush ? miningRushOre(minigameMilestone, prompt.id, rushNodes[prompt.id]?.generation ?? 0) : oreKindAtDepth(prompt.id, point[2], mineGenerations[prompt.id] ?? 0, sessionSeed)
     const tool = hotbar[selectedHotbar]
     const duration = rush ? 760 : miningDuration(tool, ore)
     const remaining = duration ? Math.max(0, duration * (1 - progress)) : 0
@@ -674,7 +765,7 @@ function MenuPanel() {
     <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}>
       <section className="panel settings-panel">
         <header><div className="panel-title"><Icon name="menu" /><span>SETTINGS</span></div><CloseButton onClick={() => close(false)} /></header>
-        {(['master', 'music', 'ambience'] as const).map((channel) => (
+        {(['master', 'music', 'ambience', 'effects'] as const).map((channel) => (
           <label className="volume-row" key={channel}><span>{channel.toUpperCase()}</span><input type="range" min="0" max="1" step="0.01" value={volumes[channel]} onChange={(event) => setVolume(channel, Number(event.target.value))} /></label>
         ))}
         <label className="volume-row"><span>SENSITIVITY</span><input aria-label="Camera sensitivity" type="range" min="0.35" max="1.8" step="0.05" value={sensitivity} onChange={(event) => setSensitivity(Number(event.target.value))} /></label>
@@ -925,7 +1016,7 @@ function Interface() {
       const point = state.anchors[id]
       if (!point) return
       const rush = id.startsWith('RushOre')
-      const ore = rush ? miningRushOre(state.minigameMilestone, id, state.rushNodes[id]?.generation ?? 0) : oreKindAtDepth(id, point[2], state.minedNodes[id] ?? 0)
+      const ore = rush ? miningRushOre(state.minigameMilestone, id, state.rushNodes[id]?.generation ?? 0) : oreKindAtDepth(id, point[2], state.mineGenerations[id] ?? 0, state.sessionSeed)
       if (!rush && !canMineOre(held, ore)) {
         const required = requiredPickaxe(ore)
         setToast(`Need ${PICKAXE_CONFIG[required].name}`)
@@ -933,6 +1024,7 @@ function Interface() {
         return
       }
       if (miningFrame.current !== null) return
+      playGameSfx('mine-start', state.audioVolumes.master * state.audioVolumes.effects)
       const duration = rush ? 760 : miningDuration(held, ore)
       miningTarget.current = id
       miningStartedAt.current = performance.now()
@@ -1035,5 +1127,5 @@ function Interface() {
 }
 
 export function App() {
-  return <main className="game-shell"><GameWorld /><Interface /><AudioBed /></main>
+  return <main className="game-shell"><GameWorld /><Interface /><AudioBed /><FeedbackBed /><MineSync /></main>
 }

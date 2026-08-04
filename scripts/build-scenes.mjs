@@ -11,6 +11,7 @@ import { EXTMeshGPUInstancing } from '@gltf-transform/extensions'
 import { dedup, instance } from '@gltf-transform/functions'
 import { createCanvas, ImageData as CanvasImageData } from '@napi-rs/canvas'
 import sharp from 'sharp'
+import { MINE_NODE_SITES } from '../shared/mine-nodes.js'
 
 class NodeFileReader {
   readAsArrayBuffer(blob) {
@@ -63,8 +64,8 @@ const palette = {
   forage: 0x92b85b,
   farm: 0xd89b4a,
   mine: 0x6e91a7,
-  fruit: 0xc9643f,
-  fruitGold: 0xe4aa48,
+  fruit: 0xd6533f,
+  fruitGold: 0xefa532,
 }
 
 function material(name, color, options = {}) {
@@ -256,7 +257,7 @@ function natureFlowers(x, z, scale, rotation, heightAt) {
 
 // These small authored details repeat hundreds of times. Reusing the source
 // geometry keeps the exported GLBs responsive without changing their layout.
-const appleFruitGeometries = [new THREE.IcosahedronGeometry(0.12, 1), new THREE.IcosahedronGeometry(0.135, 1)]
+const appleFruitGeometries = [new THREE.IcosahedronGeometry(0.16, 1), new THREE.IcosahedronGeometry(0.175, 1)]
 const berryGeometries = [new THREE.IcosahedronGeometry(0.09, 1), new THREE.IcosahedronGeometry(0.105, 1)]
 const oreRockGeometry = new THREE.DodecahedronGeometry(0.72, 1)
 const oreVeinGeometry = new THREE.OctahedronGeometry(0.15, 0)
@@ -289,11 +290,11 @@ function fruitBirch(id, x, z, scale, rotation, heightAt, golden = false, variant
   const crownTop = height * 0.9
   const spread = Math.min(1.55, height * 0.19)
   const fruitOffsets = [
-    [-0.78 * spread, crownCenter, 0.58 * spread],
-    [0.48 * spread, crownCenter + (crownTop - crownCenter) * 0.42, 0.66 * spread],
-    [0.82 * spread, crownCenter - 0.08, -0.28 * spread],
-    [-0.16 * spread, crownTop, -0.54 * spread],
-    [-0.86 * spread, crownCenter + 0.26, -0.24 * spread],
+    [-0.88 * spread, crownCenter - 0.96, 0.76 * spread],
+    [0.64 * spread, crownCenter - 0.78, 0.82 * spread],
+    [0.92 * spread, crownCenter - 0.46, -0.34 * spread],
+    [-0.18 * spread, crownTop - 0.12, -0.72 * spread],
+    [-0.92 * spread, crownCenter + 0.2, -0.36 * spread],
   ]
   const fruitGeometry = mergeGeometries(fruitOffsets.map(([fx, fy, fz], index) => appleFruitGeometries[index % 2].clone().translate(fx, fy, fz)))
   const resourceGroup = new THREE.Group()
@@ -1055,7 +1056,10 @@ function caveLantern(x, z, side = 1) {
   const post = mesh(new THREE.CylinderGeometry(0.085, 0.11, 2.25, 7), mats.barkLight, 'Lantern Post')
   post.position.y = 1.12
   const arm = beamBetween([0, 2.1, 0], [0.62 * side, 2.1, 0], 0.07, mats.barkLight)
-  const lamp = mesh(new THREE.OctahedronGeometry(0.23, 0), material('Cave Lantern Amber', 0xe0a653, { roughness: 0.58 }), 'Cave Lantern')
+  const lanternMaterial = material('Cave Lantern Amber', 0xe0a653, { roughness: 0.58 })
+  lanternMaterial.emissive = new THREE.Color(0x8e4c1f)
+  lanternMaterial.emissiveIntensity = 0.72
+  const lamp = mesh(new THREE.OctahedronGeometry(0.23, 0), lanternMaterial, 'Cave Lantern')
   lamp.position.set(0.64 * side, 1.84, 0)
   group.add(post, arm, lamp)
   return group
@@ -1401,16 +1405,16 @@ function hubScene() {
   const scene = new THREE.Scene()
   scene.name = 'Lantern Hollow Hub'
   scene.add(terrain(72, hubGroundHeight))
-  scene.add(pathRibbon([[0, 19], [0.3, 10], [0, 0], [0, -18], [0, -37]], 2.2, 'North Path', hubGroundHeight))
-  scene.add(pathRibbon([[0, 0], [-9, -8], [-18, -17], [-25, -25]], 1.95, 'West Path', hubGroundHeight))
-  scene.add(pathRibbon([[0, 0], [9, -8], [18, -17], [25, -25]], 1.95, 'East Path', hubGroundHeight))
-  scene.add(pathRibbon([[-1, 12], [-4, 10], [-8, 8]], 1.35, 'Exchange Path', hubGroundHeight))
-  scene.add(pathRibbon([[1, 12], [4, 10], [8, 8]], 1.35, 'Market Path', hubGroundHeight))
-  scene.add(portal('Forage', mats.glassForage, [0, hubGroundHeight(0, -38), -38], 0))
-  scene.add(portal('Farm', mats.glassFarm, [-25, hubGroundHeight(-25, -25), -25], Math.PI / 4))
-  scene.add(portal('Mine', mats.glassMine, [25, hubGroundHeight(25, -25), -25], -Math.PI / 4))
-  const commonShop = [8, hubGroundHeight(8, 8), 8]
-  const exchange = [-8, hubGroundHeight(-8, 8), 8]
+  scene.add(pathRibbon([[0, 19], [0, 10], [0, 1], [0, -12], [0, -28]], 2.2, 'Forage Path', hubGroundHeight))
+  scene.add(pathRibbon([[0, 1], [-6, -7], [-11, -15], [-15, -22]], 1.95, 'Farm Path', hubGroundHeight))
+  scene.add(pathRibbon([[0, 1], [6, -7], [11, -15], [15, -22]], 1.95, 'Mine Path', hubGroundHeight))
+  scene.add(pathRibbon([[-1, 11], [-5, 7], [-11, 3]], 1.35, 'Exchange Path', hubGroundHeight))
+  scene.add(pathRibbon([[1, 11], [5, 7], [11, 3]], 1.35, 'Market Path', hubGroundHeight))
+  scene.add(portal('Forage', mats.glassForage, [0, hubGroundHeight(0, -28), -28], 0))
+  scene.add(portal('Farm', mats.glassFarm, [-15, hubGroundHeight(-15, -22), -22], Math.PI / 5.2))
+  scene.add(portal('Mine', mats.glassMine, [15, hubGroundHeight(15, -22), -22], -Math.PI / 5.2))
+  const commonShop = [11, hubGroundHeight(11, 3), 3]
+  const exchange = [-11, hubGroundHeight(-11, 3), 3]
   const commonRotation = Math.PI - 0.18
   const exchangeRotation = Math.PI + 0.18
   const commonFront = shopOffset(commonShop, commonRotation, -1.78)
@@ -1419,7 +1423,7 @@ function hubScene() {
   const exchangeNpc = shopOffset(exchange, exchangeRotation, 0.3)
   scene.add(shop('Common Shop', commonShop, commonRotation, mats.leafDark))
   scene.add(stockExchange(exchange, exchangeRotation))
-  const hearth = lanternLandmark(); hearth.position.y = hubGroundHeight(2.6, 1.8); scene.add(hearth)
+  const hearth = lanternLandmark(); hearth.position.set(0, hubGroundHeight(0, 0), 0); hearth.scale.setScalar(1.12); scene.add(hearth)
   const hubClusters = [[-28,-14,9,8],[29,-15,9,8],[-23,20,9,9],[23,21,9,9],[0,-55,16,14],[-39,-37,13,12],[39,-38,13,12],[-53,-17,14,15],[53,-18,14,15],[-54,22,15,16],[54,24,15,16],[-32,45,15,16],[33,46,15,16],[0,55,13,15],[-63,1,12,13],[63,0,12,13]]
   hubClusters.forEach(([x,z,count,radius], index) => scatterCluster(scene, x, z, count, radius, hubGroundHeight, 1800 + index * 29, 1.42 + (index % 3) * 0.16))
   const closeGrove = [
@@ -1449,9 +1453,9 @@ function hubScene() {
   )
   scene.add(
     anchor('Spawn', [0, hubGroundHeight(0, 18), 18]),
-    anchor('PortalForage', [0, hubGroundHeight(0, -38), -38]),
-    anchor('PortalFarm', [-25, hubGroundHeight(-25, -25), -25]),
-    anchor('PortalMine', [25, hubGroundHeight(25, -25), -25]),
+    anchor('PortalForage', [0, hubGroundHeight(0, -28), -28]),
+    anchor('PortalFarm', [-15, hubGroundHeight(-15, -22), -22]),
+    anchor('PortalMine', [15, hubGroundHeight(15, -22), -22]),
     anchor('Shop', [commonFront[0], hubGroundHeight(...commonFront), commonFront[1]]),
     anchor('Stocks', [exchangeFront[0], hubGroundHeight(...exchangeFront), exchangeFront[1]]),
     anchor('NpcShop', [commonNpc[0], hubGroundHeight(...commonNpc), commonNpc[1]]),
@@ -1557,13 +1561,15 @@ function forageScene() {
     return [THREE.MathUtils.clamp(x, -188, 188), z]
   })
   const apples = [
-    ...orchardSites(-49, -44, 12, 6101),
+    [3, -82], [-13, -87], [-18, -97], [20, -102],
+    ...orchardSites(-49, -44, 8, 6101),
     ...orchardSites(54, -117, 12, 6127),
     ...orchardSites(-64, -181, 12, 6151),
     ...distributedFruitSites(34, 6173),
   ]
   const oranges = [
-    ...orchardSites(54, -69, 12, 6203),
+    [8, -89], [-15, -105], [23, -112],
+    ...orchardSites(54, -69, 9, 6203),
     ...orchardSites(-52, -124, 12, 6229),
     ...distributedFruitSites(36, 6257),
   ]
@@ -1571,8 +1577,8 @@ function forageScene() {
   const truffles = [[-112,-66],[97,-104],[-78,-204],[126,-167],[34,-151]]
   const discoveries = [[-178,-185],[164,-201],[-139,-16]]
 
-  apples.forEach(([x, z], index) => scene.add(fruitBirch(`ForageApple${String(index).padStart(3, '0')}`, x, z, 1 + (index % 3) * 0.08, index * 0.71, forageGroundHeight, false, index)))
-  oranges.forEach(([x, z], index) => scene.add(fruitBirch(`ForageOrange${String(index).padStart(3, '0')}`, x, z, 0.96 + (index % 4) * 0.07, index * 0.83, forageGroundHeight, true, index + 80)))
+  apples.forEach(([x, z], index) => scene.add(fruitBirch(`ForageApple${String(index).padStart(3, '0')}`, x, z, index < 2 ? 1.14 : 1 + (index % 3) * 0.08, index * 0.71, forageGroundHeight, false, index)))
+  oranges.forEach(([x, z], index) => scene.add(fruitBirch(`ForageOrange${String(index).padStart(3, '0')}`, x, z, index === 0 ? 1.1 : 0.96 + (index % 4) * 0.07, index * 0.83, forageGroundHeight, true, index + 80)))
   regularOrchardTrees.forEach(([x, z], index) => scene.add(natureTree(x, z, 0.96 + (index % 5) * 0.07, index * 0.77, forageGroundHeight, 7400 + index)))
   truffles.forEach(([x, z], index) => scene.add(trufflePatch(`ForageTruffle${String(index).padStart(3, '0')}`, x, z, index * 0.69, forageGroundHeight)))
   discoveries.forEach(([x, z], index) => scene.add(discoveryRelic(`ForageDiscovery${String(index).padStart(2, '0')}`, x, z, index * 0.83, forageGroundHeight)))
@@ -1697,15 +1703,21 @@ function mineScene() {
     [-15, -34, 1.2, 0.5], [17, -35, 1.15, -0.4], [-18, -89, 1.25, 0.7], [19, -92, 1.2, -0.6],
   ]) scene.add(mineBoulder(x, z, scale, rotation))
 
-  for (const [x, z, width] of [[0,-78,7.8]]) {
+  for (const [x, z, width] of [[0,-28,4.8],[0,-78,4.2]]) {
     const floor = mineGroundHeight(x, z)
     const rib = new THREE.Group(); rib.name = 'Mine Timber Rib'; rib.position.set(x, floor, z)
     const height = Math.min(5.2, caveHeight(x, z) - floor - 0.45)
-    rib.add(beamBetween([-width,0,0],[-width,height,0],0.2,mats.barkLight), beamBetween([width,0,0],[width,height,0],0.2,mats.barkLight), beamBetween([-width-0.2,height,0],[width+0.2,height,0],0.22,mats.barkLight))
+    rib.add(
+      beamBetween([-width,0,0],[-width,height,0],0.2,mats.barkLight),
+      beamBetween([width,0,0],[width,height,0],0.2,mats.barkLight),
+      beamBetween([-width-0.2,height,0],[width+0.2,height,0],0.22,mats.barkLight),
+      beamBetween([-width,height-1.2,0],[-width+1.25,height,0],0.13,mats.bark),
+      beamBetween([width,height-1.2,0],[width-1.25,height,0],0.13,mats.bark),
+    )
     scene.add(rib)
   }
   scene.add(
-    mineTrack(-27, -19, 16), mineTrack(28, -21, 13), mineTrack(0, -45, 18, Math.PI / 2),
+    mineTrack(0, -3, 38), mineTrack(-27, -19, 16), mineTrack(28, -21, 13), mineTrack(0, -45, 18, Math.PI / 2),
     mineTrack(-34, -73, 15), mineTrack(35, -76, 16), mineTrack(0, -104, 17, Math.PI / 2),
     mineTrack(-27, -128, 14), mineTrack(29, -127, 13), mineTrack(0, -176, 20, Math.PI / 2),
     caveLantern(-7, 7, 1), caveLantern(-28, -8, 1), caveLantern(29, -10, -1),
@@ -1714,6 +1726,7 @@ function mineScene() {
     caveLantern(-31, -139, 1), caveLantern(31, -140, -1),
     decorativeOreSeam(-55, -32, Math.PI / 2), decorativeOreSeam(56, -36, -Math.PI / 2, mats.richOre),
     decorativeOreSeam(-47, -112, Math.PI / 2, mats.richOre), decorativeOreSeam(48, -116, -Math.PI / 2),
+    caveColumn(-17, -17, 1.05, 21), caveColumn(19, -21, 1.0, 22),
     caveColumn(-24, -42, 1.35, 1), caveColumn(27, -43, 1.25, 2), caveColumn(-31, -96, 1.45, 3),
     caveColumn(32, -99, 1.3, 4), caveColumn(17, -146, 1.18, 5), caveColumn(-24, -177, 1.32, 6), caveColumn(26, -184, 1.22, 7),
     cavernSpur(-43, -24, 12.5, 10.5, 7.4, 31), cavernSpur(44, -31, 11.2, 9.6, 6.9, 32),
@@ -1735,28 +1748,13 @@ function mineScene() {
     [-46,-104,1.25,93],[47,-106,1.1,94],[-19,-113,1.1,95],[20,-115,1.15,96],[-43,-132,1.2,97],[44,-134,1.25,98],
     [-23,-149,1.1,99],[24,-149,1.0,100],[-34,-169,1.15,101],[35,-172,1.1,102],[-18,-190,1.05,103],[20,-191,1.1,104],
   ]) scene.add(caveRubble(x, z, scale, seed))
-  const shallowCenters = [[-19,-4],[-38,-11],[-50,-27],[-40,-42],[-20,-31],[19,-4],[38,-13],[51,-28],[41,-42],[20,-32],[-53,-43],[53,-44]]
-  const middleCenters = [[-29,-53],[-47,-61],[-55,-82],[-42,-96],[-22,-94],[-22,-76],[29,-54],[47,-62],[55,-84],[43,-97],[23,-94]]
-  const deepCenters = [[-28,-109],[-44,-116],[-43,-134],[-28,-147],[-14,-145],[-53,-147],[28,-109],[44,-116],[44,-134],[29,-147],[15,-145],[-35,-169],[34,-171],[-29,-188],[27,-189]]
-  const nodeSites = []
-  ;[...shallowCenters, ...middleCenters, ...deepCenters].forEach(([cx, cz], clusterIndex) => {
-    for (let index = 0; index < 6; index += 1) {
-      const angle = (index / 6) * Math.PI * 2 + seeded(clusterIndex, 5300) * 0.8
-      const radius = 1.65 + seeded(index + clusterIndex * 7, 5310) * 1.85
-      const x = cx + Math.cos(angle) * radius
-      const z = cz + Math.sin(angle) * radius
-      nodeSites.push([x, z])
-    }
-  })
-  const centralSites = [[-6,-12],[7,-23],[-5,-38],[6,-51],[-7,-66],[5,-79],[-6,-93],[7,-108],[-5,-123],[6,-139],[-7,-155],[5,-171],[-4,-188]]
-  centralSites.forEach(([x, z], index) => nodeSites.push([x + (seeded(index, 5381) - 0.5) * 2.6, z]))
-  nodeSites.forEach(([x, z], index) => scene.add(oreNode(`MineOre${String(index).padStart(3, '0')}`, x, z)))
+  MINE_NODE_SITES.forEach(({ id, x, z }) => scene.add(oreNode(id, x, z)))
   scene.add(
     anchor('Spawn', [0, mineGroundHeight(0, 34), 34]), anchor('GateDeep', [0, mineGroundHeight(0, -154), -154]), anchor('Home', [-16, mineGroundHeight(-16, 36), 36]),
     anchor('MineShop', [mineShopFront[0], mineGroundHeight(...mineShopFront), mineShopFront[1]]), anchor('OreBuyer', [oreBuyerFront[0], mineGroundHeight(...oreBuyerFront), oreBuyerFront[1]]),
     anchor('NpcMineShop', [mineShopNpc[0], mineGroundHeight(...mineShopNpc), mineShopNpc[1]]), anchor('NpcOreBuyer', [oreBuyerNpc[0], mineGroundHeight(...oreBuyerNpc), oreBuyerNpc[1]]),
     anchor('SecretSite0', [-55, mineGroundHeight(-55, -40), -40]), anchor('SecretSite1', [56, mineGroundHeight(56, -98), -98]), anchor('SecretSite2', [-39, mineGroundHeight(-39, -145), -145]),
-    ...nodeSites.map(([x, z], index) => anchor(`MineOre${String(index).padStart(3, '0')}`, [x, mineGroundHeight(x, z), z])),
+    ...MINE_NODE_SITES.map(({ id, x, z }) => anchor(id, [x, mineGroundHeight(x, z), z])),
   )
   return scene
 }
@@ -2039,10 +2037,12 @@ async function exportScene(scene, filename) {
   console.log(`Authored ${filename}`)
 }
 
-await exportScene(hubScene(), 'hub.glb')
-await exportScene(forageScene(), 'forage.glb')
-await exportScene(farmScene(), 'farm.glb')
-await exportScene(mineScene(), 'mine.glb')
-await exportScene(miningRushScene(), 'mining-rush.glb')
-await exportScene(farmRushScene(), 'farm-rush.glb')
-await exportScene(forageRushScene(), 'forage-rush.glb')
+const requestedScenes = new Set(process.argv.slice(2))
+const wants = (name) => requestedScenes.size === 0 || requestedScenes.has(name)
+if (wants('hub')) await exportScene(hubScene(), 'hub.glb')
+if (wants('forage')) await exportScene(forageScene(), 'forage.glb')
+if (wants('farm')) await exportScene(farmScene(), 'farm.glb')
+if (wants('mine')) await exportScene(mineScene(), 'mine.glb')
+if (wants('mining-rush')) await exportScene(miningRushScene(), 'mining-rush.glb')
+if (wants('farm-rush')) await exportScene(farmRushScene(), 'farm-rush.glb')
+if (wants('forage-rush')) await exportScene(forageRushScene(), 'forage-rush.glb')

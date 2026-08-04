@@ -8,6 +8,7 @@ export const MATCH_CONFIG = {
   commodityCycleSeconds: 4 * 60,
   secretNpcCycleSeconds: 4 * 60,
   minimumMiningMs: 420,
+  oreRespawnSeconds: [28, 35],
 } as const
 
 export type FortuneOutcome = { chance: number; bonus: number }
@@ -36,12 +37,12 @@ export const PICKAXE_CONFIG = {
 } as const
 
 export const ORE_CONFIG = {
-  'copper-ore': { name: 'Copper Ore', value: 8_000, hardness: 1, respawn: [35, 50] },
-  'iron-ore': { name: 'Iron Ore', value: 18_000, hardness: 1.6, respawn: [40, 55] },
-  'silver-ore': { name: 'Silver Ore', value: 55_000, hardness: 2.4, respawn: [50, 75] },
-  'gold-ore': { name: 'Gold Ore', value: 150_000, hardness: 3.5, respawn: [60, 85] },
-  'crystal-ore': { name: 'Crystal', value: 500_000, hardness: 5, respawn: [75, 105] },
-  'ancient-ore': { name: 'Ancient Ore', value: 1_500_000, hardness: 7.5, respawn: [90, 125] },
+  'copper-ore': { name: 'Copper Ore', value: 8_000, hardness: 1 },
+  'iron-ore': { name: 'Iron Ore', value: 18_000, hardness: 1.6 },
+  'silver-ore': { name: 'Silver Ore', value: 55_000, hardness: 2.4 },
+  'gold-ore': { name: 'Gold Ore', value: 150_000, hardness: 3.5 },
+  'crystal-ore': { name: 'Crystal', value: 500_000, hardness: 5 },
+  'ancient-ore': { name: 'Ancient Ore', value: 1_500_000, hardness: 7.5 },
 } as const
 
 export const BASKET_CONFIG = {
@@ -147,7 +148,7 @@ export const COMMODITY_MARKET_CONFIG = {
   tomato: { neutral: 300, demand: [60, 90], elasticity: 0.70, minimum: 0.50, maximum: 3.00 },
   lettuce: { neutral: 180, demand: [35, 55], elasticity: 0.70, minimum: 0.50, maximum: 3.00 },
   pumpkin: { neutral: 80, demand: [15, 25], elasticity: 0.70, minimum: 0.50, maximum: 3.00 },
-  watermelon: { neutral: 20, demand: [3, 6], elasticity: 0.70, minimum: 0.50, maximum: 3.00 },
+  watermelon: { neutral: 100, demand: [15, 30], elasticity: 0.70, minimum: 0.50, maximum: 3.00 },
   berries: { neutral: 500, demand: [100, 160], elasticity: 0.60, minimum: 0.60, maximum: 2.20 },
   apple: { neutral: 400, demand: [80, 120], elasticity: 0.60, minimum: 0.60, maximum: 2.20 },
   orange: { neutral: 300, demand: [60, 90], elasticity: 0.60, minimum: 0.60, maximum: 2.20 },
