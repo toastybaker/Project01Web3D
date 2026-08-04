@@ -13,7 +13,7 @@ Object.assign(globalThis, { localStorage: storage, window: { location: { search:
 
 const { useGameStore } = await import('../src/game/store')
 const { activeRareForageIds } = await import('../src/game/config')
-const { minigameMilestones, minigameRewardPackage, scheduledMinigame } = await import('../src/game/minigame')
+const { FARM_RUSH_MAX_ORDERS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, farmRushOrders, minigameMilestones, minigameRewardPackage, scheduledMinigame } = await import('../src/game/minigame')
 
 assert.deepEqual(minigameMilestones(30 * 60), [10 * 60, 20 * 60])
 assert.deepEqual(minigameMilestones(45 * 60), [15 * 60, 30 * 60])
@@ -41,7 +41,7 @@ function enter(kind: 'mining' | 'farm' | 'forage') {
     minigameMilestone: 20 * 60,
     minigameSnapshot: { zone: 'forage', playerPosition: [12, 0.86, -42], hotbar: [...permanentHotbar], selectedHotbar: 8, inventoryOpen: false, startedAt: Date.now() },
     rushNodes: {}, rushScore: 0, rushCombo: 0, rushLastMineAt: 0,
-    farmRushCells: {}, farmRushTool: 'wheat', farmRushInventory: { wheat: 0, tomato: 0, lettuce: 0, pumpkin: 0, watermelon: 0 }, farmRushOrders: [], farmRushCooking: null, farmRushScore: 0,
+    farmRushCells: {}, farmRushTool: 'wheat', farmRushInventory: { wheat: 0, tomato: 0, lettuce: 0, pumpkin: 0, watermelon: 0 }, farmRushOrders: [], farmRushIssued: 0, farmRushCooking: [], farmRushScore: 0,
     forageRushCollected: {}, forageRushInventory: { apple: 0, orange: 0, truffle: 0, discovery: 0 }, forageRushDelivered: { apple: false, orange: false, truffle: false, discovery: false }, forageRushScore: 0,
   })
 }
@@ -83,8 +83,26 @@ const firstReadyAt = useGameStore.getState().farmRushCells[cell]?.readyAt ?? 0
 assert(firstReadyAt > Date.now(), 'one watering starts the growth timer')
 useGameStore.getState().farmRushAction(cell)
 assert.equal(useGameStore.getState().farmRushCells[cell]?.readyAt, firstReadyAt, 'watering is not repeatedly required')
+useGameStore.getState().tickFarmRush()
+assert.equal(useGameStore.getState().farmRushOrders.length, FARM_RUSH_MAX_ORDERS, 'Kitchen Rush starts with three live orders')
+assert(useGameStore.getState().farmRushOrders.every((ticket) => ticket.expiresAt - Date.now() <= FARM_RUSH_ORDER_LIFETIME_MS), 'Kitchen Rush orders never exceed forty seconds')
+assert.equal(new Set(FARM_RUSH_RECIPE_IDS).size, 7, 'all seven farm-event recipes are available in the event cookbook')
+const firstTicket = useGameStore.getState().farmRushOrders[0]
+const firstOrder = farmRushOrders(20 * 60)[firstTicket.orderIndex]
+useGameStore.setState({ farmRushInventory: { wheat: 20, tomato: 20, lettuce: 20, pumpkin: 20, watermelon: 20 } })
+useGameStore.getState().farmRushCook(firstOrder.recipe)
+assert.equal(useGameStore.getState().farmRushCooking.length, 1, 'manual cookbook selection queues one matching dish')
+assert.equal(useGameStore.getState().farmRushCooking[0].orderIndex, firstTicket.orderIndex, 'manual cookbook selection does not cook another recipe')
+useGameStore.setState((state) => ({ farmRushCooking: state.farmRushCooking.map((job) => ({ ...job, readyAt: Date.now() - 1 })) }))
+useGameStore.getState().farmRushSubmit(firstTicket.orderIndex)
+assert(useGameStore.getState().farmRushScore > 0, 'manual submit awards the dish points')
+assert.equal(useGameStore.getState().farmRushOrders.length, FARM_RUSH_MAX_ORDERS, 'submitting immediately replaces the order')
+useGameStore.setState((state) => ({ farmRushOrders: state.farmRushOrders.map((ticket) => ({ ...ticket, expiresAt: Date.now() - 1 })) }))
+useGameStore.getState().tickFarmRush()
+assert.equal(useGameStore.getState().farmRushOrders.length, FARM_RUSH_MAX_ORDERS, 'expired orders are replaced on the next event tick')
 useGameStore.getState().finishMinigame(0, 4, 10_000_000)
 assert.deepEqual(useGameStore.getState().hotbar, permanentHotbar, 'farm restores the exact hotbar')
+assert.deepEqual(useGameStore.getState().farmRushCooking, [], 'temporary cooking jobs are deleted after the event')
 
 enter('forage')
 for (let index = 0; index < 4; index += 1) useGameStore.getState().forageRushCollect(`ForageRushApple${index}`)

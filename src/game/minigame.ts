@@ -1,5 +1,5 @@
 import type { OreItem } from './ore'
-import type { FoodItemId } from './recipes'
+import type { FoodItemId, RecipeId } from './recipes'
 
 export type MinigameKind = 'mining' | 'farm' | 'forage'
 
@@ -24,8 +24,10 @@ export function minigameRewardPackage(economyReference: number, placement: numbe
   const budget = Math.min(MINIGAME_REWARD_CAPS[rankIndex], Math.round(Math.max(1, economyReference) * MINIGAME_REWARD_SHARES[rankIndex]))
   const boxes = placement === 1 ? 2 : placement === 2 ? 1 : 0
   let cash = Math.max(0, budget - boxes * COOKBOOK_BOX_REWARD_VALUE)
-  if (placement > 1 && playerCash !== undefined && leaderCash !== undefined && playerCash < leaderCash) cash = Math.min(cash, Math.max(0, Math.floor((leaderCash - playerCash) / 2)))
-  return { budget, boxes, cash }
+  const gap = playerCash !== undefined && leaderCash !== undefined ? Math.max(0, leaderCash - playerCash) : 0
+  const catchup = Math.min(Math.round(budget * .2), Math.round(gap * .04))
+  cash += catchup
+  return { budget: budget + catchup, boxes, cash }
 }
 
 /** The two scheduled events are always different, while direct test URLs can pick any event. */
@@ -55,18 +57,20 @@ export const FARM_RUSH_CROPS = ['wheat', 'tomato', 'lettuce', 'pumpkin', 'waterm
 export type FarmRushCrop = typeof FARM_RUSH_CROPS[number]
 export type FarmRushTool = FarmRushCrop | 'water'
 export type FarmRushCell = { crop: FarmRushCrop | null; stage: 'empty' | 'planted' | 'watered' | 'ready'; readyAt: number }
-export type FarmRushOrder = { name: string; food: FoodItemId; ingredients: Partial<Record<FarmRushCrop, number>>; cookSeconds: number; points: number }
+export type FarmRushOrder = { recipe: RecipeId; name: string; food: FoodItemId; ingredients: Partial<Record<FarmRushCrop, number>>; cookSeconds: number; points: number }
 
 const FARM_INGREDIENT_POINTS: Record<FarmRushCrop, number> = { wheat: 1, tomato: 2, lettuce: 3, pumpkin: 5, watermelon: 8 }
 const FARM_ORDER_BLUEPRINTS: Array<Omit<FarmRushOrder, 'points'>> = [
-  { name: 'Farm Skewer', food: 'food-mushroom-skewer', ingredients: { tomato: 2, lettuce: 1 }, cookSeconds: 4 },
-  { name: 'Garden Salad', food: 'food-garden-salad', ingredients: { tomato: 2, lettuce: 2 }, cookSeconds: 4 },
-  { name: 'Meadow Stew', food: 'food-meadow-stew', ingredients: { lettuce: 2, tomato: 1, wheat: 1 }, cookSeconds: 5 },
-  { name: 'Pumpkin Bread', food: 'food-pumpkin-bread', ingredients: { pumpkin: 1, wheat: 2 }, cookSeconds: 6 },
-  { name: 'Farmhouse Plate', food: 'food-farmhouse-plate', ingredients: { wheat: 2, tomato: 1, lettuce: 1 }, cookSeconds: 6 },
-  { name: 'Melon Preserve', food: 'food-melon-preserve', ingredients: { watermelon: 1, wheat: 1 }, cookSeconds: 7 },
-  { name: 'Harvest Feast', food: 'food-harvest-feast', ingredients: { pumpkin: 1, lettuce: 1, tomato: 1, wheat: 2 }, cookSeconds: 7 },
+  { recipe: 'mushroom-skewer', name: 'Farm Skewer', food: 'food-mushroom-skewer', ingredients: { tomato: 2, lettuce: 1 }, cookSeconds: 4 },
+  { recipe: 'garden-salad', name: 'Garden Salad', food: 'food-garden-salad', ingredients: { tomato: 2, lettuce: 2 }, cookSeconds: 4 },
+  { recipe: 'meadow-stew', name: 'Meadow Stew', food: 'food-meadow-stew', ingredients: { lettuce: 2, tomato: 1, wheat: 1 }, cookSeconds: 5 },
+  { recipe: 'pumpkin-bread', name: 'Pumpkin Bread', food: 'food-pumpkin-bread', ingredients: { pumpkin: 1, wheat: 2 }, cookSeconds: 6 },
+  { recipe: 'farmhouse-plate', name: 'Farmhouse Plate', food: 'food-farmhouse-plate', ingredients: { wheat: 2, tomato: 1, lettuce: 1 }, cookSeconds: 6 },
+  { recipe: 'melon-preserve', name: 'Melon Preserve', food: 'food-melon-preserve', ingredients: { watermelon: 1, wheat: 1 }, cookSeconds: 7 },
+  { recipe: 'harvest-feast', name: 'Harvest Feast', food: 'food-harvest-feast', ingredients: { pumpkin: 1, lettuce: 1, tomato: 1, wheat: 2 }, cookSeconds: 7 },
 ]
+
+export const FARM_RUSH_RECIPE_IDS = FARM_ORDER_BLUEPRINTS.map((order) => order.recipe)
 
 export function farmRushOrderPoints(ingredients: Partial<Record<FarmRushCrop, number>>): number {
   const entries = Object.entries(ingredients).filter(([, quantity]) => Boolean(quantity)) as Array<[FarmRushCrop, number]>
@@ -95,8 +99,8 @@ export const FARM_RUSH_GROWTH_MS: Record<FarmRushCrop, number> = {
   watermelon: 12_000,
 }
 
-export const FARM_RUSH_ORDER_INTERVAL_MS = 45_000
-export const FARM_RUSH_ORDER_LIFETIME_MS = 110_000
+export const FARM_RUSH_MAX_ORDERS = 3
+export const FARM_RUSH_ORDER_LIFETIME_MS = 40_000
 
 export type ForageRushKind = 'apple' | 'orange' | 'truffle' | 'discovery'
 export const FORAGE_RUSH_REQUIREMENTS: Record<ForageRushKind, number> = { apple: 12, orange: 12, truffle: 3, discovery: 1 }

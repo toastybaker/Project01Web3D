@@ -120,10 +120,6 @@ button { color: inherit; }
 .rush-countdown { position: absolute; inset: 0; z-index: 24; display: grid; place-content: center; justify-items: center; gap: 4px; background: rgba(12,16,13,.36); pointer-events: none; }
 .rush-countdown strong { color: #efc76d; font-size: 92px; line-height: .9; text-shadow: 0 8px 28px rgba(0,0,0,.35); }
 .rush-countdown span { color: #f2ead6; font-size: 12px; font-weight: 1000; letter-spacing: .16em; }
-.event-leave-scrim { z-index: 60; }
-.event-leave-panel { width: min(320px, calc(100vw - 32px)); padding: 24px; text-align: center; }
-.event-leave-panel > strong { color: #efc76d; font-size: 1.15rem; letter-spacing: .08em; }
-.event-leave-panel > div { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 18px; }
 .rush-prize-reveal { position: absolute; z-index: 27; top: 18px; left: 50%; width: min(710px, calc(100vw - 430px)); transform: translateX(-50%); display: grid; justify-items: center; pointer-events: none; }
 .rush-prize-reveal > span { color: #efc76d; font-size: 10px; font-weight: 1000; letter-spacing: .15em; }
 .rush-prize-reveal > strong { margin: 0 0 7px; color: #efc76d; font-size: 11px; line-height: 1; letter-spacing: .14em; }
@@ -406,6 +402,8 @@ button { color: inherit; }
 
 .cookbook-open { width: 100%; margin-top: 14px; padding: 11px; border: 1px solid rgba(224,186,108,.36); border-radius: 10px; background: rgba(224,186,108,.12); color: #f2dfb1; font-weight: 900; letter-spacing: .08em; }
 .cookbook-panel { width: min(880px, calc(100vw - 34px)); max-height: min(760px, calc(100vh - 44px)); overflow: auto; }
+.event-cookbook-panel .cook-actions { grid-template-columns: 1fr; }
+.event-cookbook-panel .cook-actions button:last-child { margin-left: 0; }
 .cook-queue { margin-left: auto; margin-right: 10px; color: #e4bc6e; font-weight: 900; }
 .furnace-queue { display: flex; gap: 8px; padding: 10px 16px 0; overflow-x: auto; }
 .furnace-queue span { display: flex; gap: 12px; align-items: center; min-width: 150px; padding: 8px 10px; border-radius: 9px; background: rgba(225,158,70,.1); color: #ddd4be; font-size: 12px; }
@@ -435,6 +433,12 @@ button { color: inherit; }
 .recipe-card footer button:last-child { background: #765f37; }
 .recipe-card footer button:disabled { opacity: .3; }
 .recipe-card em { position: absolute; top: 8px; right: 8px; color: #d7aa62; font-size: 8px; font-style: normal; }
+.minigame-result-card { position: absolute; z-index: 32; top: 22px; left: 50%; transform: translateX(-50%); display: grid; grid-template-columns: auto auto; align-items: center; gap: 3px 14px; min-width: 250px; padding: 10px 14px; border: 1px solid rgba(226,180,91,.48); border-radius: 13px; background: rgba(31,43,34,.94); color: #f4e8c6; box-shadow: 0 12px 30px rgba(9,14,10,.32); pointer-events: auto; cursor: pointer; }
+.minigame-result-card > span { grid-row: 1 / 3; color: #e2b45b; font-size: 23px; font-weight: 1000; }
+.minigame-result-card > strong { justify-self: start; font-size: 12px; letter-spacing: .06em; }
+.minigame-result-card > div { display: flex; gap: 12px; }
+.minigame-result-card b { display: flex; align-items: center; gap: 4px; color: #d8d4c3; font-size: 11px; }
+.minigame-result-card svg, .minigame-result-card img { width: 17px; height: 17px; object-fit: contain; fill: none; stroke: #e2b45b; stroke-width: 1.8; }
 @media (max-width: 760px) { .recipe-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 .leaderboard-list { display: grid; gap: 6px; width: min(480px, 100%); margin: 10px auto 14px; }
 .leaderboard-list button { display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 9px; padding: 9px 11px; border: 1px solid rgba(255,255,255,.09); border-radius: 9px; background: rgba(255,255,255,.035); color: #ddd8c8; text-align: left; }

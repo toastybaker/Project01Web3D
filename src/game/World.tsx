@@ -333,6 +333,10 @@ function EnvironmentScene() {
   const setColliders = useGameStore((state) => state.setColliders)
   const furnaceCount = useGameStore((state) => state.inventory.furnace ?? 0)
   const claimedFarms = useGameStore((state) => state.claimedFarms)
+  const sharedFarmOnline = useGameStore((state) => state.sharedFarmOnline)
+  const sharedFarmSelfId = useGameStore((state) => state.sharedFarmSelfId)
+  const farmOwners = useGameStore((state) => state.farmOwners)
+  const ownedFarms = useMemo(() => sharedFarmOnline ? Object.keys(farmOwners).map(Number).filter((farm) => farmOwners[farm] === sharedFarmSelfId) : claimedFarms, [claimedFarms, farmOwners, sharedFarmOnline, sharedFarmSelfId])
   const cookQueue = useGameStore((state) => state.cookQueue)
   const farmRushCooking = useGameStore((state) => state.farmRushCooking)
   const furnaceReadyUntil = useGameStore((state) => state.furnaceReadyUntil)
@@ -402,12 +406,12 @@ function EnvironmentScene() {
         }
       }
     }
-    const activeFurnaces = (furnaceVisualGate || resourceVisualGate) && zone === 'farm' ? [0] : furnaceCount > 0 ? claimedFarms.slice(0, 1) : []
+    const activeFurnaces = (furnaceVisualGate || resourceVisualGate) && zone === 'farm' ? [0] : furnaceCount > 0 ? ownedFarms.slice(0, 1) : []
     furnaceBodies.forEach((body) => {
       const furnaceIndex = Number(body.userData.furnaceIndex)
       const eventCooker = Number(body.userData.rushCooker) === eventBay && minigameOpen && minigameKind === 'farm'
       const active = eventCooker || activeFurnaces.includes(furnaceIndex)
-      const cooking = eventCooker ? Boolean(farmRushCooking) : cookQueue.some((job) => job.furnaceIndex === furnaceIndex) || ((furnaceVisualGate || resourceVisualGate) && zone === 'farm' && furnaceIndex === 0)
+      const cooking = eventCooker ? farmRushCooking.length > 0 : cookQueue.some((job) => job.furnaceIndex === furnaceIndex) || ((furnaceVisualGate || resourceVisualGate) && zone === 'farm' && furnaceIndex === 0)
       const ready = !cooking && (furnaceReadyUntil[furnaceIndex] ?? 0) > Date.now()
       body.visible = active
       body.traverse((child) => {
@@ -431,7 +435,7 @@ function EnvironmentScene() {
   useEffect(() => {
     const anchors: AnchorMap = {}
     const colliders: WorldCollider[] = []
-    const activeFurnaces = (furnaceVisualGate || resourceVisualGate) && zone === 'farm' ? [0] : furnaceCount > 0 ? claimedFarms.slice(0, 1) : []
+    const activeFurnaces = (furnaceVisualGate || resourceVisualGate) && zone === 'farm' ? [0] : furnaceCount > 0 ? ownedFarms.slice(0, 1) : []
     const activeRares = activeRareForageIds(rareResourceIds, minigameOpen && minigameKind === 'forage', sessionSeed, matchStartedAt)
     furnaceBodies.forEach((body) => { body.visible = (minigameOpen && minigameKind === 'farm' && Number(body.userData.rushCooker) === eventBay) || activeFurnaces.includes(Number(body.userData.furnaceIndex)) })
     scene.updateMatrixWorld(true)
@@ -484,7 +488,7 @@ function EnvironmentScene() {
     })
     setAnchors(anchors)
     setColliders(colliders)
-  }, [claimedFarms, collectedForage, eventBay, farmRushCooking, forageRushCollected, furnaceBodies, furnaceCount, matchStartedAt, minedNodes, mineGenerations, minigameKind, minigameMilestone, minigameOpen, rareResourceIds, rushNodes, scene, sessionSeed, setAnchors, setColliders])
+  }, [collectedForage, eventBay, farmRushCooking, forageRushCollected, furnaceBodies, furnaceCount, matchStartedAt, minedNodes, mineGenerations, minigameKind, minigameMilestone, minigameOpen, ownedFarms, rareResourceIds, rushNodes, scene, sessionSeed, setAnchors, setColliders])
 
   return <primitive object={scene} />
 }
@@ -611,7 +615,7 @@ function MultiplayerPresence() {
         room.onMessage('minigame:bay', (message: { bay?: number }) => { if (Number.isFinite(message.bay)) setEventBay(Number(message.bay)) })
         room.onMessage('presence:move', (message: PeerPresence) => mergePeer(message))
         room.onMessage('presence:leave', (id: string) => removePeer(id))
-        for (const type of ['trade:request', 'trade:opened', 'trade:update', 'trade:cancel', 'trade:commit', 'minigame:result', 'minigame:forage', 'mine:snapshot', 'mine:node', 'mine:award', 'mine:denied']) room.onMessage(type, (payload: unknown) => emitMultiplayer(type, payload))
+        for (const type of ['trade:request', 'trade:opened', 'trade:update', 'trade:cancel', 'trade:commit', 'minigame:result', 'minigame:forage', 'mine:snapshot', 'mine:node', 'mine:award', 'mine:denied', 'farm:snapshot', 'farm:update', 'farm:result']) room.onMessage(type, (payload: unknown) => emitMultiplayer(type, payload))
         setMultiplayerSender((type, payload) => room.send(type, payload))
         room.send('lobby:ready', {})
         const publish = () => {
@@ -664,7 +668,9 @@ function Player() {
   const cameraRaycaster = useRef(new THREE.Raycaster())
   const lastStoreUpdate = useRef(0)
   const portalReadyAt = useRef(0)
-  const nextFootstepAt = useRef(0)
+  const footstepPhase = useRef(0)
+  const footstepAnimation = useRef('')
+  const grounded = useRef(true)
   const spawnedZone = useRef<string | null>(null)
   const zone = useGameStore((state) => state.zone)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
@@ -699,8 +705,10 @@ function Player() {
     : resourceVisualTarget === 'discovery'
       ? [...activeEventRares].find((id) => id.startsWith('ForageRushDiscovery'))
       : 'ForageRushApple100'
-  const eventResource = minigameOpen && resourceVisualGate
-    ? minigameKind === 'mining'
+  const eventResource = minigameOpen && (resourceVisualGate || furnaceVisualGate)
+    ? furnaceVisualGate && minigameKind === 'farm'
+      ? anchors[`FarmRushCooker${eventBay}`]
+      : minigameKind === 'mining'
       ? anchors[`RushOre${eventBay}_22`]
       : minigameKind === 'forage'
         ? eventForageResource ? anchors[eventForageResource] : null
@@ -738,7 +746,7 @@ function Player() {
     if (spawnedZone.current === spawnKey) return
     if (minigameOpen && farmCellVisualGate && !eventFarmCell) return
     if (deepVisualGate && !anchors.GateDeep) return
-    const resource = minigameOpen ? (resourceVisualGate ? eventResource : farmCellVisualGate && eventFarmCell ? eventFarmCell : eventSpawn ?? eventFallback) : zone === 'forage' ? anchors.ForageApple000 : zone === 'mine' ? anchors.MineOre000 : zone === 'farm' ? ((furnaceVisualGate || resourceVisualGate) ? anchors.FurnacePad0 : anchors.FarmClaim0) : null
+    const resource = minigameOpen ? ((resourceVisualGate || furnaceVisualGate) ? eventResource : farmCellVisualGate && eventFarmCell ? eventFarmCell : eventSpawn ?? eventFallback) : zone === 'forage' ? anchors.ForageApple000 : zone === 'mine' ? anchors.MineOre000 : zone === 'farm' ? ((furnaceVisualGate || resourceVisualGate) ? anchors.FurnacePad0 : anchors.FarmClaim0) : null
     const farmCell = zone === 'farm' ? anchors.FarmCell0_00 : null
     if ((resourceVisualGate || furnaceVisualGate) && !resource) return
     if (farmCellVisualGate && !minigameOpen && !farmCell) return
@@ -805,6 +813,8 @@ function Player() {
       const floor = (live.minigameOpen ? minigameGroundHeight(live.minigameKind, position.current.x, position.current.z) : groundHeight(live.zone, position.current.x, position.current.z)) + 0.86
       if (event.code === 'Space' && position.current.y <= floor + 0.03) {
         verticalVelocity.current = 5.2
+        grounded.current = false
+        playGameSfx('jump', live.audioVolumes.master * live.audioVolumes.effects)
       }
     }
     const up = (event: KeyboardEvent) => { keys.current[event.code] = false }
@@ -868,13 +878,6 @@ function Player() {
     if (moving) direction.normalize()
     const sprinting = moving && Boolean(keys.current.ShiftLeft || keys.current.ShiftRight)
     const speed = sprinting ? 8.4 : 3.9
-    if (moving && state.clock.elapsedTime >= nextFootstepAt.current) {
-      const stoneFloor = zone === 'mine' || (liveUi.minigameOpen && liveUi.minigameKind === 'mining')
-      playGameSfx(stoneFloor ? 'footstep-stone' : 'footstep-grass', liveUi.audioVolumes.master * liveUi.audioVolumes.effects)
-      nextFootstepAt.current = state.clock.elapsedTime + (sprinting ? 0.31 : 0.48)
-    } else if (!moving) {
-      nextFootstepAt.current = state.clock.elapsedTime
-    }
     const next = position.current.clone().addScaledVector(direction, speed * delta)
     if (liveUi.minigameOpen) {
       const eventLimit = liveUi.minigameKind === 'forage' ? 216 : liveUi.minigameKind === 'farm' ? 49 : 57
@@ -916,15 +919,39 @@ function Player() {
     position.current.y += verticalVelocity.current * delta
     const terrainY = liveUi.minigameOpen ? minigameGroundHeight(liveUi.minigameKind, position.current.x, position.current.z) : groundHeight(zone, position.current.x, position.current.z)
     const standingY = terrainY + 0.86
+    const wasGrounded = grounded.current
     if (position.current.y < standingY) {
+      const landingSpeed = -verticalVelocity.current
       position.current.y = standingY
       verticalVelocity.current = 0
+      grounded.current = true
+      if (!wasGrounded && landingSpeed > 1.1) playGameSfx('land', liveUi.audioVolumes.master * liveUi.audioVolumes.effects)
+    } else {
+      grounded.current = false
     }
-    const requestedAnimation = interactionProgress > 0 && prompt ? 'Armature|Interact' : sprinting ? 'Armature|Sprint_Loop' : moving ? 'Armature|Walk_Loop' : 'Armature|Idle_Loop'
+    const requestedAnimation = interactionProgress > 0 && prompt ? 'Armature|Interact' : !grounded.current ? 'Armature|Idle_Loop' : sprinting ? 'Armature|Sprint_Loop' : moving ? 'Armature|Walk_Loop' : 'Armature|Idle_Loop'
     if (requestedAnimation !== activeAnimation.current || !actions[requestedAnimation]?.isRunning()) {
       actions[activeAnimation.current]?.fadeOut(0.18)
       actions[requestedAnimation]?.reset().fadeIn(0.18).play()
       activeAnimation.current = requestedAnimation
+    }
+    const locomotion = grounded.current && moving && (requestedAnimation === 'Armature|Walk_Loop' || requestedAnimation === 'Armature|Sprint_Loop') ? requestedAnimation : ''
+    if (locomotion !== footstepAnimation.current) {
+      footstepAnimation.current = locomotion
+      const action = locomotion ? actions[locomotion] : null
+      footstepPhase.current = action ? (action.time / Math.max(.001, action.getClip().duration)) % 1 : 0
+    } else if (locomotion) {
+      const action = actions[locomotion]
+      if (action) {
+        const phase = (action.time / Math.max(.001, action.getClip().duration)) % 1
+        const previous = footstepPhase.current
+        const crossed = (mark: number) => previous <= phase ? previous < mark && phase >= mark : previous < mark || phase >= mark
+        if (crossed(.14) || crossed(.64)) {
+          const stoneFloor = zone === 'mine' || (liveUi.minigameOpen && liveUi.minigameKind === 'mining')
+          playGameSfx(stoneFloor ? 'footstep-stone' : 'footstep-grass', liveUi.audioVolumes.master * liveUi.audioVolumes.effects)
+        }
+        footstepPhase.current = phase
+      }
     }
     if (shiftLock.current) {
       const angle = Math.atan2(cameraForward.x, cameraForward.z)
@@ -934,7 +961,7 @@ function Player() {
       if (playerRoot.current) playerRoot.current.rotation.y = angle
     }
     if (visual.current) {
-      visual.current.position.y = moving ? Math.sin(state.clock.elapsedTime * (sprinting ? 13 : 8)) * 0.025 : 0
+      visual.current.position.y = moving && grounded.current ? Math.sin(state.clock.elapsedTime * (sprinting ? 13 : 8)) * 0.025 : 0
       visual.current.rotation.z = THREE.MathUtils.lerp(visual.current.rotation.z, moving ? -inputX * 0.035 : 0, 0.12)
     }
     const current = position.current
@@ -1001,7 +1028,10 @@ function InteractiveWorldObjects() {
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
   const anchors = useGameStore((state) => state.anchors)
-  const farmCells = useGameStore((state) => state.farmCells)
+  const localFarmCells = useGameStore((state) => state.farmCells)
+  const sharedFarmCells = useGameStore((state) => state.sharedFarmCells)
+  const sharedFarmOnline = useGameStore((state) => state.sharedFarmOnline)
+  const farmCells = sharedFarmOnline ? sharedFarmCells : localFarmCells
   const farmRushCells = useGameStore((state) => state.farmRushCells)
   const forageRushDelivered = useGameStore((state) => state.forageRushDelivered)
   const roundNumber = useGameStore((state) => state.roundNumber)
@@ -1071,7 +1101,7 @@ function eventBayForAnchor(anchor: string) {
   return match ? Number(match[1]) : null
 }
 
-function candidateForAnchor(anchor: string, claimedFarms: number[], furnaceCount: number): InteractionCandidate | null {
+function candidateForAnchor(anchor: string, claimedFarms: number[], furnaceCount: number, farmOwners: Record<number, string | null> = {}): InteractionCandidate | null {
   if (anchor.startsWith('FarmRushCell')) return { id: anchor, label: 'Use Plot', anchor, reach: 3.25, lift: .08 }
   if (anchor.startsWith('FarmRushCooker')) return { id: anchor, label: 'Cook', anchor, reach: 3.4, lift: 1 }
   if (anchor.startsWith('ForageRushDeliver')) return { id: anchor, label: 'Deliver', anchor, reach: 3.4, lift: 1 }
@@ -1100,7 +1130,10 @@ function candidateForAnchor(anchor: string, claimedFarms: number[], furnaceCount
   const cell = /^FarmCell(\d+)_(\d+)$/.exec(anchor)
   if (cell && claimedFarms.includes(Number(cell[1]))) return { id: `farm-cell:${cell[1]}:${Number(cell[2])}`, label: 'Use Plot', anchor, reach: 3.25, lift: 0.08 }
   const claim = /^FarmClaim(\d+)$/.exec(anchor)
-  if (claim) return { id: `farm-claim:${claim[1]}`, label: claimedFarms.includes(Number(claim[1])) ? 'Your Farm' : 'Claim Farm', anchor, reach: 3.2, lift: 1 }
+  if (claim) {
+    const farm = Number(claim[1])
+    return { id: `farm-claim:${claim[1]}`, label: claimedFarms.includes(farm) ? 'Your Farm' : farmOwners[farm] ? 'Claimed' : 'Claim Farm', anchor, reach: 3.2, lift: 1 }
+  }
   if (anchor.startsWith('Mine')) return { id: anchor, label: 'Mine Ore', anchor, reach: 3.25, lift: 0.55 }
   if (anchor.startsWith('RushOre')) return { id: anchor, label: 'Mine Ore', anchor, reach: 3.4, lift: 0.55 }
   return null
@@ -1110,6 +1143,10 @@ function InteractionTargeter() {
   const anchors = useGameStore((state) => state.anchors)
   const player = useGameStore((state) => state.playerPosition)
   const claimedFarms = useGameStore((state) => state.claimedFarms)
+  const sharedFarmOnline = useGameStore((state) => state.sharedFarmOnline)
+  const sharedFarmSelfId = useGameStore((state) => state.sharedFarmSelfId)
+  const farmOwners = useGameStore((state) => state.farmOwners)
+  const activeClaimedFarms = sharedFarmOnline ? Object.keys(farmOwners).map(Number).filter((farm) => farmOwners[farm] === sharedFarmSelfId) : claimedFarms
   const furnaceCount = useGameStore((state) => state.inventory.furnace ?? 0)
   const collectedForage = useGameStore((state) => state.collectedForage)
   const minedNodes = useGameStore((state) => state.minedNodes)
@@ -1139,7 +1176,7 @@ function InteractionTargeter() {
       if (minigameOpen && !anchor.startsWith('RushOre') && !anchor.startsWith('FarmRush') && !anchor.startsWith('ForageRush')) continue
       if (minigameOpen && eventBayForAnchor(anchor) !== null && eventBayForAnchor(anchor) !== eventBay) continue
       if (anchor.startsWith('SecretSite') && (zone === 'hub' || secretZoneForRound(roundNumber) !== zone || anchor !== `SecretSite${secretSiteForRound(zone, roundNumber, sessionSeed)}`)) continue
-      const candidate = candidateForAnchor(anchor, claimedFarms, furnaceCount)
+      const candidate = candidateForAnchor(anchor, activeClaimedFarms, furnaceCount, sharedFarmOnline ? farmOwners : {})
       if (!candidate) continue
       if ((anchor.startsWith('ForageTruffle') || anchor.startsWith('ForageDiscovery') || anchor.startsWith('ForageRushTruffle') || anchor.startsWith('ForageRushDiscovery')) && !activeRares.has(anchor)) continue
       if (candidate.id.startsWith('forage:') && forageSiteAvailability(anchor, collectedForage[anchor] ?? 0) <= 0) continue
@@ -1223,6 +1260,10 @@ function WorldLabels() {
   const zone = useGameStore((state) => state.zone)
   const anchors = useGameStore((state) => state.anchors)
   const claimedFarms = useGameStore((state) => state.claimedFarms)
+  const sharedFarmOnline = useGameStore((state) => state.sharedFarmOnline)
+  const sharedFarmSelfId = useGameStore((state) => state.sharedFarmSelfId)
+  const farmOwners = useGameStore((state) => state.farmOwners)
+  const ownedFarms = sharedFarmOnline ? Object.keys(farmOwners).map(Number).filter((farm) => farmOwners[farm] === sharedFarmSelfId) : claimedFarms
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
   const eventBay = useGameStore((state) => state.eventBay)
@@ -1239,7 +1280,7 @@ function WorldLabels() {
         { key: 'stocks', text: 'STOCK EXCHANGE', point: anchors.Stocks, lift: 3.2 },
       ] : zone === 'farm' ? [
         { key: 'home', text: 'HOME', point: anchors.Home, lift: 5.75 },
-        ...claimedFarms.map((farm) => ({ key: `owned-farm-${farm}`, text: 'YOUR FARM', point: anchors[`FarmPlot${farm}`] ?? anchors.FarmPlot, lift: 2.2 })),
+        ...ownedFarms.map((farm) => ({ key: `owned-farm-${farm}`, text: 'YOUR FARM', point: anchors[`FarmPlot${farm}`] ?? anchors.FarmPlot, lift: 2.2 })),
         { key: 'farm-shop', text: 'FARM SHOP', point: anchors.FarmShop, lift: 3.2 },
         { key: 'produce', text: 'PRODUCE STAND', point: anchors.ProduceBuyer, lift: 3.2 },
       ] : zone === 'mine' ? [

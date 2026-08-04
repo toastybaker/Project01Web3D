@@ -4,7 +4,8 @@ import { isPickaxe, canMineOre, miningYield, oreRespawnMs, type OreItem } from '
 import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, FORAGE_CONFIG, MATCH_CONFIG, ORE_CONFIG, forageSiteAvailability, fortuneBonus, nextRareForageRollAt, type CommodityId } from './config'
 import { advanceCommodityCycle, commodityPrice, formatCoins, initialCommodityMarket, lotteryJackpot, lotteryPrice, lotteryTwoMatch, marginalSale, nextStockPrice, scaledValue, seeded01, stockAvailable, stockWaveQuantity, type CommodityMarket } from './economy'
 import { RECIPES, RECIPE_IDS, type FoodItemId, type RecipeId } from './recipes'
-import { COOKBOOK_BOX_REWARD_VALUE, FARM_RUSH_GROWTH_MS, FARM_RUSH_ORDER_INTERVAL_MS, FARM_RUSH_ORDER_LIFETIME_MS, FORAGE_RUSH_DELIVERY_POINTS, FORAGE_RUSH_REQUIREMENTS, MINING_RUSH_POINTS, MINING_RUSH_RESPAWN_MS, farmRushOrders, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCell, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MinigameKind } from './minigame'
+import { COOKBOOK_BOX_REWARD_VALUE, FARM_RUSH_GROWTH_MS, FARM_RUSH_MAX_ORDERS, FARM_RUSH_ORDER_LIFETIME_MS, FORAGE_RUSH_DELIVERY_POINTS, FORAGE_RUSH_REQUIREMENTS, MINING_RUSH_POINTS, MINING_RUSH_RESPAWN_MS, farmRushOrders, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCell, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MinigameKind } from './minigame'
+import { sendMultiplayer } from './multiplayer'
 
 export type ZoneId = 'hub' | 'forage' | 'farm' | 'mine'
 export type Vec3 = [number, number, number]
@@ -20,8 +21,14 @@ export type CookJob = { id: string; recipe: RecipeId; quantity: number; furnaceI
 export type RushNodeState = { generation: number; readyAt: number }
 export type MineNodeState = { generation: number; readyAt: number }
 type MinigameSnapshot = { zone: ZoneId; playerPosition: Vec3; hotbar: Array<ItemId | null>; selectedHotbar: number; inventoryOpen: boolean; startedAt: number }
-export type FarmRushCooking = { orderIndex: number; readyAt: number } | null
+export type FarmRushCooking = Array<{ orderIndex: number; readyAt: number }>
 export type FarmRushTicket = { orderIndex: number; expiresAt: number }
+export type MinigameRewardResult = { kind: MinigameKind; placement: number; score: number; cash: number; boxes: number; receivedAt: number }
+export type SharedFarmSnapshot = { selfId: string; owners: Record<number, string | null>; cells: Record<string, FarmCellState> }
+export type SharedFarmUpdate = { farmId: number; ownerId?: string | null; cellIndex?: number; cell?: FarmCellState | null }
+export type SharedFarmResult = { requestId: string; ok: boolean; reason?: string; op?: 'claim' | 'plant' | 'water' | 'harvest'; farmId?: number; cellIndex?: number; crop?: CropKind; quantity?: number }
+
+const pendingFarmActions = new Map<string, { op: 'claim' | 'plant' | 'water' | 'harvest'; farmId: number; cellIndex?: number; seed?: ItemId; crop?: CropKind }>()
 
 type Prompt = { id: string; label: string } | null
 type Stats = { foraged: number; mined: number; harvested: number; sold: number }
@@ -168,7 +175,7 @@ function migrateSave(value: SaveData | null): SaveData | null {
 }
 
 const query = new URLSearchParams(window.location.search)
-const gateFresh = query.get('gate') === 'final' || query.get('gate') === 'deep' || query.get('gate') === 'resource' || query.get('gate') === 'cell'
+const gateFresh = query.get('gate') === 'final' || query.get('gate') === 'deep' || query.get('gate') === 'resource' || query.get('gate') === 'cell' || query.get('gate') === 'furnace' || query.get('gate') === 'result'
 const saved = gateFresh ? null : migrateSave(readJson<SaveData>('project01-save-v12') ?? readJson<SaveData>('project01-save-v11'))
 const requestedZone = query.get('zone')
 const requestedPanel = query.get('panel')
@@ -222,6 +229,10 @@ type GameState = {
   menuOpen: boolean
   farmCells: Record<string, FarmCellState>
   claimedFarms: number[]
+  sharedFarmOnline: boolean
+  sharedFarmSelfId: string | null
+  farmOwners: Record<number, string | null>
+  sharedFarmCells: Record<string, FarmCellState>
   collectedForage: Record<string, number>
   minedNodes: Record<string, number>
   mineGenerations: Record<string, number>
@@ -287,6 +298,7 @@ type GameState = {
   farmRushNextOrderAt: number
   farmRushCooking: FarmRushCooking
   farmRushScore: number
+  lastMinigameResult: MinigameRewardResult | null
   forageRushCollected: Record<string, number>
   forageRushInventory: Record<ForageRushKind, number>
   forageRushDelivered: Record<ForageRushKind, boolean>
@@ -311,6 +323,9 @@ type GameState = {
   useCookbookBox: () => void
   farmAction: (farmIndex: number, index: number) => void
   claimFarm: (index: number) => void
+  syncFarmSnapshot: (snapshot: SharedFarmSnapshot) => void
+  syncFarmUpdate: (update: SharedFarmUpdate) => void
+  applyFarmResult: (result: SharedFarmResult) => void
   mineNode: (id: string, item: OreItem) => void
   syncMineSnapshot: (seed: number, nodes: Record<string, MineNodeState>) => void
   syncMineNode: (id: string, node: MineNodeState) => void
@@ -345,8 +360,9 @@ type GameState = {
   setFarmRushTool: (tool: FarmRushTool) => void
   farmRushAction: (id: string) => void
   tickFarmRush: () => void
-  farmRushCook: () => void
+  farmRushCook: (recipe: RecipeId) => void
   farmRushSubmit: (orderIndex: number) => void
+  clearMinigameResult: () => void
   forageRushCollect: (id: string) => void
   syncForageRush: (id: string, readyAt: number) => void
   forageRushDeliver: (kind: ForageRushKind) => void
@@ -500,6 +516,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   menuOpen: false,
   farmCells: saved?.farmCells ?? {},
   claimedFarms: saved?.claimedFarms ?? (saved?.claimedFarm === null || saved?.claimedFarm === undefined ? [] : [saved.claimedFarm]),
+  sharedFarmOnline: false,
+  sharedFarmSelfId: null,
+  farmOwners: {},
+  sharedFarmCells: {},
   collectedForage: {},
   minedNodes: {},
   mineGenerations: {},
@@ -559,12 +579,17 @@ export const useGameStore = create<GameState>((set, get) => ({
   rushLastMineAt: 0,
   farmRushCells: {},
   farmRushTool: 'wheat',
-  farmRushInventory: { wheat: 0, tomato: 0, lettuce: 0, pumpkin: 0, watermelon: 0 },
+  farmRushInventory: query.get('gate') === 'furnace'
+    ? { wheat: 6, tomato: 6, lettuce: 6, pumpkin: 6, watermelon: 6 }
+    : { wheat: 0, tomato: 0, lettuce: 0, pumpkin: 0, watermelon: 0 },
   farmRushOrders: [],
   farmRushIssued: 0,
   farmRushNextOrderAt: 0,
-  farmRushCooking: null,
+  farmRushCooking: [],
   farmRushScore: 0,
+  lastMinigameResult: query.get('gate') === 'result'
+    ? { kind: 'farm', placement: 2, score: 184, cash: 700_000, boxes: 1, receivedAt: Date.now() }
+    : null,
   forageRushCollected: {},
   forageRushInventory: { apple: 0, orange: 0, truffle: 0, discovery: 0 },
   forageRushDelivered: { apple: false, orange: false, truffle: false, discovery: false },
@@ -682,10 +707,27 @@ export const useGameStore = create<GameState>((set, get) => ({
   }),
   farmAction: (farmIndex, index) => {
     const state = get()
-    if (!state.claimedFarms.includes(farmIndex)) return set({ toast: 'Not your farm' })
+    const onlineOwner = state.sharedFarmOnline ? state.farmOwners[farmIndex] : null
+    if (state.sharedFarmOnline ? onlineOwner !== state.sharedFarmSelfId : !state.claimedFarms.includes(farmIndex)) return set({ toast: 'Not your farm' })
     const held = state.hotbar[state.selectedHotbar]
     const key = cellKey(farmIndex, index)
-    const cell = state.farmCells[key] ?? { crop: null, stage: 'empty' as const, readyAt: null }
+    const cell = (state.sharedFarmOnline ? state.sharedFarmCells[key] : state.farmCells[key]) ?? { crop: null, stage: 'empty' as const, readyAt: null }
+    if (state.sharedFarmOnline) {
+      const cropBySeed: Partial<Record<ItemId, CropKind>> = {
+        'wheat-seeds': 'wheat', 'tomato-seeds': 'tomato', 'lettuce-seeds': 'lettuce',
+        'pumpkin-seeds': 'pumpkin', 'watermelon-seeds': 'watermelon',
+      }
+      const op = cell.stage === 'empty' ? 'plant' : cell.stage === 'planted' ? 'water' : cell.stage === 'ready' ? 'harvest' : null
+      if (!op) return set({ toast: `${Math.max(1, Math.ceil(((cell.readyAt ?? Date.now()) - Date.now()) / 1000))}s` })
+      const crop = held ? cropBySeed[held] : null
+      if (op === 'plant' && (!held || !crop)) return set({ toast: 'Select seeds' })
+      if (op === 'plant' && (state.inventory[held!] ?? 0) <= 0) return set({ toast: 'Need seeds' })
+      if (op === 'water' && held !== 'water-can') return set({ toast: 'Select watering can' })
+      const requestId = crypto.randomUUID()
+      pendingFarmActions.set(requestId, { op, farmId: farmIndex, cellIndex: index, seed: op === 'plant' ? held! : undefined, crop: crop ?? cell.crop ?? undefined })
+      if (sendMultiplayer('farm:action', { requestId, op, farmId: farmIndex, cellIndex: index, crop, watered: op === 'plant' && state.weather === 'rain' })) return
+      pendingFarmActions.delete(requestId)
+    }
     if (cell.stage === 'empty') {
       const cropBySeed: Partial<Record<ItemId, CropKind>> = {
         'wheat-seeds': 'wheat', 'tomato-seeds': 'tomato', 'lettuce-seeds': 'lettuce',
@@ -720,12 +762,52 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
   claimFarm: (index) => {
     const state = get()
+    if (state.sharedFarmOnline) {
+      if (state.farmOwners[index] === state.sharedFarmSelfId) return set({ toast: 'Your farm' })
+      if (state.farmOwners[index]) return set({ toast: 'Farm already claimed' })
+      const deeds = state.inventory['farm-deed'] ?? 0
+      if (!deeds) return set({ toast: 'Need a farm deed' })
+      const requestId = crypto.randomUUID()
+      pendingFarmActions.set(requestId, { op: 'claim', farmId: index })
+      if (sendMultiplayer('farm:action', { requestId, op: 'claim', farmId: index })) return
+      pendingFarmActions.delete(requestId)
+    }
     if (state.claimedFarms.includes(index)) return set({ toast: 'Your farm' })
     const deeds = state.inventory['farm-deed'] ?? 0
     if (!deeds) return set({ toast: 'Need a farm deed' })
     const inventory = { ...state.inventory, 'farm-deed': deeds - 1 }
     set({ claimedFarms: [...state.claimedFarms, index].sort((a, b) => a - b), inventory, hotbar: cleanedHotbar(state.hotbar, inventory), toast: `Farm ${index + 1} claimed` })
   },
+  syncFarmSnapshot: ({ selfId, owners, cells }) => set({ sharedFarmOnline: true, sharedFarmSelfId: selfId, farmOwners: owners, sharedFarmCells: cells }),
+  syncFarmUpdate: ({ farmId, ownerId, cellIndex, cell }) => set((state) => {
+    const farmOwners = ownerId === undefined ? state.farmOwners : { ...state.farmOwners, [farmId]: ownerId }
+    if (cellIndex === undefined) return { farmOwners }
+    const key = cellKey(farmId, cellIndex)
+    const sharedFarmCells = { ...state.sharedFarmCells }
+    if (cell && cell.stage !== 'empty') sharedFarmCells[key] = cell
+    else delete sharedFarmCells[key]
+    return { farmOwners, sharedFarmCells }
+  }),
+  applyFarmResult: (result) => set((state) => {
+    const pending = pendingFarmActions.get(result.requestId)
+    if (!pending) return state
+    pendingFarmActions.delete(result.requestId)
+    if (!result.ok) return { toast: result.reason || 'Farm action failed' }
+    if (pending.op === 'claim') {
+      const deeds = state.inventory['farm-deed'] ?? 0
+      const inventory = { ...state.inventory, 'farm-deed': Math.max(0, deeds - 1) }
+      return { claimedFarms: state.claimedFarms.includes(pending.farmId) ? state.claimedFarms : [...state.claimedFarms, pending.farmId].sort((a, b) => a - b), inventory, hotbar: cleanedHotbar(state.hotbar, inventory), toast: `Farm ${pending.farmId + 1} claimed` }
+    }
+    if (pending.op === 'plant' && pending.seed) {
+      const inventory = { ...state.inventory, [pending.seed]: Math.max(0, (state.inventory[pending.seed] ?? 0) - 1) }
+      return { inventory, hotbar: cleanedHotbar(state.hotbar, inventory), toast: result.reason === 'watered' ? 'Planted · watered' : 'Planted' }
+    }
+    if (pending.op === 'water') return { toast: 'Watered' }
+    const crop = result.crop ?? pending.crop ?? 'tomato'
+    const quantity = Math.max(0, Math.floor(result.quantity ?? CROP_YIELD[crop]))
+    const inventory = { ...state.inventory, [crop]: (state.inventory[crop] ?? 0) + quantity }
+    return { inventory, hotbar: hotbarWithNewItem(state.hotbar, state.inventory, crop), stats: { ...state.stats, harvested: state.stats.harvested + quantity }, toast: `+${quantity} ${ITEMS[crop].name}` }
+  }),
   mineNode: (id, item) => {
     const state = get()
     if ((state.minedNodes[id] ?? 0) > Date.now()) return
@@ -1002,45 +1084,53 @@ export const useGameStore = create<GameState>((set, get) => ({
   tickFarmRush: () => set((state) => {
     if (!state.minigameOpen || state.minigameKind !== 'farm') return state
     const now = Date.now()
-    let farmRushOrders = state.farmRushOrders.filter((ticket) => ticket.expiresAt > now || state.farmRushCooking?.orderIndex === ticket.orderIndex)
+    let farmRushOrders = state.farmRushOrders.filter((ticket) => ticket.expiresAt > now)
+    let farmRushCooking = state.farmRushCooking.filter((job) => farmRushOrders.some((ticket) => ticket.orderIndex === job.orderIndex))
     let farmRushIssued = state.farmRushIssued
-    let farmRushNextOrderAt = state.farmRushNextOrderAt || now
-    if (now >= farmRushNextOrderAt && farmRushOrders.length < 2) {
+    while (farmRushOrders.length < FARM_RUSH_MAX_ORDERS) {
       farmRushOrders = [...farmRushOrders, { orderIndex: farmRushIssued, expiresAt: now + FARM_RUSH_ORDER_LIFETIME_MS }]
       farmRushIssued += 1
-      farmRushNextOrderAt = now + FARM_RUSH_ORDER_INTERVAL_MS
     }
-    return { farmRushOrders, farmRushIssued, farmRushNextOrderAt }
+    return { farmRushOrders, farmRushIssued, farmRushNextOrderAt: now, farmRushCooking }
   }),
-  farmRushCook: () => set((state) => {
+  farmRushCook: (recipeId) => set((state) => {
     if (!state.minigameOpen || state.minigameKind !== 'farm') return state
+    if (state.farmRushCooking.length >= 3) return { toast: 'Furnace queue full' }
     const orders = farmRushOrders(state.minigameMilestone)
-    if (state.farmRushCooking) {
-      if (state.farmRushCooking.readyAt > Date.now()) return { toast: `${Math.ceil((state.farmRushCooking.readyAt - Date.now()) / 1000)}s` }
-      return { toast: 'Submit from the order menu' }
-    }
     const ticket = state.farmRushOrders.find((candidate) => {
       if (candidate.expiresAt <= Date.now()) return false
       const order = orders[candidate.orderIndex % orders.length]
-      return Object.entries(order.ingredients).every(([crop, quantity]) => state.farmRushInventory[crop as FarmRushCrop] >= Number(quantity))
+      return order.recipe === recipeId
+        && !state.farmRushCooking.some((job) => job.orderIndex === candidate.orderIndex)
+        && Object.entries(order.ingredients).every(([crop, quantity]) => state.farmRushInventory[crop as FarmRushCrop] >= Number(quantity))
     })
-    if (!ticket) return { toast: state.farmRushOrders.length ? 'Missing ingredients' : 'No order yet' }
+    if (!ticket) return { toast: state.farmRushOrders.some((candidate) => orders[candidate.orderIndex % orders.length].recipe === recipeId) ? 'Missing ingredients' : 'No matching order' }
     const order = orders[ticket.orderIndex % orders.length]
-    const hasIngredients = Object.entries(order.ingredients).every(([crop, quantity]) => state.farmRushInventory[crop as FarmRushCrop] >= Number(quantity))
-    if (!hasIngredients) return { toast: 'Missing ingredients' }
     const farmRushInventory = { ...state.farmRushInventory }
     Object.entries(order.ingredients).forEach(([crop, quantity]) => { farmRushInventory[crop as FarmRushCrop] -= Number(quantity) })
-    return { farmRushInventory, farmRushCooking: { orderIndex: ticket.orderIndex, readyAt: Date.now() + order.cookSeconds * 1000 }, toast: order.name }
+    const previousReadyAt = state.farmRushCooking.at(-1)?.readyAt ?? Date.now()
+    const readyAt = Math.max(Date.now(), previousReadyAt) + order.cookSeconds * 1000
+    return { farmRushInventory, farmRushCooking: [...state.farmRushCooking, { orderIndex: ticket.orderIndex, readyAt }], toast: `${order.name} queued` }
   }),
   farmRushSubmit: (orderIndex) => set((state) => {
-    if (!state.minigameOpen || state.minigameKind !== 'farm' || state.farmRushCooking?.orderIndex !== orderIndex) return state
-    if (state.farmRushCooking.readyAt > Date.now()) return { toast: `${Math.ceil((state.farmRushCooking.readyAt - Date.now()) / 1000)}s` }
+    if (!state.minigameOpen || state.minigameKind !== 'farm') return state
+    const cooking = state.farmRushCooking.find((job) => job.orderIndex === orderIndex)
+    if (!cooking) return state
+    if (cooking.readyAt > Date.now()) return { toast: `${Math.ceil((cooking.readyAt - Date.now()) / 1000)}s` }
     const ticket = state.farmRushOrders.find((candidate) => candidate.orderIndex === orderIndex)
     const valid = Boolean(ticket && ticket.expiresAt > Date.now())
     const order = farmRushOrders(state.minigameMilestone)[orderIndex % farmRushOrders(state.minigameMilestone).length]
+    const now = Date.now()
+    const remaining = state.farmRushOrders.filter((candidate) => candidate.orderIndex !== orderIndex && candidate.expiresAt > now)
+    let farmRushIssued = state.farmRushIssued
+    while (remaining.length < FARM_RUSH_MAX_ORDERS) {
+      remaining.push({ orderIndex: farmRushIssued, expiresAt: now + FARM_RUSH_ORDER_LIFETIME_MS })
+      farmRushIssued += 1
+    }
     return {
-      farmRushCooking: null,
-      farmRushOrders: state.farmRushOrders.filter((candidate) => candidate.orderIndex !== orderIndex),
+      farmRushCooking: state.farmRushCooking.filter((job) => job.orderIndex !== orderIndex),
+      farmRushOrders: remaining,
+      farmRushIssued,
       farmRushScore: state.farmRushScore + (valid ? order.points : 0),
       toast: valid ? `+${order.points}` : 'Order expired',
     }
@@ -1088,7 +1178,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       minigameSnapshot: null,
       eventBay: 0,
       rushNodes: {}, rushScore: 0, rushCombo: 0, rushLastMineAt: 0,
-      farmRushCells: {}, farmRushInventory: { wheat: 0, tomato: 0, lettuce: 0, pumpkin: 0, watermelon: 0 }, farmRushOrders: [], farmRushIssued: 0, farmRushNextOrderAt: 0, farmRushCooking: null, farmRushScore: 0,
+      farmRushCells: {}, farmRushInventory: { wheat: 0, tomato: 0, lettuce: 0, pumpkin: 0, watermelon: 0 }, farmRushOrders: [], farmRushIssued: 0, farmRushNextOrderAt: 0, farmRushCooking: [], farmRushScore: 0,
       forageRushCollected: {}, forageRushInventory: { apple: 0, orange: 0, truffle: 0, discovery: 0 }, forageRushDelivered: { apple: false, orange: false, truffle: false, discovery: false }, forageRushScore: 0,
       minigamesCompleted: state.minigamesCompleted.includes(milestone) ? state.minigamesCompleted : [...state.minigamesCompleted, milestone],
       zone: snapshot.zone,
@@ -1098,6 +1188,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       hotbar: cleanedHotbar(snapshot.hotbar, inventory), selectedHotbar: snapshot.selectedHotbar,
       inventoryOpen: snapshot.inventoryOpen,
       cash: state.cash + reward,
+      lastMinigameResult: placement > 0 ? { kind: state.minigameKind, placement, score, cash: reward, boxes: boxCount, receivedAt: Date.now() } : state.lastMinigameResult,
       farmCells: Object.fromEntries(Object.entries(state.farmCells).map(([key, cell]) => [key, cell.readyAt ? { ...cell, readyAt: shiftReady(cell.readyAt) } : cell])),
       cookQueue: state.cookQueue.map((job) => ({ ...job, readyAt: shiftReady(job.readyAt) })),
       collectedForage: Object.fromEntries(Object.entries(state.collectedForage).map(([id, readyAt]) => [id, shiftReady(readyAt)])),
@@ -1105,6 +1196,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       toast: placement < 1 ? 'Event left' : `${placement === 1 ? '1st' : placement === 2 ? '2nd' : placement === 3 ? '3rd' : `${placement}th`} · +${formatCoins(reward)}${boxCount ? ` · ${boxCount} Cookbook` : ''}`,
     }
   }),
+  clearMinigameResult: () => set({ lastMinigameResult: null }),
   setEventBay: (bay) => set((state) => {
     const eventBay = Math.max(0, Math.min(7, Math.floor(bay)))
     if (eventBay === state.eventBay) return state
@@ -1122,7 +1214,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       eventBay: 0,
       minigameSnapshot: { zone: state.zone, playerPosition: state.playerPosition, hotbar: [...state.hotbar], selectedHotbar: state.selectedHotbar, inventoryOpen: state.inventoryOpen, startedAt: Date.now() },
       rushNodes: {}, rushScore: 0, rushCombo: 0, rushLastMineAt: 0,
-      farmRushCells: {}, farmRushTool: 'wheat', farmRushInventory: { wheat: 0, tomato: 0, lettuce: 0, pumpkin: 0, watermelon: 0 }, farmRushOrders: [], farmRushIssued: 0, farmRushNextOrderAt: 0, farmRushCooking: null, farmRushScore: 0,
+      farmRushCells: {}, farmRushTool: 'wheat', farmRushInventory: { wheat: 0, tomato: 0, lettuce: 0, pumpkin: 0, watermelon: 0 }, farmRushOrders: [], farmRushIssued: 0, farmRushNextOrderAt: 0, farmRushCooking: [], farmRushScore: 0,
       forageRushCollected: {}, forageRushInventory: { apple: 0, orange: 0, truffle: 0, discovery: 0 }, forageRushDelivered: { apple: false, orange: false, truffle: false, discovery: false }, forageRushScore: 0,
       zone: 'hub',
       teleportNonce: state.teleportNonce + 1,

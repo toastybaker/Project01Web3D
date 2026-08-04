@@ -5,9 +5,9 @@ import { commodityPrice, formatCoins, lotteryJackpot, lotteryPrice, lotteryTwoMa
 import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, MATCH_CONFIG, PICKAXE_CONFIG, type CommodityId } from './game/config'
 import { canMineOre, miningDuration, oreKindAtDepth, requiredPickaxe } from './game/ore'
 import { onMultiplayer, sendMultiplayer } from './game/multiplayer'
-import { economyProgressValue, lotteryDraw, preparedFoodValue, secretStockOffer, useGameStore, type MineNodeState } from './game/store'
+import { economyProgressValue, lotteryDraw, preparedFoodValue, secretStockOffer, useGameStore, type MineNodeState, type SharedFarmResult, type SharedFarmSnapshot, type SharedFarmUpdate } from './game/store'
 import { RECIPES, RECIPE_IDS, type RecipeId } from './game/recipes'
-import { FARM_RUSH_CROPS, FARM_RUSH_ORDER_LIFETIME_MS, FORAGE_RUSH_REQUIREMENTS, MINIGAME_DURATION, MINING_RUSH_POINTS, farmRushOrders, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MiningRushOre } from './game/minigame'
+import { FARM_RUSH_CROPS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, FORAGE_RUSH_REQUIREMENTS, MINIGAME_DURATION, MINING_RUSH_POINTS, farmRushOrders, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MiningRushOre } from './game/minigame'
 import { playGameSfx, type GameSfx } from './game/sfx'
 
 function forageItem(anchorId: string): ItemId | null {
@@ -26,7 +26,7 @@ function forageItem(anchorId: string): ItemId | null {
 function activatePrompt(id: string) {
   const state = useGameStore.getState()
   if (id.startsWith('FarmRushCell')) return state.farmRushAction(id)
-  if (id.startsWith('FarmRushCooker')) return state.farmRushCook()
+  if (id.startsWith('FarmRushCooker')) return state.setCookbookOpen(true)
   if (id.startsWith('ForageRushDeliver')) return state.forageRushDeliver(id.slice('ForageRushDeliver'.length).toLowerCase() as ForageRushKind)
   if (id.startsWith('ForageRush')) {
     state.forageRushCollect(id)
@@ -83,6 +83,19 @@ function MineSync() {
     })
     return () => { offSnapshot(); offNode(); offAward(); offDenied() }
   }, [awardNode, setToast, syncNode, syncSnapshot])
+  return null
+}
+
+function FarmSync() {
+  const syncSnapshot = useGameStore((state) => state.syncFarmSnapshot)
+  const syncUpdate = useGameStore((state) => state.syncFarmUpdate)
+  const applyResult = useGameStore((state) => state.applyFarmResult)
+  useEffect(() => {
+    const offSnapshot = onMultiplayer('farm:snapshot', (raw) => syncSnapshot(raw as SharedFarmSnapshot))
+    const offUpdate = onMultiplayer('farm:update', (raw) => syncUpdate(raw as SharedFarmUpdate))
+    const offResult = onMultiplayer('farm:result', (raw) => applyResult(raw as SharedFarmResult))
+    return () => { offSnapshot(); offUpdate(); offResult() }
+  }, [applyResult, syncSnapshot, syncUpdate])
   return null
 }
 
@@ -162,7 +175,7 @@ function AudioBed() {
 
 type BurstKind = 'stone' | 'leaf' | 'water' | 'gold' | 'spark'
 
-function feedbackFor(toast: string, zone: ReturnType<typeof useGameStore.getState>['zone'], cashDelta: number, minigameKind: ReturnType<typeof useGameStore.getState>['minigameKind']): { sound: GameSfx; burst?: BurstKind } {
+function feedbackFor(toast: string, zone: ReturnType<typeof useGameStore.getState>['zone'], cashDelta: number, minigameKind: ReturnType<typeof useGameStore.getState>['minigameKind']): { sound: GameSfx; burst?: BurstKind } | null {
   if (/^(Need|Not enough|Sold out|None owned|Select|Missing|Gone|Own a farm|Not your|Pickaxe tier|Fruit storage|Recipe not|Furnace queue)/.test(toast)) return { sound: 'error' }
   if (toast.startsWith('Unlocked')) return { sound: 'unlock', burst: 'spark' }
   if (toast.startsWith('Planted')) return { sound: 'plant', burst: 'leaf' }
@@ -176,7 +189,7 @@ function feedbackFor(toast: string, zone: ReturnType<typeof useGameStore.getStat
     return { sound: 'forage', burst: 'leaf' }
   }
   if (toast === 'Returned home') return { sound: 'teleport', burst: 'spark' }
-  return { sound: 'ready' }
+  return null
 }
 
 function FeedbackBed() {
@@ -194,6 +207,7 @@ function FeedbackBed() {
     previousCash.current = cash
     if (!toast) return
     const feedback = feedbackFor(toast, zone, delta, minigameKind)
+    if (!feedback) return
     const liveVolumes = useGameStore.getState().audioVolumes
     playGameSfx(feedback.sound, liveVolumes.master * liveVolumes.effects)
     if (!feedback.burst) return
@@ -291,7 +305,7 @@ function LobbyPanel() {
     sendMultiplayer('lobby:start', {})
   }
   return <div className="modal-scrim lobby-scrim"><section className="panel lobby-panel">
-    <header><div className="panel-title"><span className="lobby-mark">P1</span><span>WOODLAND RUN</span></div><b>{players.length + 1}/32</b></header>
+    <header><div className="panel-title"><span className="lobby-mark">P1</span><span>WOODLAND RUN</span></div><b>{players.length + 1}/8</b></header>
     <label className="lobby-name"><span>NAME</span><input aria-label="Nickname" value={draftName} maxLength={18} onChange={(event) => setDraftName(event.target.value)} onBlur={() => setNickname(draftName)} onKeyDown={(event) => { if (event.key === 'Enter') { setNickname(draftName); event.currentTarget.blur() } }} /></label>
     <div className="lobby-duration"><span>TIME</span><div>{MATCH_CONFIG.selectableDurationsSeconds.map((seconds) => <button className={duration === seconds ? 'active' : ''} disabled={!isHost} key={seconds} onClick={() => chooseDuration(seconds)}>{seconds / 60}</button>)}</div></div>
     {isHost ? <button className="lobby-start" disabled={!connected} onClick={start}>{connected ? 'START GAME' : 'CONNECTING'}</button> : <div className="lobby-wait">{connected ? 'WAITING FOR HOST' : 'CONNECTING'}</div>}
@@ -304,6 +318,8 @@ function Hotbar() {
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
   const farmRushInventory = useGameStore((state) => state.farmRushInventory)
+  const farmRushCooking = useGameStore((state) => state.farmRushCooking)
+  const minigameMilestone = useGameStore((state) => state.minigameMilestone)
   const forageRushInventory = useGameStore((state) => state.forageRushInventory)
   const selectedHotbar = useGameStore((state) => state.selectedHotbar)
   const farmRushTool = useGameStore((state) => state.farmRushTool)
@@ -315,7 +331,7 @@ function Hotbar() {
   const inspectNotes = useGameStore((state) => state.setNoteInspectOpen)
   const setTravelOpen = useGameStore((state) => state.setTravelOpen)
   const useCookbookBox = useGameStore((state) => state.useCookbookBox)
-  const eventView = minigameOpen ? eventInventoryView(minigameKind, farmRushInventory, forageRushInventory) : null
+  const eventView = minigameOpen ? eventInventoryView(minigameKind, farmRushInventory, forageRushInventory, farmRushCooking, minigameMilestone) : null
   const hotbar = eventView?.hotbar ?? realHotbar
   const inventory = eventView?.inventory ?? realInventory
   const selected = minigameOpen && minigameKind === 'farm' ? FARM_RUSH_TOOLS.indexOf(farmRushTool) : minigameOpen ? 0 : selectedHotbar
@@ -363,7 +379,7 @@ function Hotbar() {
 
 const FARM_RUSH_TOOLS: FarmRushTool[] = [...FARM_RUSH_CROPS, 'water']
 
-function eventInventoryView(kind: 'mining' | 'farm' | 'forage', farmInventory: Record<string, number>, forageInventory: Record<string, number>) {
+function eventInventoryView(kind: 'mining' | 'farm' | 'forage', farmInventory: Record<string, number>, forageInventory: Record<string, number>, cooking: Array<{ orderIndex: number; readyAt: number }>, milestone: number) {
   const hotbar: Array<ItemId | null> = Array(9).fill(null)
   const inventory: Partial<Record<ItemId, number>> = {}
   if (kind === 'mining') {
@@ -375,6 +391,11 @@ function eventInventoryView(kind: 'mining' | 'farm' | 'forage', farmInventory: R
       inventory[hotbar[index]!] = 1
     })
     FARM_RUSH_CROPS.forEach((id) => { inventory[id as ItemId] = farmInventory[id] ?? 0 })
+    const orders = farmRushOrders(milestone)
+    cooking.filter((job) => job.readyAt <= Date.now()).forEach((job) => {
+      const food = orders[job.orderIndex % orders.length].food
+      inventory[food] = (inventory[food] ?? 0) + 1
+    })
     const collected = FARM_RUSH_CROPS.filter((id) => (farmInventory[id] ?? 0) > 0)
     collected.slice(0, 3).forEach((id, offset) => { hotbar[6 + offset] = id as ItemId })
   } else {
@@ -420,7 +441,7 @@ function InteractionPrompt() {
     const label = ready ? 'Harvest' : cell.stage === 'empty' ? `Plant ${farmRushTool === 'water' ? '' : farmRushTool}` : cell.stage === 'planted' ? 'Water' : `${Math.max(1, Math.ceil((cell.readyAt - Date.now()) / 1000))}s`
     return <div className="interaction"><kbd>LMB</kbd><span>{label}</span></div>
   }
-  if (prompt.id.startsWith('FarmRushCooker')) return <div className="interaction"><kbd>F</kbd><span>{farmRushCooking ? farmRushCooking.readyAt <= Date.now() ? 'Submit in menu' : `${Math.ceil((farmRushCooking.readyAt - Date.now()) / 1000)}s` : 'Cook'}</span></div>
+  if (prompt.id.startsWith('FarmRushCooker')) return <div className="interaction"><kbd>F</kbd><span>{farmRushCooking.length ? `${farmRushCooking.length}/3 cooking` : 'Cook'}</span></div>
   if (prompt.id.startsWith('ForageRush')) return <div className="interaction"><kbd>F</kbd><span>{prompt.label}</span></div>
   return <div className="interaction"><kbd>F</kbd><span>{prompt.label}</span></div>
 }
@@ -443,6 +464,8 @@ function InventoryPanel() {
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
   const farmRushInventory = useGameStore((state) => state.farmRushInventory)
+  const farmRushCooking = useGameStore((state) => state.farmRushCooking)
+  const minigameMilestone = useGameStore((state) => state.minigameMilestone)
   const forageRushInventory = useGameStore((state) => state.forageRushInventory)
   const moveInventorySlot = useGameStore((state) => state.moveInventorySlot)
   const equipItem = useGameStore((state) => state.equipItem)
@@ -451,7 +474,7 @@ function InventoryPanel() {
   const setTravelOpen = useGameStore((state) => state.setTravelOpen)
   const useCookbookBox = useGameStore((state) => state.useCookbookBox)
   const dragging = useRef<number | null>(null)
-  const eventView = minigameOpen ? eventInventoryView(minigameKind, farmRushInventory, forageRushInventory) : null
+  const eventView = minigameOpen ? eventInventoryView(minigameKind, farmRushInventory, forageRushInventory, farmRushCooking, minigameMilestone) : null
   const inventory = eventView?.inventory ?? realInventory
   const inventoryOrder = eventView?.inventoryOrder ?? realInventoryOrder
   const hotbar = eventView?.hotbar ?? realHotbar
@@ -748,8 +771,7 @@ function PlayerTradePanel() {
 
 function Crosshair() {
   const locked = useGameStore((state) => state.shiftLocked)
-  const minigameOpen = useGameStore((state) => state.minigameOpen)
-  return locked || minigameOpen ? <div className="crosshair" aria-hidden="true"><i /><i /></div> : null
+  return locked ? <div className="crosshair" aria-hidden="true"><i /><i /></div> : null
 }
 
 function MenuPanel() {
@@ -781,7 +803,7 @@ function MenuPanel() {
   )
 }
 
-function CookbookPanel() {
+function NormalCookbookPanel() {
   const open = useGameStore((state) => state.cookbookOpen)
   const close = useGameStore((state) => state.setCookbookOpen)
   const known = useGameStore((state) => state.knownRecipes)
@@ -826,6 +848,48 @@ function CookbookPanel() {
   </section></div>
 }
 
+function EventCookbookPanel() {
+  const open = useGameStore((state) => state.cookbookOpen)
+  const close = useGameStore((state) => state.setCookbookOpen)
+  const milestone = useGameStore((state) => state.minigameMilestone)
+  const inventory = useGameStore((state) => state.farmRushInventory)
+  const tickets = useGameStore((state) => state.farmRushOrders)
+  const queue = useGameStore((state) => state.farmRushCooking)
+  const cook = useGameStore((state) => state.farmRushCook)
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    if (!open) return
+    const timer = window.setInterval(() => setNow(Date.now()), 250)
+    return () => window.clearInterval(timer)
+  }, [open])
+  if (!open) return null
+  const orders = farmRushOrders(milestone, 100)
+  return <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}><section className="panel cookbook-panel event-cookbook-panel">
+    <header><div className="panel-title"><img className="cookbook-mark" src="/assets/ui/cooking/cookbook.png" alt="" /><span>COOKBOOK</span></div><span className="cook-queue">{queue.length}/3</span><CloseButton onClick={() => close(false)} /></header>
+    {queue.length > 0 && <div className="furnace-queue">{queue.map((job) => {
+      const order = orders[job.orderIndex % orders.length]
+      return <span key={job.orderIndex}><img src="/assets/ui/cooking/furnace-cooking.png" alt="" />{order.name}<b>{Math.max(0, Math.ceil((job.readyAt - now) / 1000))}s</b></span>
+    })}</div>}
+    <div className="recipe-grid">{FARM_RUSH_RECIPE_IDS.map((id) => {
+      const order = orders.find((candidate) => candidate.recipe === id)!
+      const ingredients = Object.entries(order.ingredients) as Array<[FarmRushCrop, number]>
+      const matchingTicket = tickets.find((ticket) => ticket.expiresAt > now && orders[ticket.orderIndex % orders.length].recipe === id && !queue.some((job) => job.orderIndex === ticket.orderIndex))
+      const hasIngredients = ingredients.every(([item, quantity]) => inventory[item] >= quantity)
+      return <article className="recipe-card" key={id}>
+        <div><img src={ITEMS[order.food].icon} alt="" /><strong>{order.name}</strong><small>{order.points} PTS</small></div>
+        <div className="recipe-ingredients">{ingredients.map(([item, quantity]) => <span key={item} className={inventory[item] >= quantity ? '' : 'missing'}><img src={ITEMS[item].icon} alt={ITEMS[item].name} />{quantity}</span>)}</div>
+        <div className="cook-actions"><button disabled={!matchingTicket || !hasIngredients || queue.length >= 3} onClick={() => cook(id)}>COOK</button></div>
+        <footer><span>{order.cookSeconds}s</span></footer>
+      </article>
+    })}</div>
+  </section></div>
+}
+
+function CookbookPanel() {
+  const eventMode = useGameStore((state) => state.minigameOpen && state.minigameKind === 'farm')
+  return eventMode ? <EventCookbookPanel /> : <NormalCookbookPanel />
+}
+
 function Toast() {
   const toast = useGameStore((state) => state.toast)
   const setToast = useGameStore((state) => state.setToast)
@@ -835,6 +899,17 @@ function Toast() {
     return () => window.clearTimeout(timer)
   }, [setToast, toast])
   return toast ? <div className="toast">{toast}</div> : null
+}
+
+function MinigameResultCard() {
+  const result = useGameStore((state) => state.lastMinigameResult)
+  const clear = useGameStore((state) => state.clearMinigameResult)
+  if (!result) return null
+  const placement = result.placement === 1 ? '1ST' : result.placement === 2 ? '2ND' : result.placement === 3 ? '3RD' : `${result.placement}TH`
+  return <button className="minigame-result-card" onClick={clear} aria-label="Dismiss minigame reward">
+    <span>{placement}</span><strong>{result.score} PTS</strong>
+    <div>{result.cash > 0 && <b><Icon name="coin" />{formatCoins(result.cash, true)}</b>}{result.boxes > 0 && <b><img src={ITEMS['cookbook-box'].icon} alt="" />×{result.boxes}</b>}</div>
+  </button>
 }
 
 function ResultsPanel() {
@@ -903,7 +978,6 @@ function MinigameWorldHud() {
   const [seconds, setSeconds] = useState(MINIGAME_DURATION.mining)
   const [, refresh] = useState(0)
   const [waiting, setWaiting] = useState(false)
-  const [leaveConfirm, setLeaveConfirm] = useState(false)
   const submitted = useRef(false)
   const score = kind === 'mining' ? miningScore : kind === 'farm' ? farmScore : forageScore
   const title = kind === 'mining' ? 'MINING RUSH' : kind === 'farm' ? 'KITCHEN RUSH' : 'FORAGE RACE'
@@ -914,7 +988,7 @@ function MinigameWorldHud() {
   ].sort((a, b) => b.score - a.score || a.nickname.localeCompare(b.nickname)).slice(0, 5)
   useEffect(() => {
     if (!open) return
-    setWarning(9); setSeconds(MINIGAME_DURATION[kind]); setWaiting(false); setLeaveConfirm(false); submitted.current = false
+    setWarning(9); setSeconds(MINIGAME_DURATION[kind]); setWaiting(false); submitted.current = false
     const warningTimer = window.setInterval(() => setWarning((value) => Math.max(0, value - 1)), 1000)
     return () => window.clearInterval(warningTimer)
   }, [kind, open, milestone])
@@ -923,16 +997,6 @@ function MinigameWorldHud() {
     const timer = window.setInterval(() => { setSeconds((value) => Math.max(0, value - 1)); refresh((value) => value + 1); if (kind === 'farm') tickFarmRush() }, 1000)
     return () => window.clearInterval(timer)
   }, [kind, open, tickFarmRush, waiting, warning])
-  useEffect(() => {
-    if (!open) return
-    const onEscape = (event: KeyboardEvent) => {
-      if (event.code !== 'Escape' || event.repeat) return
-      event.preventDefault()
-      setLeaveConfirm((value) => !value)
-    }
-    window.addEventListener('keydown', onEscape)
-    return () => window.removeEventListener('keydown', onEscape)
-  }, [open])
   useEffect(() => {
     if (!open) return
     return onMultiplayer('minigame:result', (raw) => {
@@ -968,7 +1032,6 @@ function MinigameWorldHud() {
   const leaderCash = Math.max(currentState.cash, ...players.map((player) => player.cash))
   const prizeRows = ['1ST', '2ND', '3RD', 'FINISH'].map((place, index) => ({ place, ...minigameRewardPackage(estimatedReference, index + 1, currentState.cash, leaderCash) }))
   return <>
-    {leaveConfirm && <div className="modal-scrim event-leave-scrim"><section className="panel event-leave-panel"><strong>LEAVE EVENT?</strong><div><button className="quiet-button" onClick={() => setLeaveConfirm(false)}>STAY</button><button onClick={() => finish(0, 0)}>LEAVE</button></div></section></div>}
     {warning > 5 && <div className="rush-prize-reveal"><strong>PRIZES</strong><div>{prizeRows.map((prize) => <article key={prize.place}><b>{prize.place}</b>{prize.cash > 0 && <span><Icon name="coin" />{formatCoins(prize.cash, true)}</span>}{prize.boxes > 0 && <span><img src={ITEMS['cookbook-box'].icon} alt="Cookbook Box" />COOKBOOK ×{prize.boxes}</span>}</article>)}</div></div>}
     {warning > 0 && warning <= 5 && <div className="rush-countdown"><strong>{warning}</strong><span>{title}</span></div>}
     {warning === 0 && <div className="event-standings"><span>LEADERBOARD</span>{standings.map((player, index) => <div className={player.id === 'self' ? 'self' : ''} key={player.id}><b>{index + 1}</b><span>{player.nickname}</span><strong>{player.score}</strong></div>)}</div>}
@@ -977,10 +1040,10 @@ function MinigameWorldHud() {
       const order = orderDefinitions[ticket.orderIndex % orderDefinitions.length]
       const remaining = Math.max(0, ticket.expiresAt - Date.now())
       const ingredients = Object.entries(order.ingredients) as Array<[FarmRushCrop, number]>
-      const isCooking = cooking?.orderIndex === ticket.orderIndex
-      const ready = isCooking && cooking.readyAt <= Date.now()
-      const state = ready ? 'ready' : isCooking ? 'cooking' : ''
-      return <div className={state} key={ticket.orderIndex}><header><div className="event-order-food"><img src={ITEMS[order.food].icon} alt={order.name} /><strong>{order.name}</strong></div><b>{Math.ceil(remaining / 1000)}</b></header><div className="event-order-ingredients">{ingredients.map(([crop, quantity]) => <span className={farmInventory[crop] >= quantity ? 'owned' : ''} key={crop}><img src={ITEMS[crop as ItemId].icon} alt={ITEMS[crop as ItemId].name} /><b>{quantity}</b></span>)}</div><i><b style={{ width: `${remaining / FARM_RUSH_ORDER_LIFETIME_MS * 100}%` }} /></i><footer><small>{order.points} PTS</small>{ready && <button onClick={() => submitOrder(ticket.orderIndex)}>SUBMIT</button>}{isCooking && !ready && <small>{Math.max(1, Math.ceil((cooking.readyAt - Date.now()) / 1000))}s</small>}</footer></div>
+      const cookingJob = cooking.find((job) => job.orderIndex === ticket.orderIndex)
+      const ready = Boolean(cookingJob && cookingJob.readyAt <= Date.now())
+      const state = ready ? 'ready' : cookingJob ? 'cooking' : ''
+      return <div className={state} key={ticket.orderIndex}><header><div className="event-order-food"><img src={ITEMS[order.food].icon} alt={order.name} /><strong>{order.name}</strong></div><b>{Math.ceil(remaining / 1000)}</b></header><div className="event-order-ingredients">{ingredients.map(([crop, quantity]) => <span className={farmInventory[crop] >= quantity ? 'owned' : ''} key={crop}><img src={ITEMS[crop as ItemId].icon} alt={ITEMS[crop as ItemId].name} /><b>{quantity}</b></span>)}</div><i><b style={{ width: `${remaining / FARM_RUSH_ORDER_LIFETIME_MS * 100}%` }} /></i><footer><small>{order.points} PTS</small>{ready && <button onClick={() => submitOrder(ticket.orderIndex)}>SUBMIT</button>}{cookingJob && !ready && <small>{Math.max(1, Math.ceil((cookingJob.readyAt - Date.now()) / 1000))}s</small>}</footer></div>
     })}</div>}
     {kind === 'forage' && <div className="event-deliveries">{(['apple', 'orange', 'truffle', 'discovery'] as ForageRushKind[]).map((id) => <div className={forageDelivered[id] ? 'complete' : ''} key={id}><img src={id === 'discovery' ? ITEMS['natural-discovery'].icon : ITEMS[id].icon} alt="" /><strong>{forageDelivered[id] ? '✓' : `${forageInventory[id]}/${FORAGE_RUSH_REQUIREMENTS[id]}`}</strong></div>)}</div>}
     <div className="rush-world-hud"><span>{title}{kind === 'farm' ? ` · PLOT ${eventBay + 1}` : ''}</span><strong>{score}</strong><small>SCORE</small><b>{waiting ? 'RESULTS' : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`}</b>{kind === 'mining' && <img src={ITEMS['crystal-pickaxe'].icon} alt="Crystal Pickaxe" />}{kind === 'mining' && combo > 1 && <em>×{combo}</em>}</div>
@@ -1126,10 +1189,10 @@ function Interface() {
     }
   }, [setCookbookOpen, setLotteryOpen, setMenuOpen, setPlayerPanelOpen, setProgress, setSecretOpen, setSelected, setShopOpen, setStockOpen, setTicketInspectOpen, setToast, setTravelOpen, setZone, toggleInventory])
   if (!sessionStarted) return <div className="interface"><LobbyPanel /><Toast /></div>
-  if (minigameOpen) return <div className="interface"><Crosshair /><InteractionPrompt /><MinigameWorldHud /><Hotbar /><InventoryPanel /><Toast /></div>
-  return <div className="interface"><HUD /><Crosshair /><InteractionPrompt /><ForageCapacity /><Hotbar /><InventoryPanel /><ShopPanel /><LotteryPanel /><TicketInspectPanel /><NoteInspectPanel /><TravelPanel /><SecretDealPanel /><StocksPanel /><PlayerTradePanel /><MenuPanel /><CookbookPanel /><ResultsPanel /><Toast /></div>
+  if (minigameOpen) return <div className="interface"><Crosshair /><InteractionPrompt /><MinigameWorldHud /><Hotbar /><InventoryPanel /><CookbookPanel /><Toast /></div>
+  return <div className="interface"><HUD /><Crosshair /><InteractionPrompt /><ForageCapacity /><Hotbar /><InventoryPanel /><ShopPanel /><LotteryPanel /><TicketInspectPanel /><NoteInspectPanel /><TravelPanel /><SecretDealPanel /><StocksPanel /><PlayerTradePanel /><MenuPanel /><CookbookPanel /><ResultsPanel /><MinigameResultCard /><Toast /></div>
 }
 
 export function App() {
-  return <main className="game-shell"><GameWorld /><Interface /><AudioBed /><FeedbackBed /><MineSync /></main>
+  return <main className="game-shell"><GameWorld /><Interface /><AudioBed /><FeedbackBed /><MineSync /><FarmSync /></main>
 }

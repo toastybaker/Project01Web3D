@@ -10,11 +10,13 @@ export type GameSfx =
   | 'unlock'
   | 'ready'
   | 'error'
+  | 'jump'
+  | 'land'
   | 'footstep-grass'
   | 'footstep-stone'
 
 let audioContext: AudioContext | null = null
-let variation = 0
+const lastSoundIndex = new Map<GameSfx, number>()
 
 const authoredSounds: Partial<Record<GameSfx, string[]>> = {
   'mine-start': Array.from({ length: 5 }, (_, index) => `/assets/audio/sfx/impactMining_00${index}.ogg`),
@@ -25,6 +27,8 @@ const authoredSounds: Partial<Record<GameSfx, string[]>> = {
   buy: ['/assets/audio/sfx/handleCoins2.ogg'],
   unlock: ['/assets/audio/sfx/bookOpen.ogg'],
   error: ['/assets/audio/sfx/click5.ogg'],
+  jump: ['/assets/audio/sfx/handleSmallLeather.ogg', '/assets/audio/sfx/handleSmallLeather2.ogg'],
+  land: ['/assets/audio/sfx/impactSoft_medium_002.ogg'],
   'footstep-grass': Array.from({ length: 5 }, (_, index) => `/assets/audio/sfx/footstep_grass_00${index}.ogg`),
   'footstep-stone': Array.from({ length: 5 }, (_, index) => `/assets/audio/sfx/footstep_concrete_00${index}.ogg`),
 }
@@ -54,9 +58,14 @@ export function playGameSfx(kind: GameSfx, volume = 0.5) {
   if (volume <= 0) return
   const authored = authoredSounds[kind]
   if (authored?.length && typeof Audio !== 'undefined') {
-    const sound = new Audio(authored[variation++ % authored.length])
-    sound.volume = Math.min(1, Math.max(0, volume)) * (kind.startsWith('footstep') ? 0.28 : 0.46)
-    sound.playbackRate = 0.96 + (variation % 5) * 0.018
+    const previous = lastSoundIndex.get(kind) ?? -1
+    let index = Math.floor(Math.random() * authored.length)
+    if (authored.length > 1 && index === previous) index = (index + 1 + Math.floor(Math.random() * (authored.length - 1))) % authored.length
+    lastSoundIndex.set(kind, index)
+    const sound = new Audio(authored[index])
+    const gain = kind.startsWith('footstep') ? 0.15 : kind === 'jump' ? 0.22 : kind === 'land' ? 0.3 : 0.46
+    sound.volume = Math.min(1, Math.max(0, volume)) * gain
+    sound.playbackRate = kind.startsWith('footstep') ? 0.97 + Math.random() * 0.06 : 0.99 + Math.random() * 0.02
     void sound.play().catch(() => playSynth(kind, volume))
     return
   }
@@ -80,6 +89,10 @@ function playSynth(kind: GameSfx, volume: number) {
     tone(ctx, now + 0.055, 610, 830, 0.1, level * 0.38, 'triangle')
   } else if (kind === 'plant') {
     tone(ctx, now, 210, 126, 0.12, level * 0.55, 'triangle')
+  } else if (kind === 'jump') {
+    tone(ctx, now, 180, 310, 0.11, level * 0.32, 'triangle')
+  } else if (kind === 'land') {
+    tone(ctx, now, 125, 76, 0.1, level * 0.42, 'triangle')
   } else if (kind === 'water') {
     tone(ctx, now, 730, 390, 0.13, level * 0.42, 'sine')
     tone(ctx, now + 0.07, 610, 350, 0.12, level * 0.3, 'sine')

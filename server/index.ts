@@ -1,7 +1,7 @@
 import { Room, Server, type Client } from '@colyseus/core'
 import { WebSocketTransport } from '@colyseus/ws-transport'
 import { minigameMilestones, minigameRewardPackage, scheduledMinigame } from '../src/game/minigame'
-import { MATCH_CONFIG } from '../src/game/config'
+import { CROP_CONFIG, MATCH_CONFIG } from '../src/game/config'
 import { canMineOre, miningYield, oreKindAtDepth, oreRespawnMs, type PickaxeItem } from '../src/game/ore'
 import { MINE_NODE_BY_ID, MINE_NODE_SITES } from '../shared/mine-nodes.js'
 
@@ -13,6 +13,14 @@ type TradeOffer = { cash: number; items: Record<string, number> }
 type TradeSession = { id: string; a: string; b: string; offers: Record<string, TradeOffer>; ready: Record<string, boolean> }
 type MinigameResult = { score: number; progressValue: number }
 type SharedOreNode = { generation: number; readyAt: number }
+type CropKind = keyof typeof CROP_CONFIG
+type SharedFarmCell = { crop: CropKind | null; stage: 'empty' | 'planted' | 'watered' | 'ready'; readyAt: number | null }
+type SharedFarm = { ownerId: string | null; cells: Map<number, SharedFarmCell> }
+type FarmResult = { requestId: string; ok: boolean; reason?: string; op?: 'claim' | 'plant' | 'water' | 'harvest'; farmId?: number; cellIndex?: number; crop?: CropKind; quantity?: number }
+
+const FARM_CENTERS = [[-54, -16], [-18, -14], [19, -17], [55, -13], [-53, -50], [-17, -49], [20, -53], [56, -48]] as const
+const CROP_IDS = new Set<CropKind>(Object.keys(CROP_CONFIG) as CropKind[])
+const farmGrowthMs = (crop: CropKind) => Number(process.env.TEST_FARM_GROWTH_MS) > 0 ? Number(process.env.TEST_FARM_GROWTH_MS) : CROP_CONFIG[crop].growthSeconds * 1000
 
 const zoneBounds: Record<ZoneId, { x: number; zMin: number; zMax: number }> = {
   hub: { x: 68, zMin: -68, zMax: 68 },
@@ -22,7 +30,7 @@ const zoneBounds: Record<ZoneId, { x: number; zMin: number; zMax: number }> = {
 }
 
 class WoodlandRoom extends Room {
-  maxClients = 32
+  maxClients = 8
   private matchSeed = Math.floor(Math.random() * 1_000_000_000)
   private matchStartedAt = 0
   private matchDurationSeconds = MATCH_CONFIG.defaultDurationSeconds
@@ -38,6 +46,9 @@ class WoodlandRoom extends Room {
   private oreNodes = new Map<string, SharedOreNode>(MINE_NODE_SITES.map(({ id }) => [id, { generation: 0, readyAt: 0 }]))
   private oreTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private orePauseStartedAt = 0
+  private farms = new Map<number, SharedFarm>(FARM_CENTERS.map((_, index) => [index, { ownerId: null, cells: new Map() }]))
+  private farmTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private farmResults = new Map<string, Map<string, FarmResult>>()
 
   private sendTo(id: string, type: string, payload: unknown) {
     this.clients.find((client) => client.sessionId === id)?.send(type, payload)
@@ -52,6 +63,43 @@ class WoodlandRoom extends Room {
 
   private sendOreSnapshot(client: Client) {
     client.send('mine:snapshot', this.oreSnapshot())
+  }
+
+  private farmSnapshot(client: Client) {
+    const owners: Record<number, string | null> = {}
+    const cells: Record<string, SharedFarmCell> = {}
+    for (const [farmId, farm] of this.farms) {
+      owners[farmId] = farm.ownerId
+      for (const [cellIndex, cell] of farm.cells) cells[`${farmId}:${cellIndex}`] = { ...cell }
+    }
+    client.send('farm:snapshot', { selfId: client.sessionId, owners, cells })
+  }
+
+  private scheduleFarmReady(farmId: number, cellIndex: number) {
+    const key = `${farmId}:${cellIndex}`
+    const previous = this.farmTimers.get(key)
+    if (previous) clearTimeout(previous)
+    this.farmTimers.delete(key)
+    if (this.orePauseStartedAt) return
+    const cell = this.farms.get(farmId)?.cells.get(cellIndex)
+    if (!cell?.readyAt || cell.stage !== 'watered') return
+    this.farmTimers.set(key, setTimeout(() => {
+      this.farmTimers.delete(key)
+      const current = this.farms.get(farmId)?.cells.get(cellIndex)
+      if (!current?.readyAt || current.stage !== 'watered') return
+      if (this.orePauseStartedAt || current.readyAt > Date.now()) return this.scheduleFarmReady(farmId, cellIndex)
+      const ready: SharedFarmCell = { ...current, stage: 'ready' }
+      this.farms.get(farmId)!.cells.set(cellIndex, ready)
+      this.broadcast('farm:update', { farmId, cellIndex, cell: ready })
+    }, Math.max(0, cell.readyAt - Date.now()) + 15))
+  }
+
+  private resetFarms() {
+    this.farmTimers.forEach((timer) => clearTimeout(timer))
+    this.farmTimers.clear()
+    this.farms = new Map(FARM_CENTERS.map((_, index) => [index, { ownerId: null, cells: new Map() }]))
+    this.farmResults.clear()
+    this.clients.forEach((client) => this.farmSnapshot(client))
   }
 
   private clearOreTimer(id: string) {
@@ -89,6 +137,8 @@ class WoodlandRoom extends Room {
     this.orePauseStartedAt = Date.now()
     this.oreTimers.forEach((timer) => clearTimeout(timer))
     this.oreTimers.clear()
+    this.farmTimers.forEach((timer) => clearTimeout(timer))
+    this.farmTimers.clear()
   }
 
   private resumeOreRespawns() {
@@ -99,6 +149,12 @@ class WoodlandRoom extends Room {
       if (node.readyAt > 0) {
         node.readyAt += pausedMs
         this.scheduleOreRespawn(id)
+      }
+    }
+    for (const [farmId, farm] of this.farms) for (const [cellIndex, cell] of farm.cells) {
+      if (cell.readyAt && cell.stage === 'watered') {
+        cell.readyAt += pausedMs
+        this.scheduleFarmReady(farmId, cellIndex)
       }
     }
     this.broadcast('mine:snapshot', this.oreSnapshot())
@@ -169,6 +225,7 @@ class WoodlandRoom extends Room {
       if (this.matchStarted) client.send('match:sync', { seed: this.matchSeed, startedAt: this.matchStartedAt, durationSeconds: this.matchDurationSeconds })
       client.send('presence:snapshot', [...this.players.values()].filter((player) => player.id !== client.sessionId))
       this.sendOreSnapshot(client)
+      this.farmSnapshot(client)
     })
     this.onMessage('lobby:update', (client, message: { durationSeconds?: number }) => {
       if (this.matchStarted || client.sessionId !== this.hostId) return
@@ -183,6 +240,7 @@ class WoodlandRoom extends Room {
       this.matchStartedAt = Date.now()
       this.matchStarted = true
       this.resetOreNodes()
+      this.resetFarms()
       this.broadcast('match:sync', { seed: this.matchSeed, startedAt: this.matchStartedAt, durationSeconds: this.matchDurationSeconds })
       this.broadcastLobby()
     })
@@ -216,6 +274,7 @@ class WoodlandRoom extends Room {
       const minigameScore = minigameOpen ? safeStat(message.minigameScore) : undefined
       const presence = { id: client.sessionId, nickname: nickname || `Player ${client.sessionId.slice(0, 4)}`, zone, position: safePosition, cash, progressValue, stats, minigameOpen, minigameKind, minigameMilestone: minigameOpen ? minigameMilestone : undefined, minigameScore, eventBay, seenAt: Date.now() }
       this.players.set(client.sessionId, presence)
+      if (this.orePauseStartedAt && ![...this.players.values()].some((entry) => entry.minigameOpen)) this.resumeOreRespawns()
       if (eventBay !== undefined && previous?.eventBay !== eventBay) this.sendTo(client.sessionId, 'minigame:bay', { bay: eventBay })
       this.broadcast('presence:move', presence, { except: client })
     })
@@ -246,6 +305,70 @@ class WoodlandRoom extends Room {
       this.broadcast('mine:node', { id, ...next })
       client.send('mine:award', { id, ore, quantity, ...next })
       this.scheduleOreRespawn(id)
+    })
+    this.onMessage('farm:action', (client, message: { requestId?: string; op?: 'claim' | 'plant' | 'water' | 'harvest'; farmId?: number; cellIndex?: number; crop?: CropKind; watered?: boolean }) => {
+      const requestId = typeof message?.requestId === 'string' ? message.requestId.slice(0, 80) : ''
+      const op = message?.op
+      const farmId = Math.floor(Number(message?.farmId))
+      const cellIndex = Math.floor(Number(message?.cellIndex))
+      if (!requestId || !op || farmId < 0 || farmId >= FARM_CENTERS.length) return
+      const prior = this.farmResults.get(client.sessionId)?.get(requestId)
+      if (prior) return client.send('farm:result', prior)
+      const respond = (result: Omit<FarmResult, 'requestId'>) => {
+        const payload: FarmResult = { requestId, op, farmId, ...result }
+        const results = this.farmResults.get(client.sessionId) ?? new Map<string, FarmResult>()
+        results.set(requestId, payload)
+        while (results.size > 128) results.delete(results.keys().next().value!)
+        this.farmResults.set(client.sessionId, results)
+        client.send('farm:result', payload)
+      }
+      const player = this.players.get(client.sessionId)
+      const farm = this.farms.get(farmId)!
+      if (!player || player.zone !== 'farm' || player.minigameOpen) return respond({ ok: false, reason: 'Return to the farm' })
+      const [centerX, centerZ] = FARM_CENTERS[farmId]
+      if (op === 'claim') {
+        if (Math.hypot(player.position[0] - (centerX + 5.85), player.position[2] - (centerZ + 6.25)) > 5) return respond({ ok: false, reason: 'Move closer' })
+        if (farm.ownerId && farm.ownerId !== client.sessionId) return respond({ ok: false, reason: 'Farm already claimed' })
+        if (farm.ownerId === client.sessionId) return respond({ ok: false, reason: 'Your farm' })
+        farm.ownerId = client.sessionId
+        this.broadcast('farm:update', { farmId, ownerId: client.sessionId })
+        return respond({ ok: true })
+      }
+      if (farm.ownerId !== client.sessionId) return respond({ ok: false, reason: 'Not your farm' })
+      if (cellIndex < 0 || cellIndex >= 64) return respond({ ok: false, reason: 'Invalid plot' })
+      const column = cellIndex % 8
+      const row = Math.floor(cellIndex / 8)
+      const cellX = centerX + (column - 3.5) * 1.42
+      const cellZ = centerZ + (row - 3.5) * 1.42
+      if (Math.hypot(player.position[0] - cellX, player.position[2] - cellZ) > 4.6) return respond({ ok: false, reason: 'Move closer' })
+      const current = farm.cells.get(cellIndex) ?? { crop: null, stage: 'empty' as const, readyAt: null }
+      if (op === 'plant') {
+        const crop = message.crop
+        if (current.stage !== 'empty' || !crop || !CROP_IDS.has(crop)) return respond({ ok: false, reason: current.stage !== 'empty' ? 'Plot occupied' : 'Select seeds' })
+        const watered = Boolean(message.watered)
+        const cell: SharedFarmCell = { crop, stage: watered ? 'watered' : 'planted', readyAt: watered ? Date.now() + farmGrowthMs(crop) : null }
+        farm.cells.set(cellIndex, cell)
+        this.broadcast('farm:update', { farmId, cellIndex, cell })
+        if (watered) this.scheduleFarmReady(farmId, cellIndex)
+        return respond({ ok: true, reason: watered ? 'watered' : undefined, cellIndex, crop })
+      }
+      if (op === 'water') {
+        if (current.stage !== 'planted' || !current.crop) return respond({ ok: false, reason: current.stage === 'ready' ? 'Ready to harvest' : 'Cannot water' })
+        const cell: SharedFarmCell = { ...current, stage: 'watered', readyAt: Date.now() + farmGrowthMs(current.crop) }
+        farm.cells.set(cellIndex, cell)
+        this.broadcast('farm:update', { farmId, cellIndex, cell })
+        this.scheduleFarmReady(farmId, cellIndex)
+        return respond({ ok: true, cellIndex, crop: current.crop })
+      }
+      const ready = current.stage === 'ready' || current.stage === 'watered' && Boolean(current.readyAt && current.readyAt <= Date.now())
+      if (!ready || !current.crop) return respond({ ok: false, reason: current.stage === 'watered' ? `${Math.max(1, Math.ceil(((current.readyAt ?? Date.now()) - Date.now()) / 1000))}s` : 'Nothing to harvest' })
+      const crop = current.crop
+      farm.cells.delete(cellIndex)
+      const timer = this.farmTimers.get(`${farmId}:${cellIndex}`)
+      if (timer) clearTimeout(timer)
+      this.farmTimers.delete(`${farmId}:${cellIndex}`)
+      this.broadcast('farm:update', { farmId, cellIndex, cell: null })
+      return respond({ ok: true, cellIndex, crop, quantity: CROP_CONFIG[crop].yield })
     })
     this.onMessage('trade:request', (client, message: { targetId?: string }) => {
       const targetId = message?.targetId
@@ -320,6 +443,7 @@ class WoodlandRoom extends Room {
     if (this.matchStarted) client.send('match:sync', { seed: this.matchSeed, startedAt: this.matchStartedAt, durationSeconds: this.matchDurationSeconds })
     client.send('presence:snapshot', [...this.players.values()])
     this.sendOreSnapshot(client)
+    this.farmSnapshot(client)
     const presence: Presence = { id: client.sessionId, nickname: `Player ${client.sessionId.slice(0, 4)}`, zone: 'hub', position: [0, 0.86, 14], cash: 100_000, stats: { foraged: 0, mined: 0, harvested: 0, sold: 0 }, seenAt: Date.now() }
     this.players.set(client.sessionId, presence)
     this.broadcast('presence:move', presence, { except: client })
@@ -332,6 +456,7 @@ class WoodlandRoom extends Room {
       this.trades.delete(trade.id)
     }
     this.players.delete(client.sessionId)
+    this.farmResults.delete(client.sessionId)
     this.lobbyEligible.delete(client.sessionId)
     this.releaseEventBay(client.sessionId)
     this.broadcast('presence:leave', client.sessionId)
@@ -345,6 +470,8 @@ class WoodlandRoom extends Room {
     this.oreTimers.clear()
     this.minigameTimers.forEach((timer) => clearTimeout(timer))
     this.minigameTimers.clear()
+    this.farmTimers.forEach((timer) => clearTimeout(timer))
+    this.farmTimers.clear()
   }
 }
 

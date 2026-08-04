@@ -16,6 +16,17 @@ function message<T>(room: Room, type: string, timeoutMs = 3_000): Promise<T> {
   })
 }
 
+function messageWhere<T>(room: Room, type: string, predicate: (payload: T) => boolean, timeoutMs = 3_000): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timed out waiting for matching ${type}`)), timeoutMs)
+    room.onMessage(type, (payload: T) => {
+      if (!predicate(payload)) return
+      clearTimeout(timer)
+      resolve(payload)
+    })
+  })
+}
+
 async function waitForServer(process: ChildProcessWithoutNullStreams) {
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Multiplayer server did not start')), 10_000)
@@ -103,8 +114,8 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 350))
   assert(raceAwards === 1, `Simultaneous mining produced ${raceAwards} awards instead of one`)
 
-  const respawnA = message<{ id: string; generation: number; readyAt: number }>(minerA, 'mine:node', 37_000)
-  const respawnB = message<{ id: string; generation: number; readyAt: number }>(minerB, 'mine:node', 37_000)
+  const respawnA = messageWhere<{ id: string; generation: number; readyAt: number }>(minerA, 'mine:node', (node) => node.id === site.id && node.readyAt === 0, 37_000)
+  const respawnB = messageWhere<{ id: string; generation: number; readyAt: number }>(minerB, 'mine:node', (node) => node.id === site.id && node.readyAt === 0, 37_000)
   const [activeA, activeB] = await Promise.all([respawnA, respawnB])
   assert(activeA.id === site.id && activeB.id === site.id, 'Wrong node respawned')
   assert(activeA.generation === 1 && activeB.generation === 1, 'Respawn changed generation twice')
