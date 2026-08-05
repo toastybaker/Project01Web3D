@@ -24,6 +24,7 @@ type MerchantPurchaseResult = { requestId: string; ok: boolean; reason?: string;
 
 const MAX_PLAYERS = 6
 const GLOBAL_EXPANSION_DEEDS = 2
+const ALLOW_EARLY_TEST_RESET = process.env.TEST_ALLOW_EARLY_RESET === '1'
 const RAIN_CYCLE_COOLDOWN_MS = Number(process.env.TEST_RAIN_COOLDOWN_MS) >= 0 ? Number(process.env.TEST_RAIN_COOLDOWN_MS) : 340_000
 const FARM_CENTERS = [[-54, -16], [-18, -14], [19, -17], [55, -13], [-53, -50], [-17, -49], [20, -53], [56, -48]] as const
 const CROP_IDS = new Set<CropKind>(Object.keys(CROP_CONFIG) as CropKind[])
@@ -71,6 +72,19 @@ class WoodlandRoom extends Room {
     this.clients.find((client) => client.sessionId === id)?.send(type, payload)
   }
 
+  private effectiveMatchStartedAt(now = Date.now()) {
+    if (!this.matchStarted || !this.orePauseStartedAt) return this.matchStartedAt
+    return this.matchStartedAt + Math.max(0, now - this.orePauseStartedAt)
+  }
+
+  private matchSyncPayload(now = Date.now()) {
+    return { seed: this.matchSeed, startedAt: this.effectiveMatchStartedAt(now), durationSeconds: this.matchDurationSeconds }
+  }
+
+  private broadcastMatchSync() {
+    if (this.matchStarted) this.broadcast('match:sync', this.matchSyncPayload())
+  }
+
   private oreSnapshot() {
     return {
       seed: this.matchSeed,
@@ -100,7 +114,7 @@ class WoodlandRoom extends Room {
   }
 
   private currentMerchant() {
-    const matchStartedAtMs = this.matchStarted ? this.matchStartedAt : this.roomStartedAt
+    const matchStartedAtMs = this.matchStarted ? this.effectiveMatchStartedAt() : this.roomStartedAt
     const cycle = currentMerchantCycle({ matchSeed: this.matchSeed, matchStartedAtMs, matchDurationMs: this.matchDurationSeconds * 1000 }, Date.now())
     if (!cycle) return null
     if (this.merchantCycleState?.id !== cycle.id) this.merchantCycleState = cycle
@@ -196,6 +210,7 @@ class WoodlandRoom extends Room {
     if (!this.orePauseStartedAt) return
     const pausedMs = Date.now() - this.orePauseStartedAt
     this.orePauseStartedAt = 0
+    if (this.matchStarted) this.matchStartedAt += pausedMs
     for (const [id, node] of this.oreNodes) {
       if (node.readyAt > 0) {
         node.readyAt += pausedMs
@@ -209,6 +224,7 @@ class WoodlandRoom extends Room {
       }
     }
     this.broadcast('mine:snapshot', this.oreSnapshot())
+    this.broadcastMatchSync()
   }
 
   private other(trade: TradeSession, id: string) { return trade.a === id ? trade.b : trade.a }
@@ -224,6 +240,31 @@ class WoodlandRoom extends Room {
 
   private broadcastLobby() {
     this.clients.forEach((client) => client.send('lobby:state', this.lobbyStateFor(client)))
+  }
+
+  private resetMatchToLobby() {
+    this.oreTimers.forEach((timer) => clearTimeout(timer))
+    this.oreTimers.clear()
+    this.farmTimers.forEach((timer) => clearTimeout(timer))
+    this.farmTimers.clear()
+    this.minigameTimers.forEach((timer) => clearTimeout(timer))
+    this.minigameTimers.clear()
+    this.eventReady.forEach((gate) => clearTimeout(gate.timeout))
+    this.eventReady.clear()
+    this.eventBays.clear()
+    this.eventStartedAt.clear()
+    this.minigameResults.clear()
+    this.settledMinigames.clear()
+    this.matchStarted = false
+    this.matchStartedAt = 0
+    this.roomStartedAt = Date.now()
+    this.matchSeed = Math.floor(Math.random() * 1_000_000_000)
+    this.resetOreNodes()
+    this.resetFarms()
+    this.resetDeeds()
+    this.resetMerchant()
+    this.broadcast('lobby:reset', {})
+    this.broadcastLobby()
   }
 
   private validMinigameMilestone(value: number) {
@@ -285,27 +326,28 @@ class WoodlandRoom extends Room {
     for (const [key, gate] of this.eventReady) {
       gate.participants.delete(clientId)
       gate.ready.delete(clientId)
-      if (!gate.participants.size && !gate.gameplayAt) {
+      if (!gate.participants.size) {
         clearTimeout(gate.timeout)
         this.eventReady.delete(key)
+        this.eventStartedAt.delete(key)
       } else this.readyState(key)
     }
   }
 
   private finalizeMinigame(milestone: number) {
     if (this.settledMinigames.has(milestone)) return
-    this.resumeOreRespawns()
     const entries = [...(this.minigameResults.get(milestone)?.entries() ?? [])].sort((a, b) => b[1].score - a[1].score || a[0].localeCompare(b[0]))
-    if (!entries.length) return
-    const progress = entries.map(([, result]) => result.progressValue).sort((a, b) => a - b)
-    const middle = Math.floor(progress.length / 2)
-    const economyReference = progress.length % 2 ? progress[middle] : Math.round((progress[middle - 1] + progress[middle]) / 2)
-    const leaderProgress = Math.max(...entries.map(([, result]) => result.progressValue))
-    entries.forEach(([id, result], index) => {
-      const placement = index + 1
-      const reward = minigameRewards({ economyReference, placement, playerProgress: result.progressValue, leaderProgress, matchSeed: this.matchSeed, milestone, playerId: id })
-      this.sendTo(id, 'minigame:result', { milestone, score: result.score, placement, economyReference, cashReward: reward.cash, itemRolls: reward.itemRolls })
-    })
+    if (entries.length) {
+      const progress = entries.map(([, result]) => result.progressValue).sort((a, b) => a - b)
+      const middle = Math.floor(progress.length / 2)
+      const economyReference = progress.length % 2 ? progress[middle] : Math.round((progress[middle - 1] + progress[middle]) / 2)
+      const leaderProgress = Math.max(...entries.map(([, result]) => result.progressValue))
+      entries.forEach(([id, result], index) => {
+        const placement = index + 1
+        const reward = minigameRewards({ economyReference, placement, playerProgress: result.progressValue, leaderProgress, matchSeed: this.matchSeed, milestone, playerId: id })
+        this.sendTo(id, 'minigame:result', { milestone, score: result.score, placement, economyReference, cashReward: reward.cash, itemRolls: reward.itemRolls })
+      })
+    }
     this.settledMinigames.add(milestone)
     this.minigameResults.delete(milestone)
     const timer = this.minigameTimers.get(milestone)
@@ -313,12 +355,13 @@ class WoodlandRoom extends Room {
     this.minigameTimers.delete(milestone)
     for (const key of this.eventStartedAt.keys()) if (key.startsWith(`${milestone}:`)) this.eventStartedAt.delete(key)
     for (const [key, gate] of this.eventReady) if (key.startsWith(`${milestone}:`)) { clearTimeout(gate.timeout); this.eventReady.delete(key) }
+    this.resumeOreRespawns()
   }
 
   onCreate() {
     this.onMessage('lobby:ready', (client) => {
       client.send('lobby:state', this.lobbyStateFor(client))
-      if (this.matchStarted) client.send('match:sync', { seed: this.matchSeed, startedAt: this.matchStartedAt, durationSeconds: this.matchDurationSeconds })
+      if (this.matchStarted) client.send('match:sync', this.matchSyncPayload())
       client.send('presence:snapshot', [...this.players.values()].filter((player) => player.id !== client.sessionId))
       this.sendOreSnapshot(client)
       this.farmSnapshot(client)
@@ -345,6 +388,12 @@ class WoodlandRoom extends Room {
       this.settledMinigames.clear()
       this.broadcast('match:sync', { seed: this.matchSeed, startedAt: this.matchStartedAt, durationSeconds: this.matchDurationSeconds })
       this.broadcastLobby()
+    })
+    this.onMessage('lobby:reset', (client) => {
+      if (!this.matchStarted || client.sessionId !== this.hostId) return
+      const elapsed = Date.now() - this.effectiveMatchStartedAt()
+      if (!ALLOW_EARLY_TEST_RESET && elapsed < this.matchDurationSeconds * 1000) return
+      this.resetMatchToLobby()
     })
     this.onMessage('move', (client, message: Partial<Presence>) => {
       const zone = message.zone
@@ -417,6 +466,7 @@ class WoodlandRoom extends Room {
       const fail = (reason: string) => {
         const result: MerchantPurchaseResult = { requestId, ok: false, reason, cycle: cycle ?? undefined }
         results.set(requestId, result)
+        while (results.size > 64) results.delete(results.keys().next().value!)
         this.merchantResults.set(client.sessionId, results)
         client.send('merchant:result', result)
       }
@@ -599,6 +649,8 @@ class WoodlandRoom extends Room {
       if (!this.matchStarted || !this.validMinigameMilestone(milestone)) return
       const presence = this.players.get(client.sessionId)
       if (!presence?.minigameOpen || presence.minigameMilestone !== milestone || !presence.minigameKind) return
+      const gate = this.eventReady.get(`${milestone}:${presence.minigameKind}`)
+      if (!gate?.gameplayAt || Date.now() < gate.gameplayAt) return
       const results = this.minigameResults.get(milestone) ?? new Map<string, MinigameResult>()
       if (results.has(client.sessionId)) return
       const scoreCap = presence.minigameKind === 'mining' ? 50_000 : presence.minigameKind === 'farm' ? 20_000 : 30_000
@@ -640,7 +692,7 @@ class WoodlandRoom extends Room {
     if (!options.bypassLobby) this.lobbyEligible.add(client.sessionId)
     if (!this.hostId && this.lobbyEligible.has(client.sessionId)) this.hostId = client.sessionId
     client.send('lobby:state', this.lobbyStateFor(client))
-    if (this.matchStarted) client.send('match:sync', { seed: this.matchSeed, startedAt: this.matchStartedAt, durationSeconds: this.matchDurationSeconds })
+    if (this.matchStarted) client.send('match:sync', this.matchSyncPayload())
     client.send('presence:snapshot', [...this.players.values()])
     this.sendOreSnapshot(client)
     this.farmSnapshot(client)
@@ -667,7 +719,7 @@ class WoodlandRoom extends Room {
     this.leaveReadyGates(client.sessionId)
     this.broadcast('presence:leave', client.sessionId)
     if (this.orePauseStartedAt && ![...this.players.values()].some((player) => player.minigameOpen)) this.resumeOreRespawns()
-    if (!this.matchStarted && client.sessionId === this.hostId) this.hostId = [...this.lobbyEligible][0] ?? null
+    if (client.sessionId === this.hostId) this.hostId = [...this.lobbyEligible][0] ?? null
     this.broadcastLobby()
   }
 

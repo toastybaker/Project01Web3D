@@ -2020,11 +2020,22 @@ function forageRushScene() {
     const id = `ForageRushDiscovery${String(index + 10).padStart(2, '0')}`
     scene.add(discoveryRelic(id, x, z, index * .71, forageGroundHeight), anchor(id, [x, forageGroundHeight(x, z), z]))
   })
-  const deliveries = { Apple: [-8.5, -81], Orange: [-2.8, -81], Truffle: [2.8, -81], Discovery: [8.5, -81] }
+  // Keep the delivery court compact and framed by woodland. The player should
+  // read four destinations at a glance without the forest opening into a plaza.
+  const deliveries = { Apple: [-5.4, -82], Orange: [-1.8, -84], Truffle: [1.8, -84], Discovery: [5.4, -82] }
   Object.entries(deliveries).forEach(([kind,[x,z]]) => {
     const stand = shop(`${kind} Delivery Stand`, [x, forageGroundHeight(x, z), z], Math.PI, kind === 'Apple' ? mats.fruit : kind === 'Orange' ? mats.fruitGold : kind === 'Truffle' ? mats.barkLight : mats.crystal)
     stand.scale.setScalar(.5)
     scene.add(stand, anchor(`ForageRushDeliver${kind}`, [x, forageGroundHeight(x,z), z + .8]), anchor(`NpcForageRush${kind}`, [x, forageGroundHeight(x,z), z - .45]))
+  })
+  const groveFrame = [
+    [-18,-72,0],[-25,-82,1],[-21,-97,2],[-15,-108,3],
+    [18,-72,4],[25,-82,5],[21,-97,0],[15,-108,1],
+    [-11,-93,2],[11,-93,3],[-28,-113,4],[28,-113,5],
+  ]
+  groveFrame.forEach(([x,z,variant], index) => {
+    scene.add(natureTree(x, z, 1.02 + (index % 3) * .09, index * .71, forageGroundHeight, variant))
+    scene.add(natureBush(x + (index % 2 ? -1.4 : 1.4), z + .8, .82 + (index % 3) * .08, index * .47, forageGroundHeight, index))
   })
   return scene
 }

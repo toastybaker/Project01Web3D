@@ -19,7 +19,7 @@ const SCENES: Record<ZoneId, string> = {
 }
 const MINING_RUSH_SCENE = '/assets/3d/scenes/mining-rush.glb?v=10'
 const FARM_RUSH_SCENE = '/assets/3d/scenes/farm-rush.glb?v=13'
-const FORAGE_RUSH_SCENE = '/assets/3d/scenes/forage-rush.glb?v=7'
+const FORAGE_RUSH_SCENE = '/assets/3d/scenes/forage-rush.glb?v=8'
 const MINIGAME_SCENES: Record<MinigameKind, string> = { mining: MINING_RUSH_SCENE, farm: FARM_RUSH_SCENE, forage: FORAGE_RUSH_SCENE }
 
 const visualGateMode = new URLSearchParams(window.location.search).get('gate')
@@ -640,6 +640,13 @@ function MultiplayerPresence() {
         peerId.current = room.sessionId
         room.onMessage('presence:snapshot', (snapshot: PeerPresence[]) => setPeers(Object.fromEntries(snapshot.filter((peer) => peer.id !== room.sessionId).map((peer) => [peer.id, peer]))))
         room.onMessage('lobby:state', (message: { isHost?: boolean; started?: boolean; durationSeconds?: number }) => setLobbyState(true, Boolean(message.isHost), Boolean(message.started), Number(message.durationSeconds)))
+        room.onMessage('lobby:reset', () => {
+          const nickname = useGameStore.getState().nickname
+          localStorage.removeItem('project01-save-v12')
+          localStorage.removeItem('project01-save-v11')
+          localStorage.setItem('project01-save-v12', JSON.stringify({ nickname }))
+          window.location.assign('/')
+        })
         room.onMessage('match:sync', (message: { seed?: number; startedAt?: number; durationSeconds?: number }) => syncMatch(Number(message.seed), Number(message.startedAt), Number(message.durationSeconds)))
         room.onMessage('minigame:bay', (message: { bay?: number }) => { if (Number.isFinite(message.bay)) setEventBay(Number(message.bay)) })
         room.onMessage('presence:move', (message: PeerPresence) => mergePeer(message))
@@ -843,7 +850,8 @@ function Player() {
       }
       const live = useGameStore.getState()
       const floor = (live.minigameOpen ? minigameGroundHeight(live.minigameKind, position.current.x, position.current.z) : groundHeight(live.zone, position.current.x, position.current.z)) + 0.86
-      if (event.code === 'Space' && position.current.y <= floor + 0.03) {
+      const jumpLocked = !live.sessionStarted || (live.minigameOpen && !live.minigameActive) || live.shopOpen || live.stockOpen || live.inventoryOpen || live.menuOpen || live.playerPanelOpen || live.lotteryOpen || live.ticketInspectOpen || live.noteInspectOpen || live.travelOpen || live.secretOpen || live.cookbookOpen || live.enhancementOpen || Boolean(live.itemUseOpen) || live.sessionComplete
+      if (event.code === 'Space' && !event.repeat && !jumpLocked && position.current.y <= floor + 0.03) {
         verticalVelocity.current = 5.2
         grounded.current = false
         playGameSfx('jump', live.audioVolumes.master * live.audioVolumes.effects)
@@ -1335,6 +1343,15 @@ function InteractionFocus() {
   )
 }
 
+function clampedLabelPosition(element: THREE.Object3D, camera: THREE.Camera, size: { width: number; height: number }) {
+  const projected = new THREE.Vector3()
+  element.getWorldPosition(projected)
+  projected.project(camera)
+  const x = (projected.x * .5 + .5) * size.width
+  const y = (projected.y * -.5 + .5) * size.height
+  return [THREE.MathUtils.clamp(x, 84, size.width - 84), THREE.MathUtils.clamp(y, 24, size.height - 24)] as [number, number]
+}
+
 function WorldLabels() {
   const zone = useGameStore((state) => state.zone)
   const anchors = useGameStore((state) => state.anchors)
@@ -1373,7 +1390,7 @@ function WorldLabels() {
         { key: 'forage-market', text: 'FORAGE MARKET', point: anchors.ForageBuyer, lift: 3.2 },
       ]
   return <>{labels.map(({ key, text, point, lift }) => point && (
-    <Html key={key} position={[point[0], point[1] + lift, point[2]]} center zIndexRange={key === 'assigned-plot' || key === 'assigned-bay' ? [24, 24] : [1, 0]} style={{ pointerEvents: 'none' }}>
+    <Html key={key} position={[point[0], point[1] + lift, point[2]]} center calculatePosition={clampedLabelPosition} zIndexRange={key === 'assigned-plot' || key === 'assigned-bay' ? [24, 24] : [1, 0]} style={{ pointerEvents: 'none' }}>
       <span className={`world-label ${key}`}>{text}</span>
     </Html>
   ))}</>

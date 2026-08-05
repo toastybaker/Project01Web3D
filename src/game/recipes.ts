@@ -28,7 +28,7 @@ export const RECIPES: Record<RecipeId, RecipeDefinition> = {
   'orchard-pie': { id: 'orchard-pie', food: 'food-orchard-pie', name: 'Orchard Pie', group: 'middle', ingredients: { apple: 4, orange: 4, wheat: 2 }, multiplier: 1.38, cookSeconds: 40 },
   'pumpkin-bread': { id: 'pumpkin-bread', food: 'food-pumpkin-bread', name: 'Pumpkin Bread', group: 'middle', ingredients: { pumpkin: 1, wheat: 4 }, multiplier: 1.42, cookSeconds: 45 },
   'farmhouse-plate': { id: 'farmhouse-plate', food: 'food-farmhouse-plate', name: 'Farmhouse Plate', group: 'middle', ingredients: { tomato: 2, lettuce: 2, wheat: 1 }, multiplier: 1.45, cookSeconds: 45 },
-  'melon-preserve': { id: 'melon-preserve', food: 'food-melon-preserve', name: 'Melon Preserve', group: 'late', ingredients: { watermelon: 1, orange: 4, apple: 3 }, multiplier: 1.52, cookSeconds: 50 },
+  'melon-preserve': { id: 'melon-preserve', food: 'food-melon-preserve', name: 'Melon Preserve', group: 'late', ingredients: { watermelon: 1, orange: 4, apple: 3 }, multiplier: 1.48, cookSeconds: 60 },
   'harvest-feast': { id: 'harvest-feast', food: 'food-harvest-feast', name: 'Harvest Feast', group: 'late', ingredients: { pumpkin: 1, lettuce: 1, tomato: 1, wheat: 2 }, multiplier: 1.58, cookSeconds: 55 },
   'truffle-banquet': { id: 'truffle-banquet', food: 'food-truffle-banquet', name: 'Truffle Banquet', group: 'late', ingredients: { truffle: 1, pumpkin: 1, wheat: 3 }, multiplier: 1.65, cookSeconds: 60 },
 }

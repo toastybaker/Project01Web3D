@@ -149,7 +149,7 @@ function AudioBed() {
   const unlocked = useRef(false)
   const playlistIndex = useRef(0)
   useEffect(() => {
-    const music = new Audio('/assets/audio/Faure_Sicilienne_FlutePiano.mp3')
+    const music = new Audio('/assets/audio/Faure_Sicilienne_Orchestra_DuPage.ogg')
     const ambience = new Audio('/assets/audio/Forest_Ambience_PD.ogg')
     musicRef.current = music
     ambienceRef.current = ambience
@@ -182,10 +182,10 @@ function AudioBed() {
     const ambience = ambienceRef.current
     if (!music || !ambience) return
     const playlists = {
-      hub: ['/assets/audio/Faure_Sicilienne_FlutePiano.mp3', '/assets/audio/Faure_Fantasie_FlutePiano.ogg'],
-      forage: ['/assets/audio/Faure_Sicilienne_FlutePiano.mp3', '/assets/audio/Faure_Elegie_CelloPiano.ogg'],
-      farm: ['/assets/audio/Faure_Fantasie_FlutePiano.ogg', '/assets/audio/Faure_Sicilienne_FlutePiano.mp3'],
-      mine: ['/assets/audio/Faure_Sicilienne_FlutePiano.mp3', '/assets/audio/Faure_Fantasie_FlutePiano.ogg'],
+      hub: ['/assets/audio/Faure_Sicilienne_Orchestra_DuPage.ogg'],
+      forage: ['/assets/audio/Faure_Sicilienne_Orchestra_DuPage.ogg', '/assets/audio/Faure_Elegie_CelloPiano.ogg'],
+      farm: ['/assets/audio/Faure_Fantasie_FlutePiano.ogg', '/assets/audio/Faure_Sicilienne_Orchestra_DuPage.ogg'],
+      mine: ['/assets/audio/Faure_Elegie_CelloPiano.ogg', '/assets/audio/Faure_Sicilienne_Orchestra_DuPage.ogg'],
     } as const
     const audioZone = minigameOpen ? (minigameKind === 'mining' ? 'mine' : minigameKind) : zone
     const tracks = playlists[audioZone]
@@ -193,14 +193,13 @@ function AudioBed() {
     music.loop = false
     const playTrack = () => {
       music.src = tracks[playlistIndex.current]
-      if (audioZone === 'forage' && playlistIndex.current === 0) music.addEventListener('loadedmetadata', () => { music.currentTime = Math.min(96, music.duration * 0.3) }, { once: true })
       if (unlocked.current) void music.play().catch(() => undefined)
     }
     const nextTrack = () => {
       playlistIndex.current = (playlistIndex.current + 1) % tracks.length
       playTrack()
     }
-    const ambienceSource = audioZone === 'mine' ? '/assets/audio/Cave_Water_Drips_CC-BY-SA.ogg' : audioZone === 'hub' ? '/assets/audio/Forest_Ambience_PD.ogg' : '/assets/audio/Forest_Ambience_PD.mp3'
+    const ambienceSource = audioZone === 'mine' ? '/assets/audio/Cave_Water_Drips_CC-BY-SA.ogg' : '/assets/audio/Forest_Ambience_PD.ogg'
     music.addEventListener('ended', nextTrack)
     playTrack()
     if (!ambience.src.endsWith(ambienceSource)) ambience.src = ambienceSource
@@ -1020,16 +1019,15 @@ function ResultsPanel() {
   const nickname = useGameStore((state) => state.nickname)
   const players = useGameStore((state) => state.onlinePlayers)
   const duration = useGameStore((state) => state.sessionDurationSeconds)
+  const isHost = useGameStore((state) => state.isHost)
   const [selected, setSelected] = useState(0)
   if (!complete) return null
   const leaderboard = [{ id: 'self', nickname, cash, stats }, ...players].sort((a, b) => b.cash - a.cash)
   const focused = leaderboard[Math.min(selected, leaderboard.length - 1)]
   const restart = () => {
-    localStorage.removeItem('project01-save-v12')
-    localStorage.removeItem('project01-save-v11')
-    window.location.assign('/?gate=final')
+    if (isHost) sendMultiplayer('lobby:reset', {})
   }
-  return <div className="modal-scrim results-scrim"><section className="panel results-panel"><header><div className="panel-title"><span className="results-mark">{duration / 60}</span><span>FINAL LEDGER</span></div></header><div className="leaderboard-list">{leaderboard.map((player, index) => <button className={selected === index ? 'active' : ''} key={player.id} onClick={() => setSelected(index)}><b>{index + 1}</b><span>{player.nickname}</span><strong>{formatCoins(player.cash, true)}</strong></button>)}</div><strong className="final-cash"><Icon name="coin" />{formatCoins(focused.cash)}</strong><div className="result-stats"><span>FORAGED<strong>{focused.stats.foraged}</strong></span><span>MINED<strong>{focused.stats.mined}</strong></span><span>HARVESTED<strong>{focused.stats.harvested}</strong></span><span>SOLD<strong>{focused.stats.sold}</strong></span></div><button onClick={restart}>NEW RUN</button></section></div>
+  return <div className="modal-scrim results-scrim"><section className="panel results-panel"><header><div className="panel-title"><span className="results-mark">{duration / 60}</span><span>FINAL LEDGER</span></div></header><div className="leaderboard-list">{leaderboard.map((player, index) => <button className={selected === index ? 'active' : ''} key={player.id} onClick={() => setSelected(index)}><b>{index + 1}</b><span>{player.nickname}</span><strong>{formatCoins(player.cash, true)}</strong></button>)}</div><strong className="final-cash"><Icon name="coin" />{formatCoins(focused.cash)}</strong><div className="result-stats"><span>FORAGED<strong>{focused.stats.foraged}</strong></span><span>MINED<strong>{focused.stats.mined}</strong></span><span>HARVESTED<strong>{focused.stats.harvested}</strong></span><span>SOLD<strong>{focused.stats.sold}</strong></span></div><button disabled={!isHost} onClick={restart}>{isHost ? 'NEW RUN' : 'WAITING FOR HOST'}</button></section></div>
 }
 
 function EnhancementPanel() {

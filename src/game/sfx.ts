@@ -83,9 +83,14 @@ export function playGameSfx(kind: GameSfx, volume = 0.5) {
     if (authored.length > 1 && index === previous) index = (index + 1 + Math.floor(Math.random() * (authored.length - 1))) % authored.length
     lastSoundIndex.set(kind, index)
     const sound = new Audio(authored[index])
-    const gain = kind.startsWith('footstep') ? 0.15 : kind === 'jump' ? 0.22 : kind === 'land' ? 0.3 : 0.46
+    const footstep = kind.startsWith('footstep')
+    const gain = footstep ? 0.1 : kind === 'jump' ? 0.16 : kind === 'land' ? 0.25 : 0.46
     sound.volume = Math.min(1, Math.max(0, volume)) * gain
-    sound.playbackRate = kind.startsWith('footstep') ? 0.97 + Math.random() * 0.06 : 0.99 + Math.random() * 0.02
+    sound.playbackRate = footstep ? 1.12 + Math.random() * 0.12 : 0.99 + Math.random() * 0.02
+    if (footstep) {
+      sound.currentTime = 0.12
+      window.setTimeout(() => { sound.pause(); sound.currentTime = 0 }, 300)
+    }
     void sound.play().catch(() => playSynth(kind, volume))
     return
   }

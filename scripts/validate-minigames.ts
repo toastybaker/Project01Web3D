@@ -150,6 +150,12 @@ for (const seed of [7, 77, 777, 7777]) {
 assert.deepEqual(minigameRewardPackage(10_000_000, 0), { budget: 0, boxes: 0, cash: 0 }, 'leaving an event awards nothing')
 assert.equal(minigameRewardPackage(10_000_000, 1).cash, 1_500_000, 'first-place cash remains independent from item rewards')
 
+useGameStore.setState({ minigamesCompleted: [20 * 60, 40 * 60], sessionComplete: true })
+const persistedSession = JSON.parse(memory.get('project01-save-v12') ?? '{}') as { minigamesCompleted?: number[]; sessionComplete?: boolean }
+assert.deepEqual(persistedSession.minigamesCompleted, [20 * 60, 40 * 60], 'completed event milestones persist across reloads')
+assert.equal(persistedSession.sessionComplete, true, 'final session completion persists across reloads')
+useGameStore.setState({ sessionComplete: false })
+
 useGameStore.setState({ inventory: { 'cookbook-box': 1 }, hotbar: Array(9).fill(null), knownRecipes: [] })
 useGameStore.getState().useCookbookBox()
 const unlockedRecipe = useGameStore.getState().knownRecipes[0]

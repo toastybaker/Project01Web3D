@@ -156,6 +156,8 @@ type SaveData = {
   miningBoostUntil?: number
   fortuneBoostCharges?: Partial<Record<EnhanceableItem, number>>
   appliedMinigameRewardIds?: string[]
+  minigamesCompleted?: number[]
+  sessionComplete?: boolean
 }
 
 function readJson<T>(key: string): T | null {
@@ -600,7 +602,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   portfolio: saved?.portfolio ?? {},
   stockOpen: requestedPanel === 'stocks',
   stats: saved?.stats ?? { foraged: 0, mined: 0, harvested: 0, sold: 0 },
-  sessionComplete: requestedPanel === 'results' && balanceRound === MATCH_CONFIG.totalRounds,
+  sessionComplete: saved?.sessionComplete ?? (requestedPanel === 'results' && balanceRound === MATCH_CONFIG.totalRounds),
   toast: null,
   audioVolumes: initialVolumes,
   cameraSensitivity: savedSensitivity,
@@ -644,7 +646,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   minigameMilestone: requestedPanel === 'minigame' ? 20 * 60 : 0,
   minigameKind: requestedMinigame,
   eventBay: 0,
-  minigamesCompleted: [],
+  minigamesCompleted: saved?.minigamesCompleted ?? [],
   minigameSnapshot: requestedPanel === 'minigame' ? { zone: initialZone, playerPosition: SPAWNS[initialZone], hotbar: ['water-can', 'worn-pickaxe', null, null, null, null, null, null, 'home-charm'], selectedHotbar: 0, inventoryOpen: false, startedAt: Date.now() } : null,
   rushNodes: {},
   rushScore: 0,
@@ -1623,5 +1625,7 @@ useGameStore.subscribe((state) => {
     miningBoostUntil: state.miningBoostUntil,
     fortuneBoostCharges: state.fortuneBoostCharges,
     appliedMinigameRewardIds: state.appliedMinigameRewardIds,
+    minigamesCompleted: state.minigamesCompleted,
+    sessionComplete: state.sessionComplete,
   }))
 })

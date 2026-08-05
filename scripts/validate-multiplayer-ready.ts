@@ -76,7 +76,40 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 300))
   assert(startsA === 1 && startsB === 1, `Start was broadcast repeatedly (${startsA}/${startsB})`)
 
-  console.log(JSON.stringify({ status: 'pass', players: 2, kind, milestone, warningMs }, null, 2))
+  let prematureResults = 0
+  playerA.onMessage('minigame:result', () => { prematureResults += 1 })
+  playerA.send('minigame:finish', { milestone, score: 50_000, progressValue: 100_000 })
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  assert(prematureResults === 0, 'A player claimed a minigame reward before the gameplay countdown ended')
+
+  await new Promise((resolve) => setTimeout(resolve, 1_000))
+  const lateClient = new Client(`ws://127.0.0.1:${port}`)
+  const late = await lateClient.joinById(playerA.roomId)
+  rooms.push(late)
+  const lateSync = message<{ seed: number; startedAt: number; durationSeconds: number }>(late, 'match:sync')
+  late.send('lobby:ready', {})
+  const lateMatch = await lateSync
+  assert(lateMatch.startedAt > matchA.startedAt + 700, 'Late joiner did not receive the paused match clock')
+  assert(Date.now() - lateMatch.startedAt < 2_500, 'Late joiner advanced through the paused minigame time')
+  await late.leave()
+  rooms.pop()
+
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, eventA.gameplayAt - Date.now()) + 50))
+  const resultA = message<{ placement: number }>(playerA, 'minigame:result')
+  const resultB = message<{ placement: number }>(playerB, 'minigame:result')
+  const resumedA = message<{ startedAt: number }>(playerA, 'match:sync')
+  const resumedB = message<{ startedAt: number }>(playerB, 'match:sync')
+  playerA.send('minigame:finish', { milestone, score: 200, progressValue: 100_000 })
+  playerB.send('minigame:finish', { milestone, score: 100, progressValue: 100_000 })
+  const [[rewardA, rewardB], [syncAfterA, syncAfterB]] = await Promise.all([
+    Promise.all([resultA, resultB]),
+    Promise.all([resumedA, resumedB]),
+  ])
+  assert(rewardA.placement === 1 && rewardB.placement === 2, 'Ready players did not receive deterministic placements')
+  assert(syncAfterA.startedAt === syncAfterB.startedAt, 'Players resumed with different match clocks')
+  assert(syncAfterA.startedAt > matchA.startedAt + 8_000, 'Minigame time was not removed from the shared match clock')
+
+  console.log(JSON.stringify({ status: 'pass', players: 2, kind, milestone, warningMs, prematureRewardBlocked: true, pausedLateJoin: true, synchronizedResume: true }, null, 2))
 } finally {
   await Promise.all(rooms.map((room) => room.leave()))
   server.kill('SIGTERM')

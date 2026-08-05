@@ -11,3 +11,4 @@
 
 # Keep visual-review evidence directly readable by GitHub and connected reviewers.
 docs/design-review/screenshots/*.png -filter -diff -merge -text
+docs/final-production-pass/screenshots/*.jpg -filter -diff -merge -text
