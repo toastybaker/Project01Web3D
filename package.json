@@ -19,7 +19,7 @@
     "test:merchant": "tsx scripts/validate-merchant.ts",
     "test:minigame-rewards": "tsx scripts/validate-minigame-rewards.ts",
     "test:consumables": "tsx scripts/validate-consumables.ts",
-    "test:multiplayer": "tsx scripts/validate-multiplayer-mine.ts && tsx scripts/validate-multiplayer-farm.ts && tsx scripts/validate-multiplayer-merchant.ts",
+    "test:multiplayer": "tsx scripts/validate-multiplayer-mine.ts && tsx scripts/validate-multiplayer-farm.ts && tsx scripts/validate-multiplayer-merchant.ts && tsx scripts/validate-multiplayer-ready.ts",
     "build": "tsc -b && vite build",
     "preview": "concurrently -k -n web,server \"vite preview\" \"tsx server/index.ts\""
   },

@@ -13,6 +13,7 @@ type Presence = { id: string; nickname: string; zone: ZoneId; position: [number,
 type TradeOffer = { cash: number; items: Record<string, number> }
 type TradeSession = { id: string; a: string; b: string; offers: Record<string, TradeOffer>; ready: Record<string, boolean> }
 type MinigameResult = { score: number; progressValue: number }
+type EventReadyGate = { participants: Set<string>; ready: Set<string>; gameplayAt: number | null; timeout: ReturnType<typeof setTimeout> }
 type SharedOreNode = { generation: number; readyAt: number }
 type CropKind = keyof typeof CROP_CONFIG
 type SharedFarmCell = { crop: CropKind | null; stage: 'empty' | 'planted' | 'watered' | 'ready'; readyAt: number | null }
@@ -51,6 +52,7 @@ class WoodlandRoom extends Room {
   private minigameTimers = new Map<number, ReturnType<typeof setTimeout>>()
   private eventBays = new Map<string, Map<string, number>>()
   private eventStartedAt = new Map<string, number>()
+  private eventReady = new Map<string, EventReadyGate>()
   private oreNodes = new Map<string, SharedOreNode>(MINE_NODE_SITES.map(({ id }) => [id, { generation: 0, readyAt: 0 }]))
   private oreTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private orePauseStartedAt = 0
@@ -247,6 +249,49 @@ class WoodlandRoom extends Room {
     }
   }
 
+  private readyState(key: string) {
+    const gate = this.eventReady.get(key)
+    if (!gate) return
+    const [milestone, kind] = key.split(':')
+    const expected = Math.max(1, this.lobbyEligible.size || this.clients.length)
+    this.broadcast('minigame:ready-state', { milestone: Number(milestone), kind, ready: gate.ready.size, total: expected })
+  }
+
+  private startMinigame(key: string) {
+    const gate = this.eventReady.get(key)
+    if (!gate || gate.gameplayAt) return
+    clearTimeout(gate.timeout)
+    const gameplayAt = Date.now() + 9_000
+    gate.gameplayAt = gameplayAt
+    this.eventStartedAt.set(key, Date.now())
+    const [milestone, kind] = key.split(':')
+    this.broadcast('minigame:start', { milestone: Number(milestone), kind, gameplayAt })
+  }
+
+  private joinReadyGate(clientId: string, key: string) {
+    let gate = this.eventReady.get(key)
+    if (!gate) {
+      gate = { participants: new Set(), ready: new Set(), gameplayAt: null, timeout: setTimeout(() => this.startMinigame(key), 15_000) }
+      this.eventReady.set(key, gate)
+      this.pauseOreRespawns()
+    }
+    const joined = !gate.participants.has(clientId)
+    gate.participants.add(clientId)
+    if (joined) this.readyState(key)
+    if (joined && gate.gameplayAt) this.sendTo(clientId, 'minigame:start', { milestone: Number(key.split(':')[0]), kind: key.split(':')[1], gameplayAt: gate.gameplayAt })
+  }
+
+  private leaveReadyGates(clientId: string) {
+    for (const [key, gate] of this.eventReady) {
+      gate.participants.delete(clientId)
+      gate.ready.delete(clientId)
+      if (!gate.participants.size && !gate.gameplayAt) {
+        clearTimeout(gate.timeout)
+        this.eventReady.delete(key)
+      } else this.readyState(key)
+    }
+  }
+
   private finalizeMinigame(milestone: number) {
     if (this.settledMinigames.has(milestone)) return
     this.resumeOreRespawns()
@@ -267,6 +312,7 @@ class WoodlandRoom extends Room {
     if (timer) clearTimeout(timer)
     this.minigameTimers.delete(milestone)
     for (const key of this.eventStartedAt.keys()) if (key.startsWith(`${milestone}:`)) this.eventStartedAt.delete(key)
+    for (const [key, gate] of this.eventReady) if (key.startsWith(`${milestone}:`)) { clearTimeout(gate.timeout); this.eventReady.delete(key) }
   }
 
   onCreate() {
@@ -310,11 +356,8 @@ class WoodlandRoom extends Room {
       const bounds = minigameOpen && minigameKind === 'forage' ? zoneBounds.forage : minigameOpen ? zoneBounds.hub : zoneBounds[zone]
       const eventKey = minigameOpen ? `${minigameMilestone}:${minigameKind}` : null
       const eventBay = eventKey ? this.assignEventBay(client.sessionId, eventKey) : undefined
-      if (eventKey && !this.eventStartedAt.has(eventKey)) {
-        this.eventStartedAt.set(eventKey, Date.now())
-        this.pauseOreRespawns()
-      }
-      if (!eventKey) this.releaseEventBay(client.sessionId)
+      if (eventKey) this.joinReadyGate(client.sessionId, eventKey)
+      if (!eventKey) { this.releaseEventBay(client.sessionId); this.leaveReadyGates(client.sessionId) }
       const safePosition: [number, number, number] = [
         Math.max(-bounds.x, Math.min(bounds.x, Number(position[0]))),
         Math.max(-30, Math.min(30, Number(position[1]))),
@@ -573,6 +616,19 @@ class WoodlandRoom extends Room {
         this.minigameTimers.set(milestone, setTimeout(() => this.finalizeMinigame(milestone), Math.max(2_000, deadline - Date.now())))
       }
     })
+    this.onMessage('minigame:ready', (client, message: { milestone?: number; kind?: MinigameKind }) => {
+      const milestone = Number(message?.milestone)
+      const presence = this.players.get(client.sessionId)
+      if (!presence?.minigameOpen || presence.minigameMilestone !== milestone || presence.minigameKind !== message?.kind) return
+      const key = `${milestone}:${presence.minigameKind}`
+      this.joinReadyGate(client.sessionId, key)
+      const gate = this.eventReady.get(key)
+      if (!gate || gate.gameplayAt) return
+      gate.ready.add(client.sessionId)
+      this.readyState(key)
+      const expected = Math.max(1, this.lobbyEligible.size || this.clients.length)
+      if (expected > 0 && gate.ready.size >= expected && gate.participants.size >= expected) this.startMinigame(key)
+    })
     this.onMessage('minigame:forage', (client, message: { id?: string; readyAt?: number }) => {
       if (!message.id?.startsWith('ForageRush') || !Number.isFinite(message.readyAt)) return
       const readyAt = Math.min(Date.now() + 15_000, Math.max(Date.now(), Number(message.readyAt)))
@@ -608,6 +664,7 @@ class WoodlandRoom extends Room {
     this.merchantResults.delete(client.sessionId)
     this.lobbyEligible.delete(client.sessionId)
     this.releaseEventBay(client.sessionId)
+    this.leaveReadyGates(client.sessionId)
     this.broadcast('presence:leave', client.sessionId)
     if (this.orePauseStartedAt && ![...this.players.values()].some((player) => player.minigameOpen)) this.resumeOreRespawns()
     if (!this.matchStarted && client.sessionId === this.hostId) this.hostId = [...this.lobbyEligible][0] ?? null
@@ -619,6 +676,8 @@ class WoodlandRoom extends Room {
     this.oreTimers.clear()
     this.minigameTimers.forEach((timer) => clearTimeout(timer))
     this.minigameTimers.clear()
+    this.eventReady.forEach((gate) => clearTimeout(gate.timeout))
+    this.eventReady.clear()
     this.farmTimers.forEach((timer) => clearTimeout(timer))
     this.farmTimers.clear()
   }

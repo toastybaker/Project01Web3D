@@ -331,6 +331,7 @@ function EnvironmentScene() {
   const collectedForage = useGameStore((state) => state.collectedForage)
   const setAnchors = useGameStore((state) => state.setAnchors)
   const setColliders = useGameStore((state) => state.setColliders)
+  const setSceneReady = useGameStore((state) => state.setSceneReady)
   const furnaceCount = useGameStore((state) => state.inventory.furnace ?? 0)
   const claimedFarms = useGameStore((state) => state.claimedFarms)
   const sharedFarmOnline = useGameStore((state) => state.sharedFarmOnline)
@@ -347,6 +348,10 @@ function EnvironmentScene() {
   const furnaceReadyUntil = useGameStore((state) => state.furnaceReadyUntil)
   const source = useGLTF(minigameOpen ? MINIGAME_SCENES[minigameKind] : SCENES[zone]).scene
   const scene = useMemo(() => skeletonClone(source), [source])
+  useEffect(() => {
+    setSceneReady(true)
+    return () => setSceneReady(false)
+  }, [scene, setSceneReady])
   scene.userData.environment = true
   const animatedStock = useMemo(() => scene.getObjectByName('Animated_StockRing'), [scene])
   const stockBaseY = useMemo(() => animatedStock?.position.y ?? 0, [animatedStock])
@@ -639,7 +644,7 @@ function MultiplayerPresence() {
         room.onMessage('minigame:bay', (message: { bay?: number }) => { if (Number.isFinite(message.bay)) setEventBay(Number(message.bay)) })
         room.onMessage('presence:move', (message: PeerPresence) => mergePeer(message))
         room.onMessage('presence:leave', (id: string) => removePeer(id))
-        for (const type of ['trade:request', 'trade:opened', 'trade:update', 'trade:cancel', 'trade:commit', 'minigame:result', 'minigame:forage', 'mine:snapshot', 'mine:node', 'mine:award', 'mine:denied', 'farm:snapshot', 'farm:update', 'farm:result', 'deed:snapshot', 'deed:stock', 'deed:result', 'merchant:snapshot', 'merchant:result']) room.onMessage(type, (payload: unknown) => emitMultiplayer(type, payload))
+        for (const type of ['trade:request', 'trade:opened', 'trade:update', 'trade:cancel', 'trade:commit', 'minigame:ready-state', 'minigame:start', 'minigame:result', 'minigame:forage', 'mine:snapshot', 'mine:node', 'mine:award', 'mine:denied', 'farm:snapshot', 'farm:update', 'farm:result', 'deed:snapshot', 'deed:stock', 'deed:result', 'merchant:snapshot', 'merchant:result']) room.onMessage(type, (payload: unknown) => emitMultiplayer(type, payload))
         setMultiplayerSender((type, payload) => room.send(type, payload))
         room.send('lobby:ready', {})
         const publish = () => {
@@ -894,7 +899,7 @@ function Player() {
 
   useFrame((state, delta) => {
     const liveUi = useGameStore.getState()
-    const movementLocked = !liveUi.sessionStarted || liveUi.shopOpen || liveUi.stockOpen || liveUi.inventoryOpen || liveUi.menuOpen || liveUi.playerPanelOpen || liveUi.lotteryOpen || liveUi.ticketInspectOpen || liveUi.noteInspectOpen || liveUi.travelOpen || liveUi.secretOpen || liveUi.cookbookOpen || liveUi.enhancementOpen || Boolean(liveUi.itemUseOpen) || liveUi.sessionComplete
+    const movementLocked = !liveUi.sessionStarted || (liveUi.minigameOpen && !liveUi.minigameActive) || liveUi.shopOpen || liveUi.stockOpen || liveUi.inventoryOpen || liveUi.menuOpen || liveUi.playerPanelOpen || liveUi.lotteryOpen || liveUi.ticketInspectOpen || liveUi.noteInspectOpen || liveUi.travelOpen || liveUi.secretOpen || liveUi.cookbookOpen || liveUi.enhancementOpen || Boolean(liveUi.itemUseOpen) || liveUi.sessionComplete
     if (movementLocked) {
       keys.current = {}
       horizontalVelocity.current.set(0, 0, 0)
@@ -994,16 +999,17 @@ function Player() {
     const requestedAnimation = interactionProgress > 0 && prompt
       ? 'Armature|Interact'
       : !grounded.current
-        ? locomotionSpeed > 0.55 ? 'Armature|Jog_Fwd_Loop' : 'Armature|Walk_Loop'
+        ? 'Armature|Jump_Loop'
         : sprinting && locomotionSpeed > 4.6
           ? 'Armature|Sprint_Loop'
           : moving ? 'Armature|Walk_Loop' : 'Armature|Idle_Loop'
     if (requestedAnimation !== activeAnimation.current || !actions[requestedAnimation]?.isRunning()) {
-      actions[activeAnimation.current]?.fadeOut(0.18)
+      const jumpTransition = requestedAnimation === 'Armature|Jump_Loop' || activeAnimation.current === 'Armature|Jump_Loop'
+      actions[activeAnimation.current]?.fadeOut(jumpTransition ? 0.1 : 0.18)
       const nextAction = actions[requestedAnimation]
       if (nextAction) {
-        nextAction.timeScale = !grounded.current ? 0.85 : 1
-        nextAction.reset().fadeIn(0.18).play()
+        nextAction.timeScale = 1
+        nextAction.reset().fadeIn(jumpTransition ? 0.1 : 0.18).play()
       }
       activeAnimation.current = requestedAnimation
     }
@@ -1374,11 +1380,21 @@ function WorldLabels() {
 }
 
 function LoadingMark() {
+  const setSceneReady = useGameStore((state) => state.setSceneReady)
+  useEffect(() => { setSceneReady(false) }, [setSceneReady])
   return (
-    <mesh rotation={[0, 0, Math.PI / 4]}>
-      <octahedronGeometry args={[0.35, 0]} />
-      <meshStandardMaterial color="#e6bd69" roughness={0.7} />
-    </mesh>
+    <group position={[0, .35, 0]}>
+      <mesh rotation={[0, 0, Math.PI / 4]}>
+        <octahedronGeometry args={[0.62, 0]} />
+        <meshStandardMaterial color="#e6bd69" roughness={0.62} emissive="#6f4e22" emissiveIntensity={.4} />
+      </mesh>
+      <mesh rotation={[Math.PI / 2, 0, 0]}>
+        <torusGeometry args={[1.05, .045, 8, 48]} />
+        <meshBasicMaterial color="#ead18d" transparent opacity={.72} />
+      </mesh>
+      <pointLight color="#efbd79" intensity={4} distance={8} />
+      <Html center position={[0, -1.28, 0]} style={{ pointerEvents: 'none' }}><span className="loading-label">LOADING</span></Html>
+    </group>
   )
 }
 

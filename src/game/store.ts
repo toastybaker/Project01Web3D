@@ -244,6 +244,7 @@ type GameState = {
   anchors: AnchorMap
   colliders: WorldCollider[]
   playerPosition: Vec3
+  sceneReady: boolean
   cash: number
   restockSeconds: number
   roundSeconds: number
@@ -323,6 +324,7 @@ type GameState = {
   marketCorrectionName: string | null
   marketCorrectionSeconds: number
   minigameOpen: boolean
+  minigameActive: boolean
   minigameMilestone: number
   minigameKind: MinigameKind
   eventBay: number
@@ -351,6 +353,7 @@ type GameState = {
   setAnchors: (anchors: AnchorMap) => void
   setColliders: (colliders: WorldCollider[]) => void
   setPlayerPosition: (position: Vec3) => void
+  setSceneReady: (ready: boolean) => void
   setPrompt: (prompt: Prompt) => void
   setInteractionProgress: (progress: number) => void
   toggleInventory: () => void
@@ -410,6 +413,7 @@ type GameState = {
   cookRecipe: (recipe: RecipeId, quantity?: number) => void
   sellFood: (recipe: RecipeId, quantity: number) => void
   finishMinigame: (score: number, placement?: number, economyReference?: number, settledReward?: { cash: number; itemRolls: MinigameItemRewardRoll[] }) => void
+  setMinigameActive: (active: boolean) => void
   setEventBay: (bay: number) => void
   mineRushNode: (id: string) => void
   setFarmRushTool: (tool: FarmRushTool) => void
@@ -556,6 +560,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   anchors: {},
   colliders: [],
   playerPosition: SPAWNS[initialZone],
+  sceneReady: false,
   cash: balanceRound ? 104_582_500 : saved?.cash ?? MATCH_CONFIG.startingCash,
   restockSeconds: saved?.restockSeconds ?? MATCH_CONFIG.worldCycleSeconds,
   roundSeconds: saved?.roundSeconds ?? MATCH_CONFIG.worldCycleSeconds,
@@ -635,6 +640,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   marketCorrectionName: null,
   marketCorrectionSeconds: 0,
   minigameOpen: requestedPanel === 'minigame',
+  minigameActive: false,
   minigameMilestone: requestedPanel === 'minigame' ? 20 * 60 : 0,
   minigameKind: requestedMinigame,
   eventBay: 0,
@@ -679,6 +685,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   setAnchors: (anchors) => set({ anchors }),
   setColliders: (colliders) => set({ colliders }),
   setPlayerPosition: (playerPosition) => set({ playerPosition }),
+  setSceneReady: (sceneReady) => set({ sceneReady }),
   setPrompt: (prompt) => set({ prompt, interactionProgress: 0 }),
   setInteractionProgress: (interactionProgress) => set({ interactionProgress }),
   toggleInventory: () => set((state) => ({ inventoryOpen: !state.inventoryOpen, shopOpen: false, stockOpen: false, menuOpen: false, lotteryOpen: false, ticketInspectOpen: false, secretOpen: false, enhancementOpen: false, interactionProgress: 0 })),
@@ -1396,6 +1403,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const shiftReady = (value: number) => value > snapshot.startedAt ? value + pausedMs : value
     return {
       minigameOpen: false,
+      minigameActive: false,
       minigameSnapshot: null,
       enhancementOpen: false,
       eventBay: 0,
@@ -1421,6 +1429,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
   }),
   clearMinigameResult: () => set({ lastMinigameResult: null }),
+  setMinigameActive: (active) => set((state) => state.minigameOpen ? { minigameActive: active } : state),
   setEventBay: (bay) => set((state) => {
     const eventBay = Math.max(0, Math.min(7, Math.floor(bay)))
     if (eventBay === state.eventBay) return state
@@ -1433,6 +1442,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (dueMinigame) return {
       ...state,
       minigameOpen: true,
+      minigameActive: false,
       minigameMilestone: dueMinigame,
       minigameKind: scheduledMinigame(dueMinigame, state.sessionSeed, state.sessionDurationSeconds),
       eventBay: 0,
