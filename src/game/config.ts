@@ -1,15 +1,28 @@
 export const MATCH_CONFIG = {
   startingCash: 100_000,
   defaultDurationSeconds: 60 * 60,
-  selectableDurationsSeconds: [30, 45, 60, 90].map((minutes) => minutes * 60),
+  selectableDurationsSeconds: [30, 60, 90, 120, 150, 180].map((minutes) => minutes * 60),
   totalRounds: 15,
   worldCycleSeconds: 4 * 60,
   stockUpdateSeconds: 4 * 60,
   commodityCycleSeconds: 4 * 60,
   secretNpcCycleSeconds: 4 * 60,
+  marketCorrectionIntervalSeconds: 15 * 60,
+  minigameIntervalSeconds: 20 * 60,
   minimumMiningMs: 420,
   oreRespawnSeconds: [28, 35],
 } as const
+
+export function recurringMilestones(durationSeconds: number, intervalSeconds: number) {
+  const duration = Math.max(60, Math.floor(durationSeconds))
+  const interval = Math.max(1, Math.floor(intervalSeconds))
+  return Array.from({ length: Math.max(0, Math.ceil(duration / interval) - 1) }, (_, index) => (index + 1) * interval)
+    .filter((milestone) => milestone < duration)
+}
+
+export function marketCorrectionMilestones(durationSeconds: number) {
+  return recurringMilestones(durationSeconds, MATCH_CONFIG.marketCorrectionIntervalSeconds)
+}
 
 export type FortuneOutcome = { chance: number; bonus: number }
 

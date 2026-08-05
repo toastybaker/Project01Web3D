@@ -5,7 +5,7 @@ export type UiLanguage = 'en' | 'ko'
 
 const KO: Record<string, string> = {
   'HAND GATHERING': '맨손 채집',
-  'PLAZA': '광장', 'FOREST': '숲', 'FORAGE': '채집', 'FARM': '농장', 'MINE': '광산',
+  'COMMON': '광장', 'PLAZA': '광장', 'FOREST': '숲', 'FORAGE': '채집', 'FARM': '농장', 'MINE': '광산',
   'COMMON SHOP': '상점', 'GENERAL SHOP': '상점', 'PRODUCE STAND': '농작물 판매', 'CROP MARKET': '농작물 판매', 'FOOD MARKET': '요리 판매',
   'FORAGING SHOP': '채집 도구', 'FORAGE SHOP': '채집 도구',
   'FORAGE MARKET': '채집품 판매', 'FARM SHOP': '농장 용품', 'MINING SHOP': '채광 도구',
@@ -60,7 +60,7 @@ const KO: Record<string, string> = {
   'WANDERING MERCHANT': '떠돌이 상인', 'INFORMATION': '정보', 'NO INFORMATION': '정보 없음',
   'INFO 1': '정보 1', 'INFO 2': '정보 2',
   'ACCEPT': '수락', 'NO': '거절', 'CANCEL': '취소', 'YOU': '나',
-  'NAME': '이름', 'TIME': '시간', 'EXTRA FARMS': '추가 농장', 'START GAME': '게임 시작', 'CONNECTING': '연결 중',
+  'NAME': '이름', 'TIME': '시간', 'GAME SETUP': '게임 설정', 'EXTRA FARMS': '추가 농장', 'START GAME': '게임 시작', 'CONNECTING': '연결 중',
   'WAITING FOR HOST': '호스트 대기 중', 'PERSONAL': '개인', 'SHARED': '공용', 'LEFT': '남음', 'AVAILABLE': '구매 가능',
   'BUY PERSONAL DEED FIRST': '먼저 개인 농장을 구매하세요',
   'READY!': '준비 완료!', 'READY UP': '준비', 'EVENT READY': '이벤트 준비', 'STARTING': '곧 시작',
@@ -262,7 +262,7 @@ export function shopName(language: UiLanguage, kind: ShopKind, fallback: string)
 }
 
 export function zoneName(language: UiLanguage, zone: ZoneId) {
-  const english: Record<ZoneId, string> = { hub: 'PLAZA', forage: 'FORAGE', farm: 'FARM', mine: 'MINE' }
+  const english: Record<ZoneId, string> = { hub: 'COMMON', forage: 'FORAGE', farm: 'FARM', mine: 'MINE' }
   return uiText(language, english[zone])
 }
 

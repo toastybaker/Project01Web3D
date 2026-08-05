@@ -82,9 +82,9 @@ try {
   assert(prematureStarts === 0, 'A non-host started the match')
 
   const lobbyUpdates = rooms.map((room) => once<{ durationSeconds: number; globalExpansionDeeds: number }>(room, 'lobby:state'))
-  rooms[0].send('lobby:update', { durationSeconds: 45 * 60, globalExpansionDeeds: 1 })
+  rooms[0].send('lobby:update', { durationSeconds: 180 * 60, globalExpansionDeeds: 1 })
   const updatedLobby = await Promise.all(lobbyUpdates)
-  assert(updatedLobby.every((entry) => entry.durationSeconds === 45 * 60), 'Host duration choice did not synchronize')
+  assert(updatedLobby.every((entry) => entry.durationSeconds === 180 * 60), 'Host duration choice did not synchronize')
   assert(updatedLobby.every((entry) => entry.globalExpansionDeeds === 1), 'Host extra-farm choice did not synchronize')
 
   const syncs = rooms.map((room) => once<{ seed: number; startedAt: number; durationSeconds: number }>(room, 'match:sync'))
@@ -92,7 +92,7 @@ try {
   const match = await Promise.all(syncs)
   assert(new Set(match.map((entry) => entry.seed)).size === 1, 'Players received different match seeds')
   assert(new Set(match.map((entry) => entry.startedAt)).size === 1, 'Players received different match start times')
-  assert(match.every((entry) => entry.durationSeconds === 45 * 60), 'Players received different match durations')
+  assert(match.every((entry) => entry.durationSeconds === 180 * 60), 'Players received different match durations')
 
   const personalResultPromise = once<{ personalCount: number; globalCount: number; globalRemaining: number }>(rooms[0], 'deed:result')
   rooms[0].send('deed:purchase', { requestId: 'lobby-personal', kind: 'personal', quantity: 1 })

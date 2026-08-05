@@ -1,5 +1,6 @@
 import type { OreItem } from './ore'
 import { RECIPES, RECIPE_IDS, type FoodItemId, type RecipeId } from './recipes'
+import { MATCH_CONFIG, recurringMilestones } from './config'
 
 export type MinigameKind = 'mining' | 'farm' | 'forage'
 
@@ -10,8 +11,7 @@ export const MINIGAME_DURATION: Record<MinigameKind, number> = {
 }
 
 export function minigameMilestones(durationSeconds: number) {
-  const duration = Math.max(60, Math.floor(durationSeconds))
-  return [Math.round(duration / 3), Math.round(duration * 2 / 3)]
+  return recurringMilestones(durationSeconds, MATCH_CONFIG.minigameIntervalSeconds)
 }
 
 export const COOKBOOK_BOX_REWARD_VALUE = 600_000
@@ -264,13 +264,31 @@ export function applyMinigameItemRewards(
   return { inventory: nextInventory, appliedRewardIds: [...applied], newlyAppliedRewardIds }
 }
 
-/** The two scheduled events are always different, while direct test URLs can pick any event. */
+function scheduleRoll(sessionSeed: number, eventIndex: number) {
+  let value = Math.imul(Math.floor(sessionSeed) ^ Math.imul(eventIndex + 1, 0x45d9f3b), 2654435761) >>> 0
+  value ^= value >>> 16
+  value = Math.imul(value, 0x7feb352d) >>> 0
+  value ^= value >>> 15
+  return value >>> 0
+}
+
+/** The full event order is deterministic at match start and never repeats consecutively. */
 export function scheduledMinigame(milestone: number, sessionSeed = 9731, durationSeconds = 60 * 60): MinigameKind {
   const kinds: MinigameKind[] = ['mining', 'farm', 'forage']
-  const seededIndex = Math.abs(Math.imul(Math.floor(sessionSeed) ^ 0x45d9f3b, 2654435761)) % kinds.length
-  if (milestone <= minigameMilestones(durationSeconds)[0]) return kinds[seededIndex]
-  const secondOffset = 1 + (Math.abs(Math.imul(Math.floor(sessionSeed) ^ 0x27d4eb2d, 1597334677)) % 2)
-  return kinds[(seededIndex + secondOffset) % kinds.length]
+  const milestones = minigameMilestones(durationSeconds)
+  const exactIndex = milestones.indexOf(milestone)
+  const nextIndex = milestones.findIndex((value) => value >= milestone)
+  const eventIndex = exactIndex >= 0 ? exactIndex : Math.max(0, nextIndex)
+  let kindIndex = scheduleRoll(sessionSeed, 0) % kinds.length
+  for (let index = 1; index <= eventIndex; index += 1) kindIndex = (kindIndex + 1 + scheduleRoll(sessionSeed, index) % 2) % kinds.length
+  return kinds[kindIndex]
+}
+
+export function minigameSchedule(durationSeconds: number, sessionSeed = 9731) {
+  return minigameMilestones(durationSeconds).map((milestone) => ({
+    milestone,
+    kind: scheduledMinigame(milestone, sessionSeed, durationSeconds),
+  }))
 }
 
 export type MiningRushOre = 'copper-ore' | 'iron-ore' | 'silver-ore' | 'gold-ore' | 'crystal-ore'

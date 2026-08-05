@@ -1311,7 +1311,7 @@ function Player() {
       }
       const live = useGameStore.getState()
       const floor = (live.minigameOpen ? minigameGroundHeight(live.minigameKind, position.current.x, position.current.z) : groundHeight(live.zone, position.current.x, position.current.z)) + 0.86
-      const jumpLocked = (live.minigameOpen && !live.minigameActive) || live.shopOpen || live.stockOpen || live.inventoryOpen || live.menuOpen || live.playerPanelOpen || live.lotteryOpen || live.ticketInspectOpen || live.noteInspectOpen || live.travelOpen || live.secretOpen || live.cookbookOpen || live.enhancementOpen || Boolean(live.itemUseOpen) || live.sessionComplete
+      const jumpLocked = live.lobbySettingsOpen || (live.minigameOpen && !live.minigameActive) || live.shopOpen || live.stockOpen || live.inventoryOpen || live.menuOpen || live.playerPanelOpen || live.lotteryOpen || live.ticketInspectOpen || live.noteInspectOpen || live.travelOpen || live.secretOpen || live.cookbookOpen || live.enhancementOpen || Boolean(live.itemUseOpen) || live.sessionComplete
       if (event.code === 'Space' && !event.repeat && !jumpLocked && position.current.y <= floor + 0.03) {
         verticalVelocity.current = 5.2
         grounded.current = false
@@ -1381,7 +1381,7 @@ function Player() {
 
   useFrame((state, delta) => {
     const liveUi = useGameStore.getState()
-    const movementLocked = (liveUi.minigameOpen && !liveUi.minigameActive) || liveUi.shopOpen || liveUi.stockOpen || liveUi.inventoryOpen || liveUi.menuOpen || liveUi.playerPanelOpen || liveUi.lotteryOpen || liveUi.ticketInspectOpen || liveUi.noteInspectOpen || liveUi.travelOpen || liveUi.secretOpen || liveUi.cookbookOpen || liveUi.enhancementOpen || Boolean(liveUi.itemUseOpen) || liveUi.sessionComplete
+    const movementLocked = liveUi.lobbySettingsOpen || (liveUi.minigameOpen && !liveUi.minigameActive) || liveUi.shopOpen || liveUi.stockOpen || liveUi.inventoryOpen || liveUi.menuOpen || liveUi.playerPanelOpen || liveUi.lotteryOpen || liveUi.ticketInspectOpen || liveUi.noteInspectOpen || liveUi.travelOpen || liveUi.secretOpen || liveUi.cookbookOpen || liveUi.enhancementOpen || Boolean(liveUi.itemUseOpen) || liveUi.sessionComplete
     if (movementLocked) {
       keys.current = {}
       horizontalVelocity.current.set(0, 0, 0)

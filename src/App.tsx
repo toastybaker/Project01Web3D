@@ -294,7 +294,7 @@ function FeedbackBed() {
   return burst ? <div className={`action-burst ${burst.kind}`} key={burst.id} aria-hidden="true">{Array.from({ length: 8 }, (_, index) => <i key={index} />)}</div> : null
 }
 
-function Icon({ name }: { name: 'clock' | 'refresh' | 'coin' | 'menu' | 'close' | 'pack' | 'users' }) {
+function Icon({ name }: { name: 'clock' | 'refresh' | 'coin' | 'menu' | 'close' | 'pack' | 'users' | 'sliders' }) {
   const paths = {
     clock: <><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></>,
     refresh: <><path d="M18 8a7 7 0 1 0 1 7" /><path d="M18 4v4h-4" /></>,
@@ -303,6 +303,7 @@ function Icon({ name }: { name: 'clock' | 'refresh' | 'coin' | 'menu' | 'close' 
     close: <><path d="M7 7l10 10M17 7 7 17" /></>,
     pack: <><path d="M7 9h10l1 10H6L7 9Z" /><path d="M9 9V7a3 3 0 0 1 6 0v2" /></>,
     users: <><circle cx="9" cy="9" r="3" /><circle cx="17" cy="10" r="2.3" /><path d="M4 19c.4-3 2.2-4.5 5-4.5s4.6 1.5 5 4.5M14 15.5c3-.8 5.3.5 6 3.5" /></>,
+    sliders: <><path d="M5 7h14M5 12h14M5 17h14" /><circle cx="9" cy="7" r="2" /><circle cx="15" cy="12" r="2" /><circle cx="11" cy="17" r="2" /></>,
   }
   return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>
 }
@@ -355,10 +356,14 @@ function HUD() {
 }
 
 function LobbyPanel() {
-  const { t } = useLocale()
+  const { language, t } = useLocale()
   const started = useGameStore((state) => state.sessionStarted)
   const connected = useGameStore((state) => state.lobbyConnected)
   const isHost = useGameStore((state) => state.isHost)
+  const open = useGameStore((state) => state.lobbySettingsOpen)
+  const setOpen = useGameStore((state) => state.setLobbySettingsOpen)
+  const setMenuOpen = useGameStore((state) => state.setMenuOpen)
+  const setPlayerPanelOpen = useGameStore((state) => state.setPlayerPanelOpen)
   const duration = useGameStore((state) => state.sessionDurationSeconds)
   const globalExpansionDeeds = useGameStore((state) => state.lobbyGlobalExpansionDeeds)
   const playerCount = useGameStore((state) => state.lobbyPlayerCount)
@@ -379,13 +384,20 @@ function LobbyPanel() {
     if (!isHost) return
     sendMultiplayer('lobby:start', {})
   }
-  return <div className="lobby-dock"><section className="panel lobby-panel">
-    <header><div className="panel-title"><span className="lobby-mark">P1</span><span>WOODLAND RUN</span></div><b>{playerCount}/6</b></header>
-    <label className="lobby-name"><span>{t('NAME')}</span><input aria-label="Nickname" value={draftName} maxLength={18} onChange={(event) => setDraftName(event.target.value)} onBlur={() => setNickname(draftName)} onKeyDown={(event) => { if (event.key === 'Enter') { setNickname(draftName); event.currentTarget.blur() } }} /></label>
-    <div className="lobby-duration"><span>{t('TIME')}</span><div>{MATCH_CONFIG.selectableDurationsSeconds.map((seconds) => <button className={duration === seconds ? 'active' : ''} disabled={!isHost} key={seconds} onClick={() => chooseDuration(seconds)}>{seconds / 60}</button>)}</div></div>
-    <div className="lobby-duration lobby-extra"><span>{t('EXTRA FARMS')}</span><div>{Array.from({ length: maxGlobalExpansionDeeds + 1 }, (_, quantity) => <button className={globalExpansionDeeds === quantity ? 'active' : ''} disabled={!isHost} key={quantity} onClick={() => chooseGlobalExpansionDeeds(quantity)}>{quantity}</button>)}</div></div>
-    {isHost ? <button className="lobby-start" disabled={!connected} onClick={start}>{connected ? t('START GAME') : t('CONNECTING')}</button> : <div className="lobby-wait">{connected ? t('WAITING FOR HOST') : t('CONNECTING')}</div>}
-  </section></div>
+  return <>
+    <div className="hud-modules lobby-tools">
+      <button className="hud-chip lobby-player-count" onClick={() => setPlayerPanelOpen(true)} aria-label={t('PLAYERS')}><Icon name="users" /><span>{playerCount}/6</span></button>
+      <button className="hud-chip icon-button" onClick={() => setOpen(true)} aria-label={t('GAME SETUP')} title={t('GAME SETUP')}><Icon name="sliders" /></button>
+      <button className="hud-chip icon-button" onClick={() => setMenuOpen(true)} aria-label={t('SETTINGS')} title={t('SETTINGS')}><Icon name="menu" /></button>
+    </div>
+    {open && <div className="modal-scrim lobby-scrim" onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}><section className="panel lobby-panel">
+      <header><div className="panel-title">{t('GAME SETUP')}</div><b>{playerCount}/6</b><CloseButton onClick={() => setOpen(false)} /></header>
+      <label className="lobby-name"><span>{t('NAME')}</span><input aria-label={t('NICKNAME')} value={draftName} maxLength={18} onChange={(event) => setDraftName(event.target.value)} onBlur={() => setNickname(draftName)} onKeyDown={(event) => { if (event.key === 'Enter') { setNickname(draftName); event.currentTarget.blur() } }} /></label>
+      <div className="lobby-duration"><span>{t('TIME')}</span><div>{MATCH_CONFIG.selectableDurationsSeconds.map((seconds) => <button className={duration === seconds ? 'active' : ''} disabled={!isHost} key={seconds} onClick={() => chooseDuration(seconds)}>{seconds / 60}{language === 'ko' ? '분' : 'm'}</button>)}</div></div>
+      <div className="lobby-duration lobby-extra"><span>{t('EXTRA FARMS')}</span><div>{Array.from({ length: maxGlobalExpansionDeeds + 1 }, (_, quantity) => <button className={globalExpansionDeeds === quantity ? 'active' : ''} disabled={!isHost} key={quantity} onClick={() => chooseGlobalExpansionDeeds(quantity)}>{quantity}</button>)}</div></div>
+      {isHost ? <button className="lobby-start" disabled={!connected} onClick={start}>{connected ? t('START GAME') : t('CONNECTING')}</button> : <div className="lobby-wait">{connected ? t('WAITING FOR HOST') : t('CONNECTING')}</div>}
+    </section></div>}
+  </>
 }
 
 function Hotbar() {
@@ -808,7 +820,7 @@ function SecretDealPanel() {
         })}</div>
         <div className="broker-info">{offers.map((offer, slot) => {
           const bought = purchases.includes(`${round}:${slot}`)
-          return <article key={slot}><span><strong>{t(`INFO ${slot + 1}`)}</strong></span><button disabled={bought || cash < offer.cost} onClick={() => buy(slot)}>{bought ? t('SOLD OUT') : formatCoins(offer.cost, true)}</button></article>
+          return <article key={slot}><span><strong>{t(`INFO ${slot + 1}`)}</strong></span><button disabled={!offer.available || bought || cash < offer.cost} onClick={() => buy(slot)}>{!offer.available || bought ? t('SOLD OUT') : formatCoins(offer.cost, true)}</button></article>
         })}</div>
       </section>
     </div>
@@ -877,6 +889,7 @@ type PlayerTradeOffer = { cash: number; items: Record<string, number> }
 function PlayerTradePanel() {
   const { language, t } = useLocale()
   const open = useGameStore((state) => state.playerPanelOpen)
+  const sessionStarted = useGameStore((state) => state.sessionStarted)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const setOpen = useGameStore((state) => state.setPlayerPanelOpen)
   const players = useGameStore((state) => state.onlinePlayers)
@@ -899,7 +912,7 @@ function PlayerTradePanel() {
 
   useEffect(() => {
     const offRequest = onMultiplayer('trade:request', (raw) => {
-      if (minigameOpen) return
+      if (!sessionStarted || minigameOpen) return
       const request = raw as { fromId: string; fromNickname: string }
       setIncoming(request); setOpen(true)
     })
@@ -928,7 +941,7 @@ function PlayerTradePanel() {
       closeTrade()
     })
     return () => { offRequest(); offOpened(); offUpdate(); offCancel(); offCommit() }
-  }, [applyTrade, minigameOpen, setOpen, setToast])
+  }, [applyTrade, minigameOpen, sessionStarted, setOpen, setToast])
 
   useEffect(() => {
     const onTab = (event: KeyboardEvent) => {
@@ -955,8 +968,8 @@ function PlayerTradePanel() {
         <header><div className="panel-title"><Icon name="users" /><span>{tradeId ? <>{t('TRADE')} · <i data-no-localize>{partner?.nickname ?? ''}</i></> : t('PLAYERS')}</span></div><CloseButton onClick={closePanel} /></header>
         {!tradeId ? <>
           <div className="nickname-row"><input data-no-localize value={draftName} maxLength={18} aria-label={t('NICKNAME')} onChange={(event) => setDraftName(event.target.value)} onBlur={() => setNickname(draftName)} onKeyDown={(event) => { if (event.key === 'Enter') { setNickname(draftName); event.currentTarget.blur() } }} /><span>{players.length + 1}</span></div>
-          {!minigameOpen && incoming && <div className="trade-request"><span>{incoming.fromNickname}</span><button onClick={() => sendMultiplayer('trade:accept', { fromId: incoming.fromId })}>ACCEPT</button><button className="quiet-button" onClick={() => setIncoming(null)}>NO</button></div>}
-          <div className="player-list">{players.length ? players.map((player) => <div className="player-row" key={player.id}><span className="player-avatar" data-no-localize>{player.nickname[0]?.toUpperCase()}</span><span><i data-no-localize>{player.nickname}</i><small>{zoneName(language, player.zone)}</small></span>{!minigameOpen && <button onClick={() => { sendMultiplayer('trade:request', { targetId: player.id }); setToast('Trade request sent') }}>{t('TRADE')}</button>}</div>) : <div className="empty-players">{t('NO ONE ELSE ONLINE')}</div>}</div>
+          {sessionStarted && !minigameOpen && incoming && <div className="trade-request"><span>{incoming.fromNickname}</span><button onClick={() => sendMultiplayer('trade:accept', { fromId: incoming.fromId })}>ACCEPT</button><button className="quiet-button" onClick={() => setIncoming(null)}>NO</button></div>}
+          <div className="player-list">{players.length ? players.map((player) => <div className="player-row" key={player.id}><span className="player-avatar" data-no-localize>{player.nickname[0]?.toUpperCase()}</span><span><i data-no-localize>{player.nickname}</i><small>{zoneName(language, player.zone)}</small></span>{sessionStarted && !minigameOpen && <button onClick={() => { sendMultiplayer('trade:request', { targetId: player.id }); setToast('Trade request sent') }}>{t('TRADE')}</button>}</div>) : <div className="empty-players">{t('NO ONE ELSE ONLINE')}</div>}</div>
         </> : <>
           <div className="trade-columns">
             <div className={`trade-side ${ready ? 'ready' : ''}`}><h3>YOU <span>{ready ? 'READY' : ''}</span></h3><label className="trade-cash"><Icon name="coin" /><input type="number" min="0" max={cash} value={offer.cash} onChange={(event) => publishOffer({ ...offer, cash: Math.min(cash, Math.max(0, Number(event.target.value) || 0)) })} /></label><div className="trade-items">{tradable.map((id) => <button key={id} onContextMenu={(event) => event.preventDefault()} onMouseDown={(event) => { event.preventDefault(); const delta = event.button === 2 ? -1 : 1; const quantity = Math.max(0, Math.min(inventory[id] ?? 0, (offer.items[id] ?? 0) + delta)); publishOffer({ ...offer, items: { ...offer.items, [id]: quantity } }) }}><img src={ITEMS[id].icon} alt={ITEMS[id].name} /><span>{offer.items[id] ?? 0}</span></button>)}</div></div>
@@ -992,6 +1005,7 @@ function MenuPanel() {
   const openCookbook = useGameStore((state) => state.setCookbookOpen)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
+  const sessionStarted = useGameStore((state) => state.sessionStarted)
   if (!open) return null
   return (
     <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}>
@@ -1004,7 +1018,7 @@ function MenuPanel() {
         ))}
         <label className="volume-row"><span>{t('SENSITIVITY')}</span><input aria-label="Camera sensitivity" type="range" min="0.35" max="1.8" step="0.05" value={sensitivity} onChange={(event) => setSensitivity(Number(event.target.value))} /></label>
         <div className="camera-options"><button className={shiftLocked ? 'active' : ''} onClick={() => setShiftLocked(!shiftLocked)}>{t('SHIFT LOCK')}</button><button className={invertY ? 'active' : ''} onClick={() => setInvertY(!invertY)}>{t('INVERT Y')}</button></div>
-        {(!minigameOpen || minigameKind === 'farm') && <button className="cookbook-open" onClick={() => openCookbook(true)}>{t('RECIPES')}</button>}
+        {sessionStarted && (!minigameOpen || minigameKind === 'farm') && <button className="cookbook-open" onClick={() => openCookbook(true)}>{t('RECIPES')}</button>}
         <div className="control-strip"><kbd>Q</kbd><span>{t('LOCK')}</span><kbd>E</kbd><span>{t('PACK')}</span><kbd>TAB</kbd><span>{t('PLAYERS')}</span></div>
       </section>
     </div>
@@ -1603,7 +1617,7 @@ function Interface() {
       window.removeEventListener('blur', resetMining)
     }
   }, [setCookbookOpen, setEnhancementOpen, setLotteryOpen, setMenuOpen, setPlayerPanelOpen, setProgress, setSecretOpen, setSelected, setShopOpen, setStockOpen, setTicketInspectOpen, setToast, setTravelOpen, setZone, toggleInventory])
-  if (!sessionStarted) return <div className="interface"><LobbyPanel /><Toast /></div>
+  if (!sessionStarted) return <div className="interface"><LobbyPanel /><PlayerTradePanel /><MenuPanel /><Toast /></div>
   if (minigameOpen) return <div className="interface">{minigameActive && <><Crosshair /><InteractionPrompt /></>}<MinigameWorldHud /><EventUtilityDock /><Hotbar /><InventoryPanel /><PlayerTradePanel /><MenuPanel /><CookbookPanel /><Toast /></div>
   return <div className="interface"><HUD /><Crosshair /><InteractionPrompt /><ForageCapacity /><ActiveEffects /><Hotbar /><InventoryPanel /><ItemUsePanel /><ShopPanel /><LotteryPanel /><TicketInspectPanel /><NoteInspectPanel /><TravelPanel /><SecretDealPanel /><StocksPanel /><PlayerTradePanel /><MenuPanel /><CookbookPanel /><EnhancementPanel /><ResultsPanel /><MinigameResultCard /><Toast /></div>
 }

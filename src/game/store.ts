@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { ITEMS, SHOPS, STOCKS, type ItemId, type ShopKind, type StockId } from './items'
 import { isPickaxe, canMineOre, miningYield, oreRespawnMs, type OreItem } from './ore'
-import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, FORAGE_CONFIG, MATCH_CONFIG, ORE_CONFIG, forageSiteAvailability, nextRareForageRollAt, type CommodityId } from './config'
+import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, FORAGE_CONFIG, MATCH_CONFIG, ORE_CONFIG, forageSiteAvailability, marketCorrectionMilestones, nextRareForageRollAt, type CommodityId } from './config'
 import { advanceCommodityCycle, commodityPrice, formatCoins, initialCommodityMarket, lotteryJackpot, lotteryPrice, lotteryTwoMatch, marginalSale, nextStockPrice, scaledValue, seeded01, stockAvailable, stockWaveQuantity, type CommodityMarket } from './economy'
 import { PREPARED_FOOD_MARKUP, RECIPES, RECIPE_IDS, type FoodItemId, type RecipeId } from './recipes'
 import { COOKBOOK_BOX_REWARD_VALUE, FARM_RUSH_GROWTH_MS, FARM_RUSH_MAX_ORDERS, FARM_RUSH_ORDER_LIFETIME_MS, FORAGE_RUSH_DELIVERY_POINTS, FORAGE_RUSH_REQUIREMENTS, MINING_RUSH_POINTS, MINING_RUSH_RESPAWN_MS, applyMinigameItemRewards, farmRushOrders, minigameMilestones, minigameRewards, miningRushOre, scheduledMinigame, type FarmRushCell, type FarmRushCrop, type FarmRushIngredient, type FarmRushTool, type ForageRushKind, type MinigameItemRewardRoll, type MinigameKind, type MinigameRewardItemId, type MiningRushOre } from './minigame'
@@ -292,6 +292,7 @@ type GameState = {
   shopOpen: boolean
   shopKind: ShopKind
   menuOpen: boolean
+  lobbySettingsOpen: boolean
   farmCells: Record<string, FarmCellState>
   claimedFarms: number[]
   sharedFarmOnline: boolean
@@ -402,6 +403,7 @@ type GameState = {
   toggleInventory: () => void
   setShopOpen: (open: boolean, kind?: ShopKind) => void
   setMenuOpen: (open: boolean) => void
+  setLobbySettingsOpen: (open: boolean) => void
   trade: (item: ItemId, quantity: number) => void
   moveInventorySlot: (from: number, to: number) => void
   equipItem: (item: ItemId) => void
@@ -522,9 +524,9 @@ export function secretStockOffer(round: number, prices: Record<StockId, number>,
   const next = nextStockPrice(stock, current, updateIndex, index, sessionSeed)
   const tier = round <= 4 ? 0 : round <= 8 ? 1 : 2
   const costs = [180_000, 850_000, 2_800_000]
-  const elapsedMinute = (correctionsApplied + 1) * durationSeconds / 60 / 4
-  const minuteRemaining = Math.max(0, durationSeconds / 60 - elapsedMinute)
-  return { id, cost: costs[tier], clue: `At ${minuteRemaining}:00 remaining: ${correction.clues[slot % 2]}`, minuteRemaining }
+  const nextCorrection = marketCorrectionMilestones(durationSeconds)[correctionsApplied]
+  const minuteRemaining = nextCorrection === undefined ? 0 : Math.max(0, durationSeconds / 60 - nextCorrection / 60)
+  return { id, cost: costs[tier], clue: `At ${minuteRemaining}:00 remaining: ${correction.clues[slot % 2]}`, minuteRemaining, available: nextCorrection !== undefined }
 }
 
 const foodNeutral = (recipe: RecipeId) => RECIPES[recipe].group === 'early' ? 30 : RECIPES[recipe].group === 'middle' ? 15 : 8
@@ -660,6 +662,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   shopOpen: requestedShop !== null,
   shopKind: requestedShop ?? 'common',
   menuOpen: false,
+  lobbySettingsOpen: !bypassLobby,
   farmCells: saved?.farmCells ?? (query.get('gate') === 'cell' && initialZone === 'farm' ? { '0:27': { crop: 'tomato', stage: 'ready', readyAt: null } } : {}),
   claimedFarms: saved?.claimedFarms ?? (saved?.claimedFarm === null || saved?.claimedFarm === undefined ? [] : [saved.claimedFarm]),
   sharedFarmOnline: false,
@@ -771,12 +774,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     const elapsed = Math.max(0, Math.floor((Date.now() - matchStartedAt) / 1000))
     const roundNumber = Math.floor(elapsed / MATCH_CONFIG.worldCycleSeconds) + 1
     const roundSeconds = Math.max(1, MATCH_CONFIG.worldCycleSeconds - (elapsed % MATCH_CONFIG.worldCycleSeconds))
-    return { sessionSeed, matchStartedAt, sessionStarted: true, sessionDurationSeconds, lobbyConnected: true, roundNumber, roundSeconds, restockSeconds: roundSeconds }
+    return { sessionSeed, matchStartedAt, sessionStarted: true, sessionDurationSeconds, lobbyConnected: true, lobbySettingsOpen: false, roundNumber, roundSeconds, restockSeconds: roundSeconds }
   }),
   setLobbyState: (lobbyConnected, isHost, sessionStarted, requestedDuration, requestedGlobalExpansionDeeds, requestedPlayerCount, requestedMaxGlobalExpansionDeeds) => set((state) => ({
     lobbyConnected,
     isHost,
     sessionStarted: bypassLobby ? true : sessionStarted,
+    lobbySettingsOpen: sessionStarted ? false : state.lobbySettingsOpen,
     sessionDurationSeconds: MATCH_CONFIG.selectableDurationsSeconds.includes(requestedDuration as typeof MATCH_CONFIG.selectableDurationsSeconds[number]) ? requestedDuration : state.sessionDurationSeconds,
     lobbyGlobalExpansionDeeds: Number.isInteger(requestedGlobalExpansionDeeds) && Number(requestedGlobalExpansionDeeds) >= 0 && Number(requestedGlobalExpansionDeeds) <= 7 ? Number(requestedGlobalExpansionDeeds) : state.lobbyGlobalExpansionDeeds,
     lobbyPlayerCount: Number.isInteger(requestedPlayerCount) && Number(requestedPlayerCount) >= 1 ? Number(requestedPlayerCount) : state.lobbyPlayerCount,
@@ -794,7 +798,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   setInteractionProgress: (interactionProgress) => set({ interactionProgress }),
   toggleInventory: () => set((state) => ({ inventoryOpen: !state.inventoryOpen, shopOpen: false, stockOpen: false, menuOpen: false, lotteryOpen: false, ticketInspectOpen: false, secretOpen: false, enhancementOpen: false, interactionProgress: 0 })),
   setShopOpen: (shopOpen, shopKind = get().shopKind) => set({ shopOpen, shopKind, stockOpen: false, inventoryOpen: false, menuOpen: false, lotteryOpen: false, ticketInspectOpen: false, secretOpen: false, enhancementOpen: false, interactionProgress: 0 }),
-  setMenuOpen: (menuOpen) => set({ menuOpen, inventoryOpen: false, shopOpen: false, stockOpen: false, enhancementOpen: false, interactionProgress: 0 }),
+  setMenuOpen: (menuOpen) => set({ menuOpen, lobbySettingsOpen: false, inventoryOpen: false, shopOpen: false, stockOpen: false, enhancementOpen: false, interactionProgress: 0 }),
+  setLobbySettingsOpen: (lobbySettingsOpen) => set({ lobbySettingsOpen, menuOpen: false, playerPanelOpen: false, inventoryOpen: false, shopOpen: false, stockOpen: false, enhancementOpen: false, interactionProgress: 0 }),
   trade: (item, quantity) => {
     if (!quantity) return
     const state = get()
@@ -1244,7 +1249,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ nickname: clean })
   },
   setOnlinePlayers: (onlinePlayers) => set({ onlinePlayers }),
-  setPlayerPanelOpen: (playerPanelOpen) => set({ playerPanelOpen, inventoryOpen: false, shopOpen: false, stockOpen: false, menuOpen: false, enhancementOpen: false }),
+  setPlayerPanelOpen: (playerPanelOpen) => set({ playerPanelOpen, lobbySettingsOpen: false, inventoryOpen: false, shopOpen: false, stockOpen: false, menuOpen: false, enhancementOpen: false }),
   setLotteryOpen: (lotteryOpen) => set({ lotteryOpen, shopOpen: false, ticketInspectOpen: false, secretOpen: false, enhancementOpen: false }),
   toggleLotteryNumber: (value) => set((state) => {
     if (value < 1 || value > 12) return state
@@ -1286,6 +1291,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const purchaseKey = `${state.roundNumber}:${slot}`
     if (state.brokerPurchases.includes(purchaseKey)) return { toast: 'Already purchased' }
     const offer = secretStockOffer(state.roundNumber, state.stockPrices, state.sessionSeed, state.marketCorrectionsApplied.length, slot, state.sessionDurationSeconds)
+    if (!offer.available) return { toast: 'No more information' }
     if (state.cash < offer.cost) return { toast: 'Not enough coins' }
     const note: BrokerNote = { id: `${purchaseKey}:${Date.now()}`, title: `INFO ${slot + 1}`, text: offer.clue, round: state.roundNumber }
     const inventory = { ...state.inventory, 'information-note': (state.inventory['information-note'] ?? 0) + 1 }
@@ -1731,7 +1737,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     let marketCorrectionName = state.marketCorrectionName
     let marketCorrectionSeconds = Math.max(0, state.marketCorrectionSeconds - 1)
     const commodityPriceHistory = { ...state.commodityPriceHistory }
-    const dueCorrection = [1, 2, 3].map((quarter) => Math.round(state.sessionDurationSeconds * quarter / 4)).find((milestone) => elapsedSeconds >= milestone && !state.marketCorrectionsApplied.includes(milestone))
+    const dueCorrection = marketCorrectionMilestones(state.sessionDurationSeconds).find((milestone) => elapsedSeconds >= milestone && !state.marketCorrectionsApplied.includes(milestone))
     if (dueCorrection) {
       const correction = marketCorrectionFor(state.sessionSeed, state.marketCorrectionsApplied.length + 1)
       marketCorrectionsApplied = [...state.marketCorrectionsApplied, dueCorrection]

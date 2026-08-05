@@ -13,17 +13,43 @@ Object.assign(globalThis, { localStorage: storage, window: { location: { search:
 
 const { useGameStore, inventoryLayout } = await import('../src/game/store')
 const { ITEMS } = await import('../src/game/items')
-const { activeRareForageIds } = await import('../src/game/config')
-const { FARM_RUSH_MAX_ORDERS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, farmRushOrders, minigameMilestones, minigameRewardPackage, scheduledMinigame } = await import('../src/game/minigame')
+const { activeRareForageIds, marketCorrectionMilestones } = await import('../src/game/config')
+const { FARM_RUSH_MAX_ORDERS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, farmRushOrders, minigameMilestones, minigameRewardPackage, minigameSchedule, scheduledMinigame } = await import('../src/game/minigame')
 
-assert.deepEqual(minigameMilestones(30 * 60), [10 * 60, 20 * 60])
-assert.deepEqual(minigameMilestones(45 * 60), [15 * 60, 30 * 60])
+assert.deepEqual(minigameMilestones(30 * 60), [20 * 60])
 assert.deepEqual(minigameMilestones(60 * 60), [20 * 60, 40 * 60])
-assert.deepEqual(minigameMilestones(90 * 60), [30 * 60, 60 * 60])
-for (const duration of [30, 45, 60, 90].map((minutes) => minutes * 60)) {
-  const [first, second] = minigameMilestones(duration)
-  assert.notEqual(scheduledMinigame(first, 9731, duration), scheduledMinigame(second, 9731, duration))
+assert.deepEqual(minigameMilestones(90 * 60), [20, 40, 60, 80].map((minutes) => minutes * 60))
+assert.deepEqual(minigameMilestones(120 * 60), [20, 40, 60, 80, 100].map((minutes) => minutes * 60))
+assert.deepEqual(minigameMilestones(150 * 60), [20, 40, 60, 80, 100, 120, 140].map((minutes) => minutes * 60))
+assert.deepEqual(minigameMilestones(180 * 60), [20, 40, 60, 80, 100, 120, 140, 160].map((minutes) => minutes * 60))
+assert.deepEqual(marketCorrectionMilestones(30 * 60), [15 * 60])
+assert.deepEqual(marketCorrectionMilestones(60 * 60), [15, 30, 45].map((minutes) => minutes * 60))
+assert.deepEqual(marketCorrectionMilestones(180 * 60), [15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165].map((minutes) => minutes * 60))
+for (const duration of [30, 60, 90, 120, 150, 180].map((minutes) => minutes * 60)) {
+  const schedule = minigameSchedule(duration, 9731)
+  assert.deepEqual(schedule, minigameSchedule(duration, 9731), 'event plan must be deterministic at match start')
+  for (let index = 1; index < schedule.length; index += 1) assert.notEqual(schedule[index].kind, schedule[index - 1].kind, 'consecutive events must differ')
+  schedule.forEach((entry) => assert.equal(entry.kind, scheduledMinigame(entry.milestone, 9731, duration)))
 }
+
+const beforeOverlap = useGameStore.getState()
+useGameStore.setState({
+  sessionStarted: true,
+  sessionComplete: false,
+  sessionDurationSeconds: 90 * 60,
+  roundNumber: 16,
+  roundSeconds: 4 * 60,
+  minigameOpen: false,
+  minigamesCompleted: [20 * 60, 40 * 60],
+  marketCorrectionsApplied: [15 * 60, 30 * 60, 45 * 60],
+})
+useGameStore.getState().tickGame()
+assert.equal(useGameStore.getState().minigameMilestone, 60 * 60, 'the 60-minute minigame opens first at an overlapping milestone')
+assert(!useGameStore.getState().marketCorrectionsApplied.includes(60 * 60), 'the overlapping market correction must remain pending during the minigame')
+useGameStore.setState({ minigameOpen: false, minigamesCompleted: [20 * 60, 40 * 60, 60 * 60] })
+useGameStore.getState().tickGame()
+assert(useGameStore.getState().marketCorrectionsApplied.includes(60 * 60), 'the pending correction applies exactly once after the minigame')
+useGameStore.setState(beforeOverlap)
 
 const permanentInventory = { 'water-can': 1, 'worn-pickaxe': 1, 'home-charm': 1, apple: 4 } as const
 const permanentHotbar = ['water-can', 'worn-pickaxe', null, null, null, null, null, null, 'home-charm'] as const
