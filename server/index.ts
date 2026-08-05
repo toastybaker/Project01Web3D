@@ -1129,9 +1129,17 @@ const staticServer = serveStatic ? createServer((request, response) => {
     if (request.method === 'HEAD') return response.end()
     return createReadStream(filePath, { start, end }).pipe(response)
   }
-  response.writeHead(200, { ...headers, 'Content-Length': fileStats.size })
+  const acceptsBrotli = /(?:^|,|\s)br(?:,|\s|$)/i.test(request.headers['accept-encoding'] ?? '')
+  const brotliPath = `${filePath}.br`
+  const servedPath = acceptsBrotli && existsSync(brotliPath) ? brotliPath : filePath
+  const servedStats = servedPath === filePath ? fileStats : statSync(servedPath)
+  if (servedPath !== filePath) {
+    headers['Content-Encoding'] = 'br'
+    headers.Vary = 'Accept-Encoding'
+  }
+  response.writeHead(200, { ...headers, 'Content-Length': servedStats.size })
   if (request.method === 'HEAD') return response.end()
-  createReadStream(filePath).pipe(response)
+  createReadStream(servedPath).pipe(response)
 }) : undefined
 const gameServer = new Server({ transport: new WebSocketTransport(staticServer ? { server: staticServer } : {}) })
 gameServer.define('woodland', WoodlandRoom)

@@ -347,6 +347,10 @@ function AdaptiveRenderScale({ rendererLow, onReduced }: { rendererLow: boolean;
 function applyOreAppearance(object: THREE.Object3D, id: string, readyAt: number, forcedKind?: keyof typeof ORE_COLORS) {
   if (!id.startsWith('MineOre') && !id.startsWith('RushOre')) return
   const kind = forcedKind ?? oreKindAtDepth(id, object.position.z)
+  if (object.userData.oreBatched) {
+    object.userData.oreKind = kind
+    return
+  }
   if (object.userData.oreKind === kind && object.userData.oreAppearanceVersion === 4) return
   object.userData.oreKind = kind
   object.userData.oreAppearanceVersion = 4
@@ -408,6 +412,108 @@ function applyFruitAppearance(object: THREE.Object3D, id: string, available: num
 type FruitBatch = {
   levels: THREE.InstancedMesh[]
   entries: Array<{ resource: THREE.Object3D; matrix: THREE.Matrix4; capacity: number }>
+}
+
+type OreVisualRole = 'bed' | 'boulder' | 'vein'
+type OreKind = keyof typeof ORE_COLORS
+type OreBatchEntry = { resource: THREE.Object3D; mesh: THREE.Mesh; instanceId: number; role: OreVisualRole; rush: boolean }
+type OreBatch = { mesh: THREE.BatchedMesh; entries: OreBatchEntry[] }
+
+function oreVisualRole(name: string): OreVisualRole | null {
+  const readable = name.replaceAll('_', ' ')
+  if (readable.startsWith('Embedded Ore')) return 'bed'
+  if (readable.startsWith('Ore Boulder')) return 'boulder'
+  if (readable.startsWith('Ore Vein') || readable.startsWith('Ore Fleck') || readable.startsWith('Ore Shard')) return 'vein'
+  return null
+}
+
+function oreVisualColor(role: OreVisualRole, kind: OreKind, rush: boolean) {
+  const color = new THREE.Color(ORE_COLORS[kind])
+  if (role === 'boulder') return new THREE.Color(rush ? '#625e57' : '#69645d').lerp(color, rush ? .34 : .30)
+  if (role === 'bed') return new THREE.Color(rush ? '#56524c' : '#5d5953').lerp(color, rush ? .08 : .07)
+  return color
+}
+
+function oreBatchMaterial(source: THREE.MeshStandardMaterial, role: OreVisualRole, rush: boolean) {
+  const material = source.clone()
+  material.name = `Batched ${rush ? 'Rush ' : ''}Ore ${role}`
+  material.color.set(0xffffff)
+  material.roughness = role === 'vein' ? .52 : .58
+  const glow = role === 'vein' ? (rush ? .38 : .32) : role === 'boulder' ? (rush ? .05 : .04) : (rush ? .01 : .008)
+  material.emissive.set(0xffffff)
+  material.emissiveIntensity = 1
+  material.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <emissivemap_fragment>',
+      `#include <emissivemap_fragment>\ntotalEmissiveRadiance = diffuseColor.rgb * ${glow.toFixed(3)};`,
+    )
+  }
+  material.customProgramCacheKey = () => `ore-batch-${role}-${rush ? 'rush' : 'main'}-v1`
+  return material
+}
+
+function buildOreBatches(scene: THREE.Object3D, resources: THREE.Object3D[]) {
+  scene.updateMatrixWorld(true)
+  const batches: OreBatch[] = []
+  for (const role of ['bed', 'boulder', 'vein'] as const) {
+    const candidates: Array<{ resource: THREE.Object3D; mesh: THREE.Mesh; rush: boolean }> = []
+    for (const resource of resources) {
+      const id = resource.name.slice(9)
+      if (!id.startsWith('MineOre') && !id.startsWith('RushOre')) continue
+      resource.traverse((child) => {
+        if (!(child instanceof THREE.Mesh) || child instanceof THREE.InstancedMesh || Array.isArray(child.material)) return
+        if (oreVisualRole(child.name) !== role || !(child.material instanceof THREE.MeshStandardMaterial)) return
+        candidates.push({ resource, mesh: child, rush: id.startsWith('RushOre') })
+      })
+    }
+    if (!candidates.length) continue
+    const layout = geometryLayoutKey(candidates[0].mesh.geometry)
+    const compatible = candidates.filter(({ mesh }) => geometryLayoutKey(mesh.geometry) === layout)
+    const uniqueGeometries = new Map<string, THREE.BufferGeometry>()
+    compatible.forEach(({ mesh }) => uniqueGeometries.set(mesh.geometry.uuid, mesh.geometry))
+    const geometries = [...uniqueGeometries.values()]
+    const vertices = geometries.reduce((sum, geometry) => sum + geometry.getAttribute('position').count, 0)
+    const indices = geometries.reduce((sum, geometry) => sum + (geometry.index?.count ?? geometry.getAttribute('position').count), 0)
+    const rush = compatible[0].rush
+    const batchMesh = new THREE.BatchedMesh(compatible.length, vertices, indices, oreBatchMaterial(compatible[0].mesh.material as THREE.MeshStandardMaterial, role, rush))
+    batchMesh.name = `Batched ${rush ? 'Rush ' : ''}Ore ${role}`
+    batchMesh.castShadow = true
+    batchMesh.receiveShadow = true
+    batchMesh.sortObjects = false
+    const geometryIds = new Map<string, number>()
+    geometries.forEach((geometry) => geometryIds.set(geometry.uuid, batchMesh.addGeometry(geometry)))
+    const entries = compatible.map(({ resource, mesh, rush: entryRush }) => {
+      const instanceId = batchMesh.addInstance(geometryIds.get(mesh.geometry.uuid)!)
+      batchMesh.setMatrixAt(instanceId, mesh.matrixWorld)
+      batchMesh.setVisibleAt(instanceId, false)
+      mesh.visible = false
+      resource.userData.oreBatched = true
+      return { resource, mesh, instanceId, role, rush: entryRush }
+    })
+    batchMesh.computeBoundingBox()
+    batchMesh.computeBoundingSphere()
+    scene.add(batchMesh)
+    batches.push({ mesh: batchMesh, entries })
+  }
+  return batches
+}
+
+function geometryLayoutKey(geometry: THREE.BufferGeometry) {
+  return `${geometry.index ? geometry.index.array.constructor.name : 'none'}|${Object.entries(geometry.attributes).map(([name, attribute]) => `${name}:${attribute.itemSize}:${attribute.normalized ? 1 : 0}:${attribute.array.constructor.name}`).sort().join('|')}`
+}
+
+function syncOreBatches(batches: OreBatch[], resources?: Iterable<THREE.Object3D>) {
+  const filter = resources ? new Set(resources) : null
+  for (const batch of batches) for (const entry of batch.entries) {
+    if (filter && !filter.has(entry.resource)) continue
+    const visible = entry.resource.visible
+    batch.mesh.setVisibleAt(entry.instanceId, visible)
+    if (!visible) continue
+    const kind = entry.resource.userData.oreKind as OreKind | undefined
+    if (kind) batch.mesh.setColorAt(entry.instanceId, oreVisualColor(entry.role, kind, entry.rush))
+    entry.mesh.updateWorldMatrix(true, false)
+    batch.mesh.setMatrixAt(entry.instanceId, entry.mesh.matrixWorld)
+  }
 }
 
 function buildFruitBatches(scene: THREE.Object3D, resources: THREE.Object3D[]) {
@@ -516,6 +622,7 @@ function EnvironmentScene({ reduced = false }: { reduced?: boolean }) {
     return resources
   }, [scene])
   const resourcesById = useMemo(() => new Map(resourceObjects.map((object) => [object.name.slice(9), object])), [resourceObjects])
+  const oreBatches = useMemo(() => buildOreBatches(scene, resourceObjects), [resourceObjects, scene])
   const fruitBatches = useMemo(() => buildFruitBatches(scene, resourceObjects), [resourceObjects, scene])
   useEffect(() => () => {
     fruitBatches.forEach((batch) => batch.levels.forEach((level) => {
@@ -523,6 +630,13 @@ function EnvironmentScene({ reduced = false }: { reduced?: boolean }) {
       level.geometry.dispose()
     }))
   }, [fruitBatches, scene])
+  useEffect(() => () => {
+    oreBatches.forEach(({ mesh }) => {
+      scene.remove(mesh)
+      mesh.dispose()
+      mesh.material.dispose()
+    })
+  }, [oreBatches, scene])
   const rareResourceIds = useMemo(() => resourceObjects.map((object) => object.name.slice(9)).filter((id) => id.startsWith('ForageTruffle') || id.startsWith('ForageDiscovery') || id.startsWith('ForageRushTruffle') || id.startsWith('ForageRushDiscovery')), [resourceObjects])
   const nextResourceRefresh = useRef(0)
   const scaledOre = useRef<THREE.Object3D | null>(null)
@@ -601,14 +715,19 @@ function EnvironmentScene({ reduced = false }: { reduced?: boolean }) {
         }
       }
       syncFruitBatches(fruitBatches)
+      syncOreBatches(oreBatches)
     }
     const promptId = live.prompt?.id
     const focusedOre = promptId?.startsWith('MineOre') || promptId?.startsWith('RushOre') ? resourcesById.get(promptId) ?? null : null
-    if (scaledOre.current && scaledOre.current !== focusedOre && scaledOre.current.userData.restScale) scaledOre.current.scale.copy(scaledOre.current.userData.restScale)
+    if (scaledOre.current && scaledOre.current !== focusedOre && scaledOre.current.userData.restScale) {
+      scaledOre.current.scale.copy(scaledOre.current.userData.restScale)
+      syncOreBatches(oreBatches, [scaledOre.current])
+    }
     scaledOre.current = focusedOre
     if (focusedOre?.visible) {
       if (!focusedOre.userData.restScale) focusedOre.userData.restScale = focusedOre.scale.clone()
       focusedOre.scale.copy(focusedOre.userData.restScale).multiplyScalar(1 - live.interactionProgress * .24)
+      syncOreBatches(oreBatches, [focusedOre])
     }
     const activeFurnaces = (furnaceVisualGate || resourceVisualGate) && zone === 'farm' ? [0] : furnaceCount > 0 ? ownedFarms.slice(0, 1) : []
     furnaceBodies.forEach((body) => {

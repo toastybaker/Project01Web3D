@@ -27,7 +27,7 @@
     "test:i18n": "tsx scripts/validate-i18n.ts",
     "test:ui-assets": "tsx scripts/validate-ui-assets.ts",
     "test:multiplayer": "tsx scripts/validate-production-lobby.ts && tsx scripts/validate-multiplayer-presence.ts && tsx scripts/validate-multiplayer-mine.ts && tsx scripts/validate-multiplayer-forage.ts && tsx scripts/validate-multiplayer-farm.ts && tsx scripts/validate-multiplayer-merchant.ts && tsx scripts/validate-multiplayer-ready.ts",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/compress-dist.mjs",
     "start": "tsx server/production.ts",
     "preview": "tsx server/production.ts"
   },

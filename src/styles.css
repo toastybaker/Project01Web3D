@@ -124,20 +124,20 @@ button { color: inherit; }
 .event-deliveries img { width: 31px; height: 31px; object-fit: contain; }
 .event-deliveries strong { color: #f2ead6; font-size: 10px; white-space: nowrap; }
 .event-deliveries .complete { opacity: .58; border-color: rgba(137,184,100,.5); }
-.event-ready { position: absolute; z-index: 28; left: 50%; top: 50%; width: min(720px, calc(100vw - 32px)); padding: 26px; transform: translate(-50%,-50%); display: grid; justify-items: center; gap: 17px; border: 1px solid rgba(239,199,109,.3); border-radius: 18px; background: rgba(24,29,25,.95); box-shadow: 0 14px 38px rgba(5,8,6,.32); pointer-events: auto; }
+.event-ready { position: absolute; z-index: 28; left: 50%; top: 50%; width: min(560px, calc(100vw - 32px)); padding: 26px; transform: translate(-50%,-50%); display: grid; justify-items: center; gap: 17px; border: 1px solid rgba(239,199,109,.3); border-radius: 18px; background: rgba(24,29,25,.985); box-shadow: 0 14px 38px rgba(5,8,6,.32); backdrop-filter: blur(8px); pointer-events: auto; }
 .event-ready strong { color: #efc76d; font-size: 14px; font-weight: 1000; letter-spacing: .14em; }
 .event-ready button { width: 148px; height: 42px; border: 1px solid rgba(239,199,109,.48); border-radius: 11px; background: #765f3d; color: #fff0c6; font: 1000 11px 'Nunito Sans', sans-serif; letter-spacing: .12em; cursor: pointer; }
 .event-ready button.ready { border-color: rgba(137,184,100,.52); background: rgba(82,113,69,.55); color: #cce8aa; cursor: default; }
 .event-ready button:disabled { cursor: default; opacity: .7; }
 .event-ready span { color: #9eac9d; font-size: 10px; font-weight: 1000; letter-spacing: .08em; }
-.event-ready-prizes { width: 100%; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
+.event-ready-prizes { width: 100%; display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; }
 .event-ready-prizes > small { grid-column: 1 / -1; color: #9eac9d; font-size: 10px; font-weight: 1000; letter-spacing: .13em; text-align: center; }
 .event-ready-prizes > span { min-height: 62px; padding: 9px 13px; display: grid; grid-template-columns: 39px minmax(0,1fr); align-items: center; gap: 10px; border: 1px solid rgba(244,232,198,.06); border-radius: 11px; background: rgba(244,232,198,.06); }
 .event-ready-prizes b { color: #efc76d; font-size: 12px; }
 .event-ready-prizes em { min-width: 92px; display: flex; align-items: center; justify-content: flex-end; gap: 5px; color: #f2ead6; font-size: 12px; font-style: normal; font-weight: 1000; white-space: nowrap; }
 .event-ready-prizes svg { width: 16px; height: 16px; fill: none; stroke: #efc76d; stroke-width: 1.9; }
-.event-ready-prize-value { min-width: 0; display: grid; grid-template-columns: minmax(92px,1fr) auto; align-items: center; justify-content: end; gap: 8px; }
-.event-ready-prize-value > i { display: flex; align-items: center; gap: 3px; font-style: normal; }
+.event-ready-prize-value { min-width: 0; display: grid; grid-template-columns: minmax(92px,1fr) 88px; align-items: center; justify-content: end; gap: 8px; }
+.event-ready-prize-value > i { width: 88px; display: flex; align-items: center; justify-content: flex-start; gap: 3px; font-style: normal; }
 .event-ready-prize-value > i > span { position: relative; display: grid; place-items: center; width: 42px; height: 42px; border: 1px solid rgba(239,199,109,.16); border-radius: 9px; background: rgba(255,255,255,.08); outline: none; }
 .event-ready-prize-value img { width: 38px; height: 38px; object-fit: contain; }
 .event-ready-prize-value i small { position: absolute; right: -3px; bottom: -4px; color: #fff4d4; font-size: 7px; font-weight: 1000; text-shadow: 0 1px 2px #000; }
@@ -451,6 +451,12 @@ button { color: inherit; }
   .lottery-footer em { display: none; }
   .event-ready { width: min(420px, calc(100vw - 20px)); padding: 16px; }
   .event-ready-prizes { grid-template-columns: 1fr; }
+}
+
+@media (max-aspect-ratio: 4/3) {
+  .event-ready { width: min(520px, calc(100vw - 24px)); padding: 20px; gap: 13px; }
+  .event-ready-prizes { grid-template-columns: 1fr; gap: 6px; }
+  .event-ready-prizes > span { min-height: 54px; }
 }
 
 .player-panel { width: min(720px, calc(100vw - 28px)); }

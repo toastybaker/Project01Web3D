@@ -8,7 +8,7 @@ import { TessellateModifier } from 'three/examples/jsm/modifiers/TessellateModif
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { NodeIO } from '@gltf-transform/core'
 import { EXTMeshGPUInstancing } from '@gltf-transform/extensions'
-import { dedup, instance } from '@gltf-transform/functions'
+import { dedup, instance, join } from '@gltf-transform/functions'
 import { createCanvas, ImageData as CanvasImageData } from '@napi-rs/canvas'
 import sharp from 'sharp'
 import { MINE_NODE_SITES } from '../shared/mine-nodes.js'
@@ -2146,8 +2146,13 @@ async function exportScene(scene, filename) {
   }
   // Event resources must keep their authored parent hierarchy so runtime state can
   // recolor/hide one player's ore or crop without affecting every matching mesh.
+  // Mine scenery contains many small sibling meshes (rails, rubble, columns).
+  // Joining compatible static siblings preserves every vertex and material while
+  // removing a substantial amount of draw-call overhead. Interactive ore pieces
+  // remain separate and are batched by the runtime so their state can still change.
+  const joinableMineNode = (node) => !/^(Embedded Ore|Ore (Boulder|Vein|Fleck|Shard)|Animated |Watered|Assigned Plot Beacon)/.test(node.getName().replaceAll('_', ' '))
   if (filename === 'farm-rush.glb') await document.transform(dedup())
-  else if (filename === 'mining-rush.glb') await document.transform(dedup(), instance({ min: 5 }))
+  else if (filename === 'mining-rush.glb' || filename === 'mine.glb') await document.transform(dedup(), join({ filter: joinableMineNode }), instance({ min: 5 }))
   else await document.transform(dedup(), instance({ min: filename === 'forage.glb' ? 3 : 5 }))
   if (deferredWetMesh && deferredWetTiles.length) {
     const targetScene = document.getRoot().listScenes()[0]
