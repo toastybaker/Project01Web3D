@@ -639,7 +639,7 @@ function MultiplayerPresence() {
         room.onMessage('minigame:bay', (message: { bay?: number }) => { if (Number.isFinite(message.bay)) setEventBay(Number(message.bay)) })
         room.onMessage('presence:move', (message: PeerPresence) => mergePeer(message))
         room.onMessage('presence:leave', (id: string) => removePeer(id))
-        for (const type of ['trade:request', 'trade:opened', 'trade:update', 'trade:cancel', 'trade:commit', 'minigame:result', 'minigame:forage', 'mine:snapshot', 'mine:node', 'mine:award', 'mine:denied', 'farm:snapshot', 'farm:update', 'farm:result', 'deed:snapshot', 'deed:stock', 'deed:result']) room.onMessage(type, (payload: unknown) => emitMultiplayer(type, payload))
+        for (const type of ['trade:request', 'trade:opened', 'trade:update', 'trade:cancel', 'trade:commit', 'minigame:result', 'minigame:forage', 'mine:snapshot', 'mine:node', 'mine:award', 'mine:denied', 'farm:snapshot', 'farm:update', 'farm:result', 'deed:snapshot', 'deed:stock', 'deed:result', 'merchant:snapshot', 'merchant:result']) room.onMessage(type, (payload: unknown) => emitMultiplayer(type, payload))
         setMultiplayerSender((type, payload) => room.send(type, payload))
         room.send('lobby:ready', {})
         const publish = () => {
@@ -894,7 +894,7 @@ function Player() {
 
   useFrame((state, delta) => {
     const liveUi = useGameStore.getState()
-    const movementLocked = !liveUi.sessionStarted || liveUi.shopOpen || liveUi.stockOpen || liveUi.inventoryOpen || liveUi.menuOpen || liveUi.playerPanelOpen || liveUi.lotteryOpen || liveUi.ticketInspectOpen || liveUi.noteInspectOpen || liveUi.travelOpen || liveUi.secretOpen || liveUi.cookbookOpen || liveUi.enhancementOpen || liveUi.sessionComplete
+    const movementLocked = !liveUi.sessionStarted || liveUi.shopOpen || liveUi.stockOpen || liveUi.inventoryOpen || liveUi.menuOpen || liveUi.playerPanelOpen || liveUi.lotteryOpen || liveUi.ticketInspectOpen || liveUi.noteInspectOpen || liveUi.travelOpen || liveUi.secretOpen || liveUi.cookbookOpen || liveUi.enhancementOpen || Boolean(liveUi.itemUseOpen) || liveUi.sessionComplete
     if (movementLocked) {
       keys.current = {}
       horizontalVelocity.current.set(0, 0, 0)

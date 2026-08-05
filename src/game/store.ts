@@ -4,9 +4,10 @@ import { isPickaxe, canMineOre, miningYield, oreRespawnMs, type OreItem } from '
 import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, FORAGE_CONFIG, MATCH_CONFIG, ORE_CONFIG, forageSiteAvailability, nextRareForageRollAt, type CommodityId } from './config'
 import { advanceCommodityCycle, commodityPrice, formatCoins, initialCommodityMarket, lotteryJackpot, lotteryPrice, lotteryTwoMatch, marginalSale, nextStockPrice, scaledValue, seeded01, stockAvailable, stockWaveQuantity, type CommodityMarket } from './economy'
 import { RECIPES, RECIPE_IDS, type FoodItemId, type RecipeId } from './recipes'
-import { COOKBOOK_BOX_REWARD_VALUE, FARM_RUSH_GROWTH_MS, FARM_RUSH_MAX_ORDERS, FARM_RUSH_ORDER_LIFETIME_MS, FORAGE_RUSH_DELIVERY_POINTS, FORAGE_RUSH_REQUIREMENTS, MINING_RUSH_POINTS, MINING_RUSH_RESPAWN_MS, farmRushOrders, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCell, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MinigameKind } from './minigame'
+import { COOKBOOK_BOX_REWARD_VALUE, FARM_RUSH_GROWTH_MS, FARM_RUSH_MAX_ORDERS, FARM_RUSH_ORDER_LIFETIME_MS, FORAGE_RUSH_DELIVERY_POINTS, FORAGE_RUSH_REQUIREMENTS, MINING_RUSH_POINTS, MINING_RUSH_RESPAWN_MS, applyMinigameItemRewards, farmRushOrders, minigameMilestones, minigameRewards, miningRushOre, scheduledMinigame, type FarmRushCell, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MinigameItemRewardRoll, type MinigameKind, type MinigameRewardItemId } from './minigame'
 import { sendMultiplayer } from './multiplayer'
-import { canStabilize, enhancedBasketCapacity, enhancedYield, enhancementLevel, enhancementName, isEnhanceableItem, resolveEnhancementAttempt, type EnhanceableItem, type EnhancementLevels } from './enhancement'
+import { enhancedBasketCapacity, enhancedYield, enhancementLevel, enhancementName, isEnhanceableItem, resolveEnhancementAttempt, type EnhanceableItem, type EnhancementAttemptOptions, type EnhancementLevels } from './enhancement'
+import { merchantCycle, type MerchantCycle, type MerchantItemId } from './merchant'
 
 export type ZoneId = 'hub' | 'forage' | 'farm' | 'mine'
 export type Vec3 = [number, number, number]
@@ -24,15 +25,18 @@ export type MineNodeState = { generation: number; readyAt: number }
 type MinigameSnapshot = { zone: ZoneId; playerPosition: Vec3; hotbar: Array<ItemId | null>; selectedHotbar: number; inventoryOpen: boolean; startedAt: number }
 export type FarmRushCooking = Array<{ orderIndex: number; readyAt: number }>
 export type FarmRushTicket = { orderIndex: number; expiresAt: number }
-export type MinigameRewardResult = { kind: MinigameKind; placement: number; score: number; cash: number; boxes: number; receivedAt: number }
+export type MinigameRewardResult = { kind: MinigameKind; placement: number; score: number; cash: number; items: Partial<Record<MinigameRewardItemId, number>>; receivedAt: number }
 export type SharedFarmSnapshot = { selfId: string; owners: Record<number, string | null>; cells: Record<string, FarmCellState> }
 export type SharedFarmUpdate = { farmId: number; ownerId?: string | null; cellIndex?: number; cell?: FarmCellState | null }
-export type SharedFarmResult = { requestId: string; ok: boolean; reason?: string; op?: 'claim' | 'plant' | 'water' | 'harvest'; farmId?: number; cellIndex?: number; crop?: CropKind; quantity?: number }
+export type SharedFarmResult = { requestId: string; ok: boolean; reason?: string; op?: 'claim' | 'plant' | 'water' | 'harvest' | 'rain'; farmId?: number; cellIndex?: number; crop?: CropKind; quantity?: number }
 export type SharedDeedSnapshot = { personalAvailable: boolean; globalRemaining: number }
 export type SharedDeedResult = SharedDeedSnapshot & { requestId: string; ok: boolean; quantity: number; personalCount: number; globalCount: number; reason?: string }
+export type MerchantPurchaseResult = { requestId: string; ok: boolean; reason?: string; itemId?: MerchantItemId; price?: number; cycle?: MerchantCycle }
 
-const pendingFarmActions = new Map<string, { op: 'claim' | 'plant' | 'water' | 'harvest'; farmId: number; cellIndex?: number; seed?: ItemId; crop?: CropKind }>()
+const pendingFarmActions = new Map<string, { op: 'claim' | 'plant' | 'water' | 'harvest' | 'rain'; farmId: number; cellIndex?: number; seed?: ItemId; crop?: CropKind }>()
 const pendingDeedPurchases = new Set<string>()
+const pendingMerchantPurchases = new Set<string>()
+const NON_TRADABLE_CONSUMABLES = new Set<ItemId>(['upgrade-coupon', 'upgrade-guard-4', 'upgrade-guard-5', 'upgrade-guard-6'])
 
 type Prompt = { id: string; label: string } | null
 type Stats = { foraged: number; mined: number; harvested: number; sold: number }
@@ -149,6 +153,9 @@ type SaveData = {
   stockSupply?: Record<StockId, number>
   marketCorrectionsApplied?: number[]
   enhancements?: EnhancementLevels
+  miningBoostUntil?: number
+  fortuneBoostCharges?: Partial<Record<EnhanceableItem, number>>
+  appliedMinigameRewardIds?: string[]
 }
 
 function readJson<T>(key: string): T | null {
@@ -194,6 +201,16 @@ const enhancementTestLevel = requestedPanel === 'enhance' && query.has('enhanceT
 const enhancementTestInventory: Partial<Record<ItemId, number>> = query.get('enhanceReady') === '1' ? {
   'copper-ore': 999, 'iron-ore': 999, 'silver-ore': 999, 'gold-ore': 999, 'crystal-ore': 999, 'ancient-ore': 999,
   apple: 999, orange: 999, wheat: 999, tomato: 999, lettuce: 999, pumpkin: 999, watermelon: 999, truffle: 999, 'natural-discovery': 999,
+  'upgrade-coupon': 2, 'upgrade-guard-4': 2, 'upgrade-guard-5': 2, 'upgrade-guard-6': 2,
+} : {}
+const merchantTestCycle = query.get('merchantTest') === '1'
+  ? merchantCycle({ matchSeed: 2, matchStartedAtMs: 0, matchDurationMs: 60 * 60 * 1000 }, 5)
+  : null
+const merchantTestInventory: Partial<Record<ItemId, number>> = merchantTestCycle ? {
+  'mining-boost': 1,
+  'fortune-boost': 1,
+  'cook-timer': 1,
+  'rain-bottle': 1,
 } : {}
 const bypassLobby = query.has('gate') || requestedPanel !== null || requestedZone !== null
 const balanceRound = Number.isInteger(requestedBalanceRound) && requestedBalanceRound >= 1 && requestedBalanceRound <= 20 ? requestedBalanceRound : null
@@ -206,7 +223,7 @@ const initialVolumes = {
   ambience: clampVolume(savedVolumes?.ambience, 0.38),
   effects: clampVolume(savedVolumes?.effects, 0.62),
 }
-const initialInventory = { ...defaultInventory, ...saved?.inventory, ...enhancementTestInventory }
+const initialInventory = { ...defaultInventory, ...saved?.inventory, ...enhancementTestInventory, ...merchantTestInventory }
 const savedSensitivity = (() => {
   const value = Number(localStorage.getItem('project01-camera-sensitivity'))
   return Number.isFinite(value) && value >= 0.35 && value <= 1.8 ? value : 1
@@ -286,10 +303,16 @@ type GameState = {
   secretRumor: string | null
   brokerNotes: BrokerNote[]
   brokerPurchases: string[]
+  merchantCycle: MerchantCycle | null
+  merchantPurchasePending: boolean
+  itemUseOpen: ItemId | null
   noteInspectOpen: boolean
   cookbookOpen: boolean
   enhancementOpen: boolean
   enhancements: EnhancementLevels
+  miningBoostUntil: number
+  fortuneBoostCharges: Partial<Record<EnhanceableItem, number>>
+  appliedMinigameRewardIds: string[]
   knownRecipes: RecipeId[]
   recipeCards: Partial<Record<RecipeId, number>>
   cookQueue: CookJob[]
@@ -372,13 +395,21 @@ type GameState = {
   setSecretOpen: (open: boolean) => void
   claimSecretDeal: () => void
   buySecretInfo: (slot: number) => void
+  syncMerchantCycle: (cycle: MerchantCycle) => void
+  buyMerchantItem: (itemId: MerchantItemId) => void
+  applyMerchantPurchase: (result: MerchantPurchaseResult) => void
+  setItemUseOpen: (item: ItemId | null) => void
   setNoteInspectOpen: (open: boolean) => void
   setCookbookOpen: (open: boolean, furnaceIndex?: number) => void
   setEnhancementOpen: (open: boolean) => void
-  enhanceEquipment: (item: EnhanceableItem, stabilized?: boolean) => void
+  enhanceEquipment: (item: EnhanceableItem, options?: EnhancementAttemptOptions) => void
+  useMiningBoost: () => void
+  useFortuneBoost: (item: EnhanceableItem) => void
+  useCookTimer: () => void
+  useRainBottle: (farmIndex: number) => void
   cookRecipe: (recipe: RecipeId, quantity?: number) => void
   sellFood: (recipe: RecipeId, quantity: number) => void
-  finishMinigame: (score: number, placement?: number, economyReference?: number, settledReward?: { cash: number; boxes: number }) => void
+  finishMinigame: (score: number, placement?: number, economyReference?: number, settledReward?: { cash: number; itemRolls: MinigameItemRewardRoll[] }) => void
   setEventBay: (bay: number) => void
   mineRushNode: (id: string) => void
   setFarmRushTool: (tool: FarmRushTool) => void
@@ -584,10 +615,16 @@ export const useGameStore = create<GameState>((set, get) => ({
   secretRumor: null,
   brokerNotes: [],
   brokerPurchases: [],
+  merchantCycle: merchantTestCycle,
+  merchantPurchasePending: false,
+  itemUseOpen: null,
   noteInspectOpen: false,
   cookbookOpen: requestedPanel === 'cookbook',
   enhancementOpen: requestedPanel === 'enhance',
   enhancements: enhancementTestLevel === null ? saved?.enhancements ?? {} : { 'worn-pickaxe': enhancementTestLevel },
+  miningBoostUntil: saved?.miningBoostUntil ?? 0,
+  fortuneBoostCharges: saved?.fortuneBoostCharges ?? {},
+  appliedMinigameRewardIds: saved?.appliedMinigameRewardIds ?? [],
   knownRecipes: saved?.knownRecipes ?? [],
   recipeCards: saved?.recipeCards ?? {},
   cookQueue: (saved?.cookQueue ?? []).map((job) => ({ ...job, quantity: job.quantity ?? 1, furnaceIndex: job.furnaceIndex ?? saved?.claimedFarms?.[0] ?? saved?.claimedFarm ?? 0 })),
@@ -618,13 +655,13 @@ export const useGameStore = create<GameState>((set, get) => ({
   farmRushCooking: [],
   farmRushScore: 0,
   lastMinigameResult: query.get('gate') === 'result'
-    ? { kind: 'farm', placement: 2, score: 184, cash: 700_000, boxes: 1, receivedAt: Date.now() }
+    ? { kind: 'farm', placement: 2, score: 184, cash: 900_000, items: { 'cookbook-box': 1, 'fortune-boost': 1 }, receivedAt: Date.now() }
     : null,
   forageRushCollected: {},
   forageRushInventory: { apple: 0, orange: 0, truffle: 0, discovery: 0 },
   forageRushDelivered: { apple: false, orange: false, truffle: false, discovery: false },
   forageRushScore: 0,
-  setZone: (zone) => set((state) => ({ zone, teleportNonce: state.teleportNonce + 1, anchors: zone === state.zone ? state.anchors : {}, colliders: zone === state.zone ? state.colliders : [], playerPosition: SPAWNS[zone], prompt: null, interactionProgress: 0, shopOpen: false, stockOpen: false, inventoryOpen: false, playerPanelOpen: false, lotteryOpen: false, ticketInspectOpen: false, travelOpen: false, secretOpen: false, cookbookOpen: false, enhancementOpen: false })),
+  setZone: (zone) => set((state) => ({ zone, teleportNonce: state.teleportNonce + 1, anchors: zone === state.zone ? state.anchors : {}, colliders: zone === state.zone ? state.colliders : [], playerPosition: SPAWNS[zone], prompt: null, interactionProgress: 0, shopOpen: false, stockOpen: false, inventoryOpen: false, playerPanelOpen: false, lotteryOpen: false, ticketInspectOpen: false, travelOpen: false, secretOpen: false, cookbookOpen: false, enhancementOpen: false, itemUseOpen: null })),
   syncMatch: (sessionSeed, matchStartedAt, requestedDuration = MATCH_CONFIG.defaultDurationSeconds) => set((state) => {
     if (balanceRound || state.minigameOpen || !Number.isFinite(sessionSeed) || !Number.isFinite(matchStartedAt)) return state
     const sessionDurationSeconds = MATCH_CONFIG.selectableDurationsSeconds.includes(requestedDuration as typeof MATCH_CONFIG.selectableDurationsSeconds[number]) ? requestedDuration : MATCH_CONFIG.defaultDurationSeconds
@@ -795,12 +832,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     if (cell.stage === 'watered') return set({ toast: `${Math.max(1, Math.ceil(((cell.readyAt ?? Date.now()) - Date.now()) / 1000))}s` })
     const item = cell.crop ?? 'tomato'
-    const charmMultiplier = (state.inventory['harvest-charm'] ?? 0) > 0 ? enhancedYield('harvest-charm', enhancementLevel(state.enhancements, 'harvest-charm')) : 1
+    const boostedCharm = (state.fortuneBoostCharges['harvest-charm'] ?? 0) > 0
+    const charmMultiplier = (state.inventory['harvest-charm'] ?? 0) > 0 ? enhancedYield('harvest-charm', enhancementLevel(state.enhancements, 'harvest-charm') + (boostedCharm ? 1 : 0)) : 1
     const quantity = CROP_YIELD[item] * charmMultiplier
     const farmCells = { ...state.farmCells }
     delete farmCells[key]
     set({
       farmCells,
+      fortuneBoostCharges: boostedCharm ? { ...state.fortuneBoostCharges, 'harvest-charm': Math.max(0, (state.fortuneBoostCharges['harvest-charm'] ?? 0) - 1) } : state.fortuneBoostCharges,
       inventory: { ...state.inventory, [item]: (state.inventory[item] ?? 0) + quantity },
       hotbar: hotbarWithNewItem(state.hotbar, state.inventory, item),
       stats: { ...state.stats, harvested: state.stats.harvested + quantity },
@@ -849,13 +888,19 @@ export const useGameStore = create<GameState>((set, get) => ({
       const inventory = { ...state.inventory, [pending.seed]: Math.max(0, (state.inventory[pending.seed] ?? 0) - 1) }
       return { inventory, hotbar: cleanedHotbar(state.hotbar, inventory), toast: result.reason === 'watered' ? 'Planted · watered' : 'Planted' }
     }
+    if (pending.op === 'rain') {
+      const inventory = { ...state.inventory, 'rain-bottle': Math.max(0, (state.inventory['rain-bottle'] ?? 0) - 1) }
+      return { inventory, toast: 'Farm watered' }
+    }
     if (pending.op === 'water') return { toast: 'Watered' }
     const crop = result.crop ?? pending.crop ?? 'tomato'
     const baseQuantity = Math.max(0, Math.floor(result.quantity ?? CROP_YIELD[crop]))
-    const charmMultiplier = (state.inventory['harvest-charm'] ?? 0) > 0 ? enhancedYield('harvest-charm', enhancementLevel(state.enhancements, 'harvest-charm')) : 1
+    const boosted = (state.fortuneBoostCharges['harvest-charm'] ?? 0) > 0
+    const charmMultiplier = (state.inventory['harvest-charm'] ?? 0) > 0 ? enhancedYield('harvest-charm', enhancementLevel(state.enhancements, 'harvest-charm') + (boosted ? 1 : 0)) : 1
     const quantity = baseQuantity * charmMultiplier
     const inventory = { ...state.inventory, [crop]: (state.inventory[crop] ?? 0) + quantity }
-    return { inventory, hotbar: hotbarWithNewItem(state.hotbar, state.inventory, crop), stats: { ...state.stats, harvested: state.stats.harvested + quantity }, toast: `+${quantity} ${ITEMS[crop].name}` }
+    const fortuneBoostCharges = boosted ? { ...state.fortuneBoostCharges, 'harvest-charm': Math.max(0, (state.fortuneBoostCharges['harvest-charm'] ?? 0) - 1) } : state.fortuneBoostCharges
+    return { inventory, fortuneBoostCharges, hotbar: hotbarWithNewItem(state.hotbar, state.inventory, crop), stats: { ...state.stats, harvested: state.stats.harvested + quantity }, toast: `+${quantity} ${ITEMS[crop].name}` }
   }),
   syncDeedSnapshot: ({ personalAvailable, globalRemaining }) => set({
     sharedDeedOnline: true,
@@ -886,13 +931,15 @@ export const useGameStore = create<GameState>((set, get) => ({
     const pickaxe = isPickaxe(held) ? held : null
     if (!pickaxe) return set({ toast: 'Select a pickaxe' })
     if (!canMineOre(pickaxe, item)) return set({ toast: 'Pickaxe tier too low' })
-    const quantity = miningYield(pickaxe, Math.random(), enhancementLevel(state.enhancements, pickaxe))
+    const boosted = (state.fortuneBoostCharges[pickaxe] ?? 0) > 0
+    const quantity = miningYield(pickaxe, Math.random(), enhancementLevel(state.enhancements, pickaxe) + (boosted ? 1 : 0))
     const nextGeneration = (state.mineGenerations[id] ?? 0) + 1
     const cooldown = oreRespawnMs(id, nextGeneration, state.sessionSeed)
     set({
       minedNodes: { ...state.minedNodes, [id]: Date.now() + cooldown },
       mineGenerations: { ...state.mineGenerations, [id]: nextGeneration },
       mineAwardGenerations: { ...state.mineAwardGenerations, [id]: nextGeneration },
+      fortuneBoostCharges: boosted ? { ...state.fortuneBoostCharges, [pickaxe]: Math.max(0, (state.fortuneBoostCharges[pickaxe] ?? 0) - 1) } : state.fortuneBoostCharges,
       inventory: { ...state.inventory, [item]: (state.inventory[item] ?? 0) + quantity },
       hotbar: hotbarWithNewItem(state.hotbar, state.inventory, item),
       stats: { ...state.stats, mined: state.stats.mined + quantity },
@@ -921,10 +968,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     const generation = Math.max(0, Math.floor(Number(node?.generation)))
     if (!id.startsWith('MineOre') || !(item in ORE_CONFIG) || !Number.isFinite(node?.readyAt) || (state.mineAwardGenerations[id] ?? -1) >= generation) return state
     const awarded = Math.max(1, Math.min(5, Math.floor(Number(quantity) || 1)))
+    const held = state.hotbar[state.selectedHotbar]
+    const boostedPickaxe = isPickaxe(held) && (state.fortuneBoostCharges[held] ?? 0) > 0 ? held : null
     return {
       minedNodes: { ...state.minedNodes, [id]: Math.max(0, Number(node.readyAt)) },
       mineGenerations: { ...state.mineGenerations, [id]: generation },
       mineAwardGenerations: { ...state.mineAwardGenerations, [id]: generation },
+      fortuneBoostCharges: boostedPickaxe ? { ...state.fortuneBoostCharges, [boostedPickaxe]: Math.max(0, (state.fortuneBoostCharges[boostedPickaxe] ?? 0) - 1) } : state.fortuneBoostCharges,
       inventory: { ...state.inventory, [item]: (state.inventory[item] ?? 0) + awarded },
       hotbar: hotbarWithNewItem(state.hotbar, state.inventory, item),
       stats: { ...state.stats, mined: state.stats.mined + awarded },
@@ -947,12 +997,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     const siteRoll = Math.abs([...id].reduce((hash, char) => Math.imul(hash ^ char.charCodeAt(0), 16777619), 2166136261)) / 4294967296
     const isFruitTree = id.startsWith('ForageApple') || id.startsWith('ForageOrange')
     const fruitStored = (state.inventory.apple ?? 0) + (state.inventory.orange ?? 0)
+    const boosted = basket !== 'hand' && (state.fortuneBoostCharges[basket] ?? 0) > 0
     const basketLevel = basket === 'hand' ? 0 : enhancementLevel(state.enhancements, basket)
     const capacity = basket === 'hand' ? BASKET_CONFIG.hand.capacity : enhancedBasketCapacity(basket, basketLevel)
     const storageRemaining = capacity - fruitStored
     if (isFruitTree && storageRemaining <= 0) return set({ toast: 'Fruit storage full' })
     const baseYield = isFruitTree ? Math.min(availableFruit, storageRemaining) : minimum + Math.floor(siteRoll * (maximum - minimum + 1))
-    const bonus = basket === 'hand' ? 0 : enhancedYield(basket, basketLevel) - 1
+    const bonus = basket === 'hand' ? 0 : enhancedYield(basket, basketLevel + (boosted ? 1 : 0)) - 1
     const quantity = isFruitTree ? Math.min(baseYield + bonus, storageRemaining) : baseYield + bonus
     const [minRegrow, maxRegrow] = config.regrowSeconds
     const regrow = minRegrow + siteRoll * (maxRegrow - minRegrow)
@@ -968,6 +1019,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (seedDrop) inventory[seed] = (inventory[seed] ?? 0) + 1
     set({
       inventory,
+      fortuneBoostCharges: boosted ? { ...state.fortuneBoostCharges, [basket]: Math.max(0, (state.fortuneBoostCharges[basket] ?? 0) - 1) } : state.fortuneBoostCharges,
       hotbar: hotbarWithNewItem(state.hotbar, state.inventory, item),
       collectedForage: { ...state.collectedForage, [id]: readyAt },
       stats: { ...state.stats, foraged: state.stats.foraged + quantity },
@@ -1065,6 +1117,33 @@ export const useGameStore = create<GameState>((set, get) => ({
     const inventory = { ...state.inventory, 'information-note': (state.inventory['information-note'] ?? 0) + 1 }
     return { cash: state.cash - offer.cost, inventory, hotbar: hotbarWithNewItem(state.hotbar, state.inventory, 'information-note'), brokerNotes: [...state.brokerNotes, note], brokerPurchases: [...state.brokerPurchases, purchaseKey], toast: 'Information added' }
   }),
+  syncMerchantCycle: (merchantCycle) => set({ merchantCycle }),
+  buyMerchantItem: (itemId) => {
+    const state = get()
+    if (state.merchantPurchasePending) return
+    const offer = state.merchantCycle?.inventory.find((entry) => entry.id === itemId)
+    if (!offer || offer.stock < 1) return set({ toast: 'Sold out' })
+    if (state.cash < offer.price) return set({ toast: 'Not enough coins' })
+    const requestId = crypto.randomUUID()
+    pendingMerchantPurchases.add(requestId)
+    if (sendMultiplayer('merchant:buy', { requestId, cycleId: state.merchantCycle?.id, itemId })) return set({ merchantPurchasePending: true })
+    pendingMerchantPurchases.delete(requestId)
+    set({ toast: 'Merchant unavailable' })
+  },
+  applyMerchantPurchase: (result) => set((state) => {
+    if (result.cycle) state = { ...state, merchantCycle: result.cycle }
+    const pending = pendingMerchantPurchases.has(result.requestId)
+    if (pending) pendingMerchantPurchases.delete(result.requestId)
+    const shared = { merchantCycle: result.cycle ?? state.merchantCycle, merchantPurchasePending: pending ? false : state.merchantPurchasePending }
+    if (!pending) return shared
+    if (!result.ok || !result.itemId || !Number.isFinite(result.price)) return { ...shared, toast: result.reason || 'Could not buy' }
+    const itemId = result.itemId as ItemId
+    const price = Math.max(0, Math.floor(result.price ?? 0))
+    if (state.cash < price) return { ...shared, toast: 'Not enough coins' }
+    const inventory = { ...state.inventory, [itemId]: (state.inventory[itemId] ?? 0) + 1 }
+    return { ...shared, cash: state.cash - price, inventory, toast: `+1 ${ITEMS[itemId].name}` }
+  }),
+  setItemUseOpen: (itemUseOpen) => set({ itemUseOpen, inventoryOpen: false, shopOpen: false, stockOpen: false, secretOpen: false }),
   setNoteInspectOpen: (noteInspectOpen) => set({ noteInspectOpen, inventoryOpen: false, secretOpen: false, ticketInspectOpen: false, enhancementOpen: false }),
   setCookbookOpen: (cookbookOpen, requestedFurnace) => set((state) => {
     const placedFurnaces = (state.inventory.furnace ?? 0) > 0 ? state.claimedFarms.slice(0, 1) : []
@@ -1077,15 +1156,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     return { cookbookOpen, activeFurnaceIndex, furnaceReadyUntil, shopOpen: false, stockOpen: false, inventoryOpen: false, lotteryOpen: false, ticketInspectOpen: false, secretOpen: false, menuOpen: false, enhancementOpen: false }
   }),
   setEnhancementOpen: (enhancementOpen) => set({ enhancementOpen, shopOpen: false, stockOpen: false, inventoryOpen: false, menuOpen: false, playerPanelOpen: false, lotteryOpen: false, ticketInspectOpen: false, noteInspectOpen: false, travelOpen: false, secretOpen: false, cookbookOpen: false, interactionProgress: 0 }),
-  enhanceEquipment: (item, requestedStabilized = false) => set((state) => {
+  enhanceEquipment: (item, options = {}) => set((state) => {
     if (state.minigameOpen || (state.inventory[item] ?? 0) !== 1) return { toast: 'Item not owned' }
     const current = enhancementLevel(state.enhancements, item)
     if (current >= 10) return { toast: 'Max level' }
-    const target = current + 1
-    const stabilized = requestedStabilized && canStabilize(target)
-    const result = resolveEnhancementAttempt(item, current, state.cash, state.inventory, stabilized)
-    if (!result.ok) return { toast: result.reason === 'coins' ? 'Not enough coins' : result.reason === 'materials' ? 'Missing materials' : 'Max level' }
-    const inventory = result.inventory
+    const result = resolveEnhancementAttempt(item, current, state.cash, state.inventory, options)
+    if (!result.ok) return { toast: result.reason === 'coins' ? 'Not enough coins' : result.reason === 'materials' ? 'Missing materials' : result.reason === 'ward' ? 'Wrong Ward' : result.reason === 'voucher' ? 'Coupon unavailable' : 'Max level' }
+    const inventory = result.inventory as Partial<Record<ItemId, number>>
     const enhancements = { ...state.enhancements, [item]: result.level }
     const toast = result.success
       ? `Upgraded · ${enhancementName(item, result.level)}`
@@ -1094,6 +1171,56 @@ export const useGameStore = create<GameState>((set, get) => ({
         : `Upgrade failed · dropped to +${result.level}`
     return { cash: result.cash, inventory, hotbar: cleanedHotbar(state.hotbar, inventory), enhancements, toast }
   }),
+  useMiningBoost: () => set((state) => {
+    if (state.minigameOpen) return { toast: 'Use after the event' }
+    if ((state.inventory['mining-boost'] ?? 0) < 1) return state
+    if (state.miningBoostUntil > Date.now()) return { toast: 'Mining Tonic already active' }
+    const inventory = { ...state.inventory, 'mining-boost': (state.inventory['mining-boost'] ?? 0) - 1 }
+    return { inventory, miningBoostUntil: Date.now() + 180_000, toast: 'Mining Tonic · 3:00' }
+  }),
+  useFortuneBoost: (item) => set((state) => {
+    if (state.minigameOpen) return { toast: 'Use after the event' }
+    if ((state.inventory['fortune-boost'] ?? 0) < 1 || (state.inventory[item] ?? 0) < 1) return state
+    if ((state.fortuneBoostCharges[item] ?? 0) > 0) return { toast: 'Luck Tonic already active' }
+    const charges = item.endsWith('pickaxe') ? 20 : item === 'harvest-charm' ? 32 : 30
+    const inventory = { ...state.inventory, 'fortune-boost': (state.inventory['fortune-boost'] ?? 0) - 1 }
+    return { inventory, fortuneBoostCharges: { ...state.fortuneBoostCharges, [item]: charges }, toast: `Luck Tonic · ${charges} uses` }
+  }),
+  useCookTimer: () => set((state) => {
+    if (state.minigameOpen) return { toast: 'Use after the event' }
+    if ((state.inventory['cook-timer'] ?? 0) < 1) return state
+    const now = Date.now()
+    let remaining = 90_000
+    let savedTime = 0
+    const cookQueue = state.cookQueue.map((job) => {
+      if (remaining <= 0 || job.readyAt <= now) return job
+      const reduction = Math.min(30_000, remaining, job.readyAt - now)
+      remaining -= reduction
+      savedTime += reduction
+      return { ...job, readyAt: job.readyAt - reduction }
+    })
+    if (savedTime <= 0) return { toast: 'Nothing cooking' }
+    const inventory = { ...state.inventory, 'cook-timer': (state.inventory['cook-timer'] ?? 0) - 1 }
+    return { inventory, cookQueue, toast: `Cook Timer · -${Math.round(savedTime / 1000)}s` }
+  }),
+  useRainBottle: (farmIndex) => {
+    const state = get()
+    if (state.minigameOpen || (state.inventory['rain-bottle'] ?? 0) < 1) return
+    const owns = state.sharedFarmOnline ? state.farmOwners[farmIndex] === state.sharedFarmSelfId : state.claimedFarms.includes(farmIndex)
+    if (!owns) return set({ toast: 'Choose your farm' })
+    if (state.sharedFarmOnline) {
+      const requestId = crypto.randomUUID()
+      pendingFarmActions.set(requestId, { op: 'rain', farmId: farmIndex })
+      if (sendMultiplayer('farm:action', { requestId, op: 'rain', farmId: farmIndex })) return
+      pendingFarmActions.delete(requestId)
+    }
+    const planted = Object.entries(state.farmCells).filter(([key, cell]) => key.startsWith(`${farmIndex}:`) && cell.stage === 'planted' && cell.crop)
+    if (!planted.length) return set({ toast: 'No dry crops' })
+    const farmCells = { ...state.farmCells }
+    planted.forEach(([key, cell]) => { farmCells[key] = { ...cell, stage: 'watered', readyAt: Date.now() + GROWTH_MS[cell.crop!] } })
+    const inventory = { ...state.inventory, 'rain-bottle': (state.inventory['rain-bottle'] ?? 0) - 1 }
+    set({ inventory, farmCells, toast: 'Farm watered' })
+  },
   cookRecipe: (recipeId, requestedQuantity = 1) => set((state) => {
     if (!state.knownRecipes.includes(recipeId)) return { toast: 'Recipe not learned' }
     const furnaceIndex = state.activeFurnaceIndex
@@ -1128,8 +1255,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (give.cash > state.cash) return false
     const giveEntries = Object.entries(give.items).filter(([id]) => id in ITEMS) as Array<[ItemId, number]>
     const receiveEntries = Object.entries(receive.items).filter(([id]) => id in ITEMS) as Array<[ItemId, number]>
-    if (giveEntries.some(([id, quantity]) => isEnhanceableItem(id) || quantity < 0 || quantity > (state.inventory[id] ?? 0))) return false
-    if (receiveEntries.some(([id, quantity]) => isEnhanceableItem(id) || quantity < 0)) return false
+    if (giveEntries.some(([id, quantity]) => isEnhanceableItem(id) || NON_TRADABLE_CONSUMABLES.has(id) || quantity < 0 || quantity > (state.inventory[id] ?? 0))) return false
+    if (receiveEntries.some(([id, quantity]) => isEnhanceableItem(id) || NON_TRADABLE_CONSUMABLES.has(id) || quantity < 0)) return false
     const inventory = { ...state.inventory }
     giveEntries.forEach(([id, quantity]) => { inventory[id] = Math.max(0, (inventory[id] ?? 0) - Math.floor(quantity)) })
     let hotbar = cleanedHotbar(state.hotbar, inventory)
@@ -1257,14 +1384,15 @@ export const useGameStore = create<GameState>((set, get) => ({
     const stockBasis = stockIds.reduce((sum, id) => sum + STOCKS[id].basePrice * (state.portfolio[id] ?? 0), 0)
     const plantedValue = Object.values(state.farmCells).reduce((sum, cell) => sum + (cell.crop ? CROP_CONFIG[cell.crop].seedPrice : 0), 0)
     const economyReference = Math.max(1, suppliedReference ?? state.cash + ownedValue + stockBasis + plantedValue)
-    const leaderCash = Math.max(state.cash, ...state.onlinePlayers.map((player) => player.cash))
-    const computedReward = minigameRewardPackage(economyReference, placement, state.cash, leaderCash)
-    const rewardPackage = settledReward
-      ? { budget: Math.max(0, settledReward.cash) + Math.max(0, settledReward.boxes) * COOKBOOK_BOX_REWARD_VALUE, cash: Math.max(0, Math.floor(settledReward.cash)), boxes: Math.max(0, Math.floor(settledReward.boxes)) }
-      : computedReward
-    const boxCount = rewardPackage.boxes
-    const reward = rewardPackage.cash
-    const inventory = { ...state.inventory, 'cookbook-box': (state.inventory['cookbook-box'] ?? 0) + boxCount }
+    const playerProgress = economyProgressValue(state)
+    const leaderProgress = Math.max(playerProgress, ...state.onlinePlayers.map((player) => player.progressValue ?? player.cash))
+    const computedReward = minigameRewards({ economyReference, placement, playerProgress, leaderProgress, matchSeed: state.sessionSeed, milestone, playerId: state.nickname })
+    const reward = settledReward ? Math.max(0, Math.floor(settledReward.cash)) : computedReward.cash
+    const itemRolls = settledReward?.itemRolls ?? computedReward.itemRolls
+    const applied = applyMinigameItemRewards(state.inventory as Partial<Record<MinigameRewardItemId, number>>, state.appliedMinigameRewardIds, itemRolls)
+    const inventory = applied.inventory as Partial<Record<ItemId, number>>
+    const itemSummary: Partial<Record<MinigameRewardItemId, number>> = {}
+    itemRolls.filter((roll) => applied.newlyAppliedRewardIds.includes(roll.rewardId)).forEach((roll) => roll.items.forEach(({ itemId, quantity }) => { itemSummary[itemId] = (itemSummary[itemId] ?? 0) + quantity }))
     const shiftReady = (value: number) => value > snapshot.startedAt ? value + pausedMs : value
     return {
       minigameOpen: false,
@@ -1282,12 +1410,14 @@ export const useGameStore = create<GameState>((set, get) => ({
       hotbar: cleanedHotbar(snapshot.hotbar, inventory), selectedHotbar: snapshot.selectedHotbar,
       inventoryOpen: snapshot.inventoryOpen,
       cash: state.cash + reward,
-      lastMinigameResult: placement > 0 ? { kind: state.minigameKind, placement, score, cash: reward, boxes: boxCount, receivedAt: Date.now() } : state.lastMinigameResult,
+      appliedMinigameRewardIds: applied.appliedRewardIds,
+      lastMinigameResult: placement > 0 ? { kind: state.minigameKind, placement, score, cash: reward, items: itemSummary, receivedAt: Date.now() } : state.lastMinigameResult,
       farmCells: Object.fromEntries(Object.entries(state.farmCells).map(([key, cell]) => [key, cell.readyAt ? { ...cell, readyAt: shiftReady(cell.readyAt) } : cell])),
       cookQueue: state.cookQueue.map((job) => ({ ...job, readyAt: shiftReady(job.readyAt) })),
       collectedForage: Object.fromEntries(Object.entries(state.collectedForage).map(([id, readyAt]) => [id, shiftReady(readyAt)])),
       minedNodes: Object.fromEntries(Object.entries(state.minedNodes).map(([id, readyAt]) => [id, shiftReady(readyAt)])),
-      toast: placement < 1 ? 'Event left' : `${placement === 1 ? '1st' : placement === 2 ? '2nd' : placement === 3 ? '3rd' : `${placement}th`} · +${formatCoins(reward)}${boxCount ? ` · ${boxCount} Cookbook` : ''}`,
+      miningBoostUntil: state.miningBoostUntil > snapshot.startedAt ? state.miningBoostUntil + pausedMs : state.miningBoostUntil,
+      toast: placement < 1 ? 'Event left' : `${placement === 1 ? '1st' : placement === 2 ? '2nd' : placement === 3 ? '3rd' : `${placement}th`} · +${formatCoins(reward)}`,
     }
   }),
   clearMinigameResult: () => set({ lastMinigameResult: null }),
@@ -1314,7 +1444,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       teleportNonce: state.teleportNonce + 1,
       anchors: {}, colliders: [], playerPosition: SPAWNS.hub, prompt: null, interactionProgress: 0,
       shopOpen: false, stockOpen: false, inventoryOpen: false, menuOpen: false, playerPanelOpen: false,
-      lotteryOpen: false, ticketInspectOpen: false, travelOpen: false, secretOpen: false, cookbookOpen: false, enhancementOpen: false,
+      lotteryOpen: false, ticketInspectOpen: false, travelOpen: false, secretOpen: false, cookbookOpen: false, enhancementOpen: false, itemUseOpen: null,
     }
     const completing = elapsedBeforeTick + 1 >= state.sessionDurationSeconds
     const restockSeconds = state.restockSeconds <= 1 ? MATCH_CONFIG.worldCycleSeconds : state.restockSeconds - 1
@@ -1480,5 +1610,8 @@ useGameStore.subscribe((state) => {
     stockSupply: state.stockSupply,
     marketCorrectionsApplied: state.marketCorrectionsApplied,
     enhancements: state.enhancements,
+    miningBoostUntil: state.miningBoostUntil,
+    fortuneBoostCharges: state.fortuneBoostCharges,
+    appliedMinigameRewardIds: state.appliedMinigameRewardIds,
   }))
 })

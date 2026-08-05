@@ -5,11 +5,14 @@ import { commodityPrice, formatCoins, lotteryJackpot, lotteryPrice, lotteryTwoMa
 import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, MATCH_CONFIG, PICKAXE_CONFIG, type CommodityId } from './game/config'
 import { canMineOre, miningDuration, oreKindAtDepth, requiredPickaxe } from './game/ore'
 import { onMultiplayer, sendMultiplayer } from './game/multiplayer'
-import { economyProgressValue, inventoryLayout, lotteryDraw, preparedFoodValue, secretStockOffer, useGameStore, type MineNodeState, type SharedDeedResult, type SharedDeedSnapshot, type SharedFarmResult, type SharedFarmSnapshot, type SharedFarmUpdate } from './game/store'
+import { economyProgressValue, inventoryLayout, lotteryDraw, preparedFoodValue, secretStockOffer, useGameStore, type MerchantPurchaseResult, type MineNodeState, type SharedDeedResult, type SharedDeedSnapshot, type SharedFarmResult, type SharedFarmSnapshot, type SharedFarmUpdate } from './game/store'
 import { RECIPES, RECIPE_IDS, type RecipeId } from './game/recipes'
-import { FARM_RUSH_CROPS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, FORAGE_RUSH_REQUIREMENTS, MINIGAME_DURATION, MINING_RUSH_POINTS, farmRushOrders, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MiningRushOre } from './game/minigame'
+import { FARM_RUSH_CROPS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, FORAGE_RUSH_REQUIREMENTS, MINIGAME_DURATION, MINING_RUSH_POINTS, farmRushOrders, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MinigameItemRewardRoll, type MinigameRewardItemId, type MiningRushOre } from './game/minigame'
 import { playGameSfx, type GameSfx } from './game/sfx'
-import { ENHANCEABLE_ITEMS, canStabilize, enhancedBasketCapacity, enhancementChance, enhancementLevel, enhancementName, enhancementRequirements, fortuneFor, isEnhanceableItem, miningSpeedBonus, type EnhanceableItem } from './game/enhancement'
+import { ENHANCEABLE_ITEMS, ENHANCEMENT_VOUCHER, canUseEnhancementVoucher, enhancedBasketCapacity, enhancementChance, enhancementLevel, enhancementName, enhancementRequirements, enhancementWardForTarget, fortuneFor, isEnhanceableItem, miningSpeedBonus, type EnhanceableItem, type EnhancementWardId } from './game/enhancement'
+import type { MerchantCycle, MerchantItemId } from './game/merchant'
+
+const NON_TRADABLE_ITEMS = new Set<ItemId>(['upgrade-coupon', 'upgrade-guard-4', 'upgrade-guard-5', 'upgrade-guard-6'])
 
 function forageItem(anchorId: string): ItemId | null {
   if (anchorId.startsWith('ForageApple')) return 'apple'
@@ -56,7 +59,7 @@ function activatePrompt(id: string) {
     if (point) {
       const ore = oreKindAtDepth(id, point[2], state.mineGenerations[id] ?? 0, state.sessionSeed)
       const tool = state.hotbar[state.selectedHotbar]
-      const enhancement = isEnhanceableItem(tool) ? enhancementLevel(state.enhancements, tool) : 0
+      const enhancement = isEnhanceableItem(tool) ? enhancementLevel(state.enhancements, tool) + ((state.fortuneBoostCharges[tool] ?? 0) > 0 ? 1 : 0) : 0
       if (sendMultiplayer('mine:request', { id, tool, enhancement })) return
       return state.mineNode(id, ore)
     }
@@ -112,6 +115,27 @@ function DeedSync() {
     const offResult = onMultiplayer('deed:result', (raw) => applyResult(raw as SharedDeedResult))
     return () => { offSnapshot(); offStock(); offResult() }
   }, [applyResult, syncSnapshot, syncStock])
+  return null
+}
+
+function MerchantSync() {
+  const syncCycle = useGameStore((state) => state.syncMerchantCycle)
+  const applyPurchase = useGameStore((state) => state.applyMerchantPurchase)
+  const open = useGameStore((state) => state.secretOpen)
+  const visualFixture = new URLSearchParams(window.location.search).get('merchantTest') === '1'
+  useEffect(() => {
+    if (visualFixture) return
+    const offSnapshot = onMultiplayer('merchant:snapshot', (raw) => syncCycle(raw as MerchantCycle))
+    const offResult = onMultiplayer('merchant:result', (raw) => applyPurchase(raw as MerchantPurchaseResult))
+    sendMultiplayer('merchant:request', {})
+    return () => { offSnapshot(); offResult() }
+  }, [applyPurchase, syncCycle, visualFixture])
+  useEffect(() => {
+    if (!open || visualFixture) return
+    sendMultiplayer('merchant:request', {})
+    const timer = window.setInterval(() => sendMultiplayer('merchant:request', {}), 5_000)
+    return () => window.clearInterval(timer)
+  }, [open, visualFixture])
   return null
 }
 
@@ -439,6 +463,7 @@ function InteractionPrompt() {
   const farmRushTool = useGameStore((state) => state.farmRushTool)
   const farmRushCooking = useGameStore((state) => state.farmRushCooking)
   const enhancements = useGameStore((state) => state.enhancements)
+  const miningBoostUntil = useGameStore((state) => state.miningBoostUntil)
   if (!prompt) return null
   if (prompt.id.startsWith('MineOre') || prompt.id.startsWith('RushOre')) {
     const point = anchors[prompt.id]
@@ -447,7 +472,7 @@ function InteractionPrompt() {
     const ore = rush ? miningRushOre(minigameMilestone, prompt.id, rushNodes[prompt.id]?.generation ?? 0) : oreKindAtDepth(prompt.id, point[2], mineGenerations[prompt.id] ?? 0, sessionSeed)
     const tool = hotbar[selectedHotbar]
     const toolEnhancement = !rush && isEnhanceableItem(tool) ? enhancementLevel(enhancements, tool) : 0
-    const duration = rush ? 760 : miningDuration(tool, ore, toolEnhancement)
+    const duration = rush ? 760 : miningDuration(tool, ore, toolEnhancement) * (miningBoostUntil > Date.now() ? .88 : 1)
     const remaining = duration ? Math.max(0, duration * (1 - progress)) : 0
     const required = requiredPickaxe(ore)
     return <div className={`interaction mine-interaction ${duration ? '' : 'locked'}`}>
@@ -495,11 +520,24 @@ function InventoryPanel() {
   const inspectNotes = useGameStore((state) => state.setNoteInspectOpen)
   const setTravelOpen = useGameStore((state) => state.setTravelOpen)
   const useCookbookBox = useGameStore((state) => state.useCookbookBox)
+  const useMiningBoost = useGameStore((state) => state.useMiningBoost)
+  const useCookTimer = useGameStore((state) => state.useCookTimer)
+  const setItemUseOpen = useGameStore((state) => state.setItemUseOpen)
   const dragging = useRef<number | null>(null)
   const eventView = minigameOpen ? eventInventoryView(minigameKind, farmRushInventory, forageRushInventory, farmRushCooking, minigameMilestone) : null
   const inventory = eventView?.inventory ?? realInventory
   const inventoryOrder = eventView?.inventoryOrder ?? inventoryLayout({ hotbar: realHotbar, inventoryOrder: realInventoryOrder, inventory: realInventory })
   const hotbar = eventView?.hotbar ?? realHotbar
+  const useItem = (id: ItemId) => {
+    if (id === 'lottery-ticket') inspectTickets(true)
+    else if (id === 'information-note') inspectNotes(true)
+    else if (id === 'cookbook-box') useCookbookBox()
+    else if (id === 'mining-boost') useMiningBoost()
+    else if (id === 'cook-timer') useCookTimer()
+    else if (id === 'fortune-boost' || id === 'rain-bottle') setItemUseOpen(id)
+    else if (id === 'home-charm') setTravelOpen(true)
+    else equipItem(id)
+  }
   if (!open) return null
   return (
     <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && toggle()}>
@@ -515,12 +553,33 @@ function InventoryPanel() {
               key={index}
               onDragOver={(event) => { if (!minigameOpen) event.preventDefault() }}
               onDrop={() => { if (!minigameOpen && dragging.current !== null) moveInventorySlot(dragging.current, index); dragging.current = null }}
-            >{id && quantity > 0 && <><img draggable={!minigameOpen} src={ITEMS[id].icon} alt={isEnhanceableItem(id) && !minigameOpen ? enhancementName(id, enhancementLevel(enhancements, id)) : ITEMS[id].name} onClick={() => { if (minigameOpen) return; if (id === 'lottery-ticket') inspectTickets(true); else if (id === 'information-note') inspectNotes(true); else if (id === 'cookbook-box') useCookbookBox(); else equipItem(id) }} onContextMenu={(event) => { event.preventDefault(); if (minigameOpen) return; if (id === 'lottery-ticket') inspectTickets(true); if (id === 'information-note') inspectNotes(true); if (id === 'home-charm') setTravelOpen(true); if (id === 'cookbook-box') useCookbookBox() }} onDragStart={(event) => { if (!minigameOpen) { dragging.current = index; event.dataTransfer.setData('item-id', id) } }} onDragEnd={() => { dragging.current = null }} /><span>{minigameOpen && minigameKind === 'farm' && index < FARM_RUSH_TOOLS.length - 1 ? '∞' : quantity}</span><HoverTip lines={itemTooltip(id, !minigameOpen && isEnhanceableItem(id) ? enhancementLevel(enhancements, id) : 0)} /></>}</div>
+            >{id && quantity > 0 && <><img draggable={!minigameOpen} src={ITEMS[id].icon} alt={isEnhanceableItem(id) && !minigameOpen ? enhancementName(id, enhancementLevel(enhancements, id)) : ITEMS[id].name} onClick={() => { if (!minigameOpen) useItem(id) }} onContextMenu={(event) => { event.preventDefault(); if (!minigameOpen) useItem(id) }} onDragStart={(event) => { if (!minigameOpen) { dragging.current = index; event.dataTransfer.setData('item-id', id) } }} onDragEnd={() => { dragging.current = null }} /><span>{minigameOpen && minigameKind === 'farm' && index < FARM_RUSH_TOOLS.length - 1 ? '∞' : quantity}</span><HoverTip lines={itemTooltip(id, !minigameOpen && isEnhanceableItem(id) ? enhancementLevel(enhancements, id) : 0)} /></>}</div>
           })}
         </div>
       </section>
     </div>
   )
+}
+
+function ItemUsePanel() {
+  const item = useGameStore((state) => state.itemUseOpen)
+  const close = useGameStore((state) => state.setItemUseOpen)
+  const inventory = useGameStore((state) => state.inventory)
+  const charges = useGameStore((state) => state.fortuneBoostCharges)
+  const farms = useGameStore((state) => state.claimedFarms)
+  const useFortune = useGameStore((state) => state.useFortuneBoost)
+  const useRain = useGameStore((state) => state.useRainBottle)
+  if (item !== 'fortune-boost' && item !== 'rain-bottle') return null
+  const useAndClose = (action: () => void) => { action(); close(null) }
+  const gear = ENHANCEABLE_ITEMS.filter((id) => (inventory[id] ?? 0) > 0)
+  return <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(null)}><section className="panel item-use-panel">
+    <header><div className="panel-title"><img src={ITEMS[item].icon} alt="" /><span>{ITEMS[item].name}</span></div><CloseButton onClick={() => close(null)} /></header>
+    <div className="item-use-options">{item === 'fortune-boost'
+      ? gear.map((id) => <button disabled={(charges[id] ?? 0) > 0} key={id} onClick={() => useAndClose(() => useFortune(id))}><img src={ITEMS[id].icon} alt="" /><span><strong>{ITEMS[id].name}</strong><small>{(charges[id] ?? 0) > 0 ? `${charges[id]} LEFT` : id.endsWith('pickaxe') ? '20 USES' : id === 'harvest-charm' ? '32 USES' : '30 USES'}</small></span></button>)
+      : farms.map((farm) => <button key={farm} onClick={() => useAndClose(() => useRain(farm))}><span className="farm-choice">{farm + 1}</span><span><strong>FARM {farm + 1}</strong><small>WATER ALL</small></span></button>)}
+      {(item === 'fortune-boost' ? gear : farms).length === 0 && <div className="empty-ticket">NONE AVAILABLE</div>}
+    </div>
+  </section></div>
 }
 
 function ShopPanel() {
@@ -635,16 +694,23 @@ function SecretDealPanel() {
   const corrections = useGameStore((state) => state.marketCorrectionsApplied.length)
   const cash = useGameStore((state) => state.cash)
   const purchases = useGameStore((state) => state.brokerPurchases)
-  if (!open || zone === 'hub') return null
+  const merchantCycle = useGameStore((state) => state.merchantCycle)
+  const merchantPending = useGameStore((state) => state.merchantPurchasePending)
+  const buyItem = useGameStore((state) => state.buyMerchantItem)
   const duration = useGameStore((state) => state.sessionDurationSeconds)
+  if (!open || zone === 'hub') return null
   const offers = [0, 1].map((slot) => secretStockOffer(round, prices, sessionSeed, corrections, slot, duration))
   return (
     <div className="modal-scrim secret-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}>
       <section className="panel secret-panel">
-        <header><div className="panel-title"><span className="secret-mark">?</span><span>WANDERING BROKER</span></div><CloseButton onClick={() => close(false)} /></header>
-        <div className="broker-offers">{offers.map((offer, slot) => {
+        <header><div className="panel-title"><span className="secret-mark">?</span><span>WANDERING MERCHANT</span></div><CloseButton onClick={() => close(false)} /></header>
+        <div className="merchant-offers">{merchantCycle?.inventory.map((offer) => {
+          const item = ITEMS[offer.id]
+          return <article className={offer.stock < 1 ? 'sold' : ''} key={offer.id}><img src={item.icon} alt="" /><span><strong>{item.name}</strong><small>{offer.stock}/{offer.maxStock}</small></span><button disabled={merchantPending || offer.stock < 1 || cash < offer.price} onClick={() => buyItem(offer.id)}>{offer.stock < 1 ? 'SOLD' : formatCoins(offer.price, true)}</button></article>
+        })}</div>
+        <div className="broker-info">{offers.map((offer, slot) => {
           const bought = purchases.includes(`${round}:${slot}`)
-          return <article key={slot}><img src="/assets/ui/cooking/cookbook.png" alt="" /><span><strong>{`INFO ${slot + 1}`}</strong><small>SEALED INFORMATION</small></span><button disabled={bought || cash < offer.cost} onClick={() => buy(slot)}>{bought ? 'SOLD' : formatCoins(offer.cost, true)}</button></article>
+          return <article key={slot}><span><strong>{`INFO ${slot + 1}`}</strong></span><button disabled={bought || cash < offer.cost} onClick={() => buy(slot)}>{bought ? 'SOLD' : formatCoins(offer.cost, true)}</button></article>
         })}</div>
       </section>
     </div>
@@ -778,7 +844,7 @@ function PlayerTradePanel() {
     tradeRef.current = null; partnerRef.current = null; setTradeId(null); setPartner(null); setOpen(false)
   }
   if (!open) return null
-  const tradable = (Object.keys(ITEMS) as ItemId[]).filter((id) => id !== 'gold-coins' && !isEnhanceableItem(id) && (inventory[id] ?? 0) > 0)
+  const tradable = (Object.keys(ITEMS) as ItemId[]).filter((id) => id !== 'gold-coins' && !isEnhanceableItem(id) && !NON_TRADABLE_ITEMS.has(id) && (inventory[id] ?? 0) > 0)
   return (
     <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && closePanel()}>
       <section className="panel player-panel">
@@ -936,9 +1002,10 @@ function MinigameResultCard() {
   const clear = useGameStore((state) => state.clearMinigameResult)
   if (!result) return null
   const placement = result.placement === 1 ? '1ST' : result.placement === 2 ? '2ND' : result.placement === 3 ? '3RD' : `${result.placement}TH`
+  const items = Object.entries(result.items).filter(([, quantity]) => Number(quantity) > 0) as Array<[MinigameRewardItemId, number]>
   return <button className="minigame-result-card" onClick={clear} aria-label="Dismiss minigame reward">
     <span>{placement}</span><strong>{result.score} PTS</strong>
-    <div>{result.cash > 0 && <b><Icon name="coin" />{formatCoins(result.cash, true)}</b>}{result.boxes > 0 && <b><img src={ITEMS['cookbook-box'].icon} alt="" />×{result.boxes}</b>}</div>
+    <div>{result.cash > 0 && <b><Icon name="coin" />{formatCoins(result.cash, true)}</b>}{items.map(([id, quantity]) => <b key={id}><img src={ITEMS[id].icon} alt="" />×{quantity}</b>)}</div>
   </button>
 }
 
@@ -971,7 +1038,8 @@ function EnhancementPanel() {
   const volumes = useGameStore((state) => state.audioVolumes)
   const owned = ENHANCEABLE_ITEMS.filter((item) => (inventory[item] ?? 0) > 0)
   const [selected, setSelected] = useState<EnhanceableItem>('worn-pickaxe')
-  const [stabilized, setStabilized] = useState(false)
+  const [guardEnabled, setGuardEnabled] = useState(false)
+  const [voucherEnabled, setVoucherEnabled] = useState(false)
   const [resultFx, setResultFx] = useState<{ id: number; success: boolean } | null>(null)
   useEffect(() => {
     if (open && !owned.includes(selected) && owned[0]) setSelected(owned[0])
@@ -980,19 +1048,22 @@ function EnhancementPanel() {
   const current = enhancementLevel(enhancements, selected)
   const atMax = current >= 10
   const target = Math.min(10, current + 1)
-  const stabilizationAvailable = !atMax && canStabilize(target)
-  const useStabilization = stabilizationAvailable && stabilized
-  const requirements = enhancementRequirements(selected, target, useStabilization)
+  const ward = enhancementWardForTarget(target)
+  const guardAvailable = Boolean(ward && (inventory[ward] ?? 0) > 0)
+  const useGuard = guardAvailable && guardEnabled
+  const voucherAvailable = !atMax && canUseEnhancementVoucher(target) && (inventory[ENHANCEMENT_VOUCHER] ?? 0) > 0
+  const useVoucher = voucherAvailable && voucherEnabled
+  const requirements = enhancementRequirements(selected, target, { voucher: useVoucher })
   const materialRows = (atMax ? [] : Object.entries(requirements.materials)) as Array<[ItemId, number]>
   const missingMaterials = materialRows.some(([id, quantity]) => (inventory[id] ?? 0) < quantity)
   const affordable = cash >= requirements.coins && !missingMaterials && current < 10
-  const downgradeRisk = target >= 4 && !useStabilization
+  const downgradeRisk = target >= 4 && !useGuard
   const isPickaxeItem = selected.endsWith('pickaxe')
   const isBasketItem = selected === 'basket' || selected === 'reinforced-basket' || selected === 'master-basket'
   const attempt = () => {
     if (!affordable) return
     const before = enhancementLevel(useGameStore.getState().enhancements, selected)
-    enhance(selected, useStabilization)
+    enhance(selected, { ward: useGuard ? ward : undefined, voucher: useVoucher })
     const after = enhancementLevel(useGameStore.getState().enhancements, selected)
     const success = after > before
     playGameSfx(success ? 'upgrade-success' : 'upgrade-fail', volumes.master * volumes.effects)
@@ -1022,17 +1093,17 @@ function EnhancementPanel() {
         : 'UPGRADE'
   const failureLabel = atMax || enhancementChance(target) >= 1
     ? null
-    : useStabilization || target <= 3
+    : useGuard || target <= 3
       ? `Failure keeps +${current}`
       : `Failure drops to +${Math.max(0, current - 1)}`
   return <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}>
     <section className="panel enhancement-panel">
-      <header><div className="panel-title"><span className="enhancement-mark">+</span><span>UPGRADE</span></div><div className="shop-balance"><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div><CloseButton onClick={() => close(false)} /></header>
+      <header><div className="panel-title"><span className="enhancement-mark">+</span><span>FORGE</span></div><div className="shop-balance"><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div><CloseButton onClick={() => close(false)} /></header>
       <div className="enhancement-layout">
         <aside className="enhancement-items" aria-label="Gear">
           {owned.map((item) => {
             const itemLevel = enhancementLevel(enhancements, item)
-            return <button className={item === selected ? 'active' : ''} key={item} onClick={() => { setSelected(item); setStabilized(false) }}>
+            return <button className={item === selected ? 'active' : ''} key={item} onClick={() => { setSelected(item); setGuardEnabled(false); setVoucherEnabled(false) }}>
               <img src={ITEMS[item].icon} alt="" />
               <span><strong>{ITEMS[item].name}</strong><small>+{itemLevel}</small></span>
             </button>
@@ -1065,8 +1136,11 @@ function EnhancementPanel() {
             })}</div>
             <div className={`enhancement-cost ${cash < requirements.coins ? 'missing' : ''}`}><Icon name="coin" /><span><small>COST</small><strong>{formatCoins(requirements.coins, true)}</strong></span></div>
           </div>}
-          {stabilizationAvailable && <button className={`stabilize-toggle ${useStabilization ? 'active' : ''}`} onClick={() => setStabilized((value) => !value)}>{useStabilization ? `PROTECTED +${current}` : `PROTECT +${current}`}</button>}
-          {failureLabel && <small className={`enhancement-fail ${downgradeRisk && !useStabilization ? 'danger' : ''}`}>{failureLabel}</small>}
+          {!atMax && <div className="enhancement-consumables">
+            {ward && <button disabled={!guardAvailable} className={useGuard ? 'active' : ''} onClick={() => setGuardEnabled((value) => !value)}><img src={ITEMS[ward].icon} alt="" /><span><strong>+{target} WARD</strong><small>{guardAvailable ? useGuard ? 'ON' : 'USE' : 'NONE'}</small></span></button>}
+            {canUseEnhancementVoucher(target) && <button disabled={!voucherAvailable} className={useVoucher ? 'active' : ''} onClick={() => setVoucherEnabled((value) => !value)}><img src={ITEMS[ENHANCEMENT_VOUCHER].icon} alt="" /><span><strong>COUPON</strong><small>{voucherAvailable ? useVoucher ? `-${formatCoins(requirements.coinDiscount, true)}` : 'USE' : 'NONE'}</small></span></button>}
+          </div>}
+          {failureLabel && <small className={`enhancement-fail ${downgradeRisk ? 'danger' : ''}`}>{failureLabel}</small>}
           <button className="enhance-button" disabled={!affordable} onClick={attempt}>{actionLabel}</button>
         </section>
       </div>
@@ -1097,6 +1171,23 @@ function ForageCapacity() {
   const capacity = carrier === 'hand' ? BASKET_CONFIG.hand.capacity : enhancedBasketCapacity(carrier, enhancementLevel(enhancements, carrier))
   const stored = (inventory.apple ?? 0) + (inventory.orange ?? 0)
   return <div className="forage-capacity" title={BASKET_CONFIG[carrier].name}><span>FRUIT</span><i><b style={{ width: `${Math.min(100, stored / capacity * 100)}%` }} /></i><strong>{stored}/{capacity}</strong></div>
+}
+
+function ActiveEffects() {
+  const miningUntil = useGameStore((state) => state.miningBoostUntil)
+  const charges = useGameStore((state) => state.fortuneBoostCharges)
+  const [, refresh] = useState(0)
+  useEffect(() => {
+    if (miningUntil <= Date.now()) return
+    const timer = window.setInterval(() => refresh((value) => value + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [miningUntil])
+  const fortune = (Object.entries(charges) as Array<[EnhanceableItem, number]>).filter(([, count]) => count > 0)
+  if (miningUntil <= Date.now() && !fortune.length) return null
+  return <div className="active-effects">
+    {miningUntil > Date.now() && <span><img src={ITEMS['mining-boost'].icon} alt="" /><b>{Math.ceil((miningUntil - Date.now()) / 1000)}s</b></span>}
+    {fortune.map(([item, count]) => <span key={item}><img src={ITEMS['fortune-boost'].icon} alt="" /><b>{count}</b></span>)}
+  </div>
 }
 
 function MinigameWorldHud() {
@@ -1145,8 +1236,8 @@ function MinigameWorldHud() {
   useEffect(() => {
     if (!open) return
     return onMultiplayer('minigame:result', (raw) => {
-      const result = raw as { milestone: number; score: number; placement: number; economyReference: number; cashReward: number; cookbookBoxes: number }
-      if (result.milestone === milestone) finish(result.score, result.placement, result.economyReference, { cash: result.cashReward, boxes: result.cookbookBoxes })
+      const result = raw as { milestone: number; score: number; placement: number; economyReference: number; cashReward: number; itemRolls: MinigameItemRewardRoll[] }
+      if (result.milestone === milestone) finish(result.score, result.placement, result.economyReference, { cash: result.cashReward, itemRolls: result.itemRolls ?? [] })
     })
   }, [finish, milestone, open])
   useEffect(() => {
@@ -1164,8 +1255,6 @@ function MinigameWorldHud() {
     const eventScore = kind === 'mining' ? state.rushScore : kind === 'farm' ? state.farmRushScore : state.forageRushScore + (forageComplete ? 10_000 + seconds * 10 : Object.values(state.forageRushInventory).reduce((sum, value) => sum + value, 0))
     const submittedOnline = sendMultiplayer('minigame:finish', { milestone, score: eventScore, progressValue })
     if (!submittedOnline) { finish(eventScore, 1, progressValue); return }
-    const fallback = window.setTimeout(() => { if (useGameStore.getState().minigameOpen) finish(eventScore, 1, progressValue) }, (seconds + 15) * 1000)
-    return () => window.clearTimeout(fallback)
   }, [finish, forageComplete, kind, milestone, open, seconds])
   if (!open) return null
   const orderDefinitions = farmRushOrders(milestone)
@@ -1174,10 +1263,10 @@ function MinigameWorldHud() {
   const lobbyProgress = [selfProgress, ...players.filter((player) => player.minigameOpen && player.minigameMilestone === milestone).map((player) => player.progressValue ?? player.cash)].sort((a, b) => a - b)
   const progressMiddle = Math.floor(lobbyProgress.length / 2)
   const estimatedReference = lobbyProgress.length % 2 ? lobbyProgress[progressMiddle] : Math.round((lobbyProgress[progressMiddle - 1] + lobbyProgress[progressMiddle]) / 2)
-  const leaderCash = Math.max(currentState.cash, ...players.map((player) => player.cash))
-  const prizeRows = ['1ST', '2ND', '3RD', 'FINISH'].map((place, index) => ({ place, ...minigameRewardPackage(estimatedReference, index + 1, currentState.cash, leaderCash) }))
+  const leaderProgress = Math.max(selfProgress, ...players.map((player) => player.progressValue ?? player.cash))
+  const prizeRows = ['1ST', '2ND', '3RD', '4TH', '5TH', '6TH'].map((place, index) => ({ place, ...minigameRewardPackage(estimatedReference, index + 1, selfProgress, leaderProgress) }))
   return <>
-    {warning > 5 && <div className="rush-prize-reveal"><strong>PRIZES</strong><div>{prizeRows.map((prize) => <article key={prize.place}><b>{prize.place}</b>{prize.cash > 0 && <span><Icon name="coin" />{formatCoins(prize.cash, true)}</span>}{prize.boxes > 0 && <span><img src={ITEMS['cookbook-box'].icon} alt="Cookbook Box" />COOKBOOK ×{prize.boxes}</span>}</article>)}</div></div>}
+    {warning > 5 && <div className="rush-prize-reveal"><strong>PRIZES</strong><div>{prizeRows.map((prize, index) => <article key={prize.place}><b>{prize.place}</b><span><Icon name="coin" />{formatCoins(prize.cash, true)}</span>{index < 3 && <small>BONUS ITEM</small>}</article>)}</div></div>}
     {warning > 0 && warning <= 5 && <div className="rush-countdown"><strong>{warning}</strong><span>{title}</span></div>}
     {warning === 0 && <div className="event-standings"><span>LEADERBOARD</span>{standings.map((player, index) => <div className={player.id === 'self' ? 'self' : ''} key={player.id}><b>{index + 1}</b><span>{player.nickname}</span><strong>{player.score}</strong></div>)}</div>}
     {kind === 'mining' && warning === 0 && <div className="mining-points">{(Object.keys(MINING_RUSH_POINTS) as MiningRushOre[]).map((ore) => <span key={ore}><img src={ITEMS[ore].icon} alt="" /><b>{MINING_RUSH_POINTS[ore]}</b></span>)}</div>}
@@ -1239,7 +1328,7 @@ function Interface() {
       if (miningFrame.current !== null) return
       playGameSfx('mine-start', state.audioVolumes.master * state.audioVolumes.effects)
       const heldEnhancement = !rush && isEnhanceableItem(held) ? enhancementLevel(state.enhancements, held) : 0
-      const duration = rush ? 760 : miningDuration(held, ore, heldEnhancement)
+      const duration = rush ? 760 : miningDuration(held, ore, heldEnhancement) * (state.miningBoostUntil > Date.now() ? .88 : 1)
       miningTarget.current = id
       miningStartedAt.current = performance.now()
       const tick = (now: number) => {
@@ -1338,9 +1427,9 @@ function Interface() {
   }, [setCookbookOpen, setEnhancementOpen, setLotteryOpen, setMenuOpen, setPlayerPanelOpen, setProgress, setSecretOpen, setSelected, setShopOpen, setStockOpen, setTicketInspectOpen, setToast, setTravelOpen, setZone, toggleInventory])
   if (!sessionStarted) return <div className="interface"><LobbyPanel /><Toast /></div>
   if (minigameOpen) return <div className="interface"><Crosshair /><InteractionPrompt /><MinigameWorldHud /><Hotbar /><InventoryPanel /><CookbookPanel /><Toast /></div>
-  return <div className="interface"><HUD /><Crosshair /><InteractionPrompt /><ForageCapacity /><Hotbar /><InventoryPanel /><ShopPanel /><LotteryPanel /><TicketInspectPanel /><NoteInspectPanel /><TravelPanel /><SecretDealPanel /><StocksPanel /><PlayerTradePanel /><MenuPanel /><CookbookPanel /><EnhancementPanel /><ResultsPanel /><MinigameResultCard /><Toast /></div>
+  return <div className="interface"><HUD /><Crosshair /><InteractionPrompt /><ForageCapacity /><ActiveEffects /><Hotbar /><InventoryPanel /><ItemUsePanel /><ShopPanel /><LotteryPanel /><TicketInspectPanel /><NoteInspectPanel /><TravelPanel /><SecretDealPanel /><StocksPanel /><PlayerTradePanel /><MenuPanel /><CookbookPanel /><EnhancementPanel /><ResultsPanel /><MinigameResultCard /><Toast /></div>
 }
 
 export function App() {
-  return <main className="game-shell"><GameWorld /><Interface /><AudioBed /><FeedbackBed /><MineSync /><FarmSync /><DeedSync /></main>
+  return <main className="game-shell"><GameWorld /><Interface /><AudioBed /><FeedbackBed /><MineSync /><FarmSync /><DeedSync /><MerchantSync /></main>
 }

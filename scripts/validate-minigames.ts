@@ -126,7 +126,9 @@ assert(Object.values(useGameStore.getState().forageRushDelivered).every(Boolean)
 assert.equal(useGameStore.getState().forageRushScore, 770, 'delivery score total is stable')
 useGameStore.getState().finishMinigame(useGameStore.getState().forageRushScore, 2, 10_000_000)
 assert.deepEqual(useGameStore.getState().hotbar, permanentHotbar, 'forage restores the exact hotbar')
-assert.equal(useGameStore.getState().inventory['cookbook-box'], 1, 'earned Cookbook Box enters permanent inventory without replacing a hotbar slot')
+const forageRewardItems = useGameStore.getState().lastMinigameResult?.items ?? {}
+assert(Object.values(forageRewardItems).some((quantity) => Number(quantity) > 0), 'placed player receives a deterministic item reward')
+for (const [itemId, quantity] of Object.entries(forageRewardItems)) assert.equal(useGameStore.getState().inventory[itemId as keyof typeof ITEMS], quantity, `${itemId} reward entered permanent inventory incorrectly`)
 assert.deepEqual(useGameStore.getState().forageRushInventory, { apple: 0, orange: 0, truffle: 0, discovery: 0 }, 'temporary forage inventory is deleted')
 assert.equal(useGameStore.getState().inventory.apple, 4, 'permanent forage inventory is untouched')
 
@@ -146,7 +148,7 @@ for (const seed of [7, 77, 777, 7777]) {
   assert.notEqual(scheduledMinigame(20 * 60, seed), scheduledMinigame(40 * 60, seed), 'a session must schedule two different minigames')
 }
 assert.deepEqual(minigameRewardPackage(10_000_000, 0), { budget: 0, boxes: 0, cash: 0 }, 'leaving an event awards nothing')
-assert.equal(minigameRewardPackage(10_000_000, 1).cash, 0, 'first-place Cookbook Boxes consume the full 1.2M early reward budget')
+assert.equal(minigameRewardPackage(10_000_000, 1).cash, 1_500_000, 'first-place cash remains independent from item rewards')
 
 useGameStore.setState({ inventory: { 'cookbook-box': 1 }, hotbar: Array(9).fill(null), knownRecipes: [] })
 useGameStore.getState().useCookbookBox()

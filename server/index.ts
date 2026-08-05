@@ -1,6 +1,7 @@
 import { Room, Server, type Client } from '@colyseus/core'
 import { WebSocketTransport } from '@colyseus/ws-transport'
-import { minigameMilestones, minigameRewardPackage, scheduledMinigame } from '../src/game/minigame'
+import { minigameMilestones, minigameRewards, scheduledMinigame } from '../src/game/minigame'
+import { consumeMerchantStock, currentMerchantCycle, type MerchantCycle, type MerchantItemId } from '../src/game/merchant'
 import { CROP_CONFIG, MATCH_CONFIG } from '../src/game/config'
 import { canMineOre, miningYield, oreKindAtDepth, oreRespawnMs, type PickaxeItem } from '../src/game/ore'
 import { MINE_NODE_BY_ID, MINE_NODE_SITES } from '../shared/mine-nodes.js'
@@ -16,15 +17,16 @@ type SharedOreNode = { generation: number; readyAt: number }
 type CropKind = keyof typeof CROP_CONFIG
 type SharedFarmCell = { crop: CropKind | null; stage: 'empty' | 'planted' | 'watered' | 'ready'; readyAt: number | null }
 type SharedFarm = { ownerId: string | null; cells: Map<number, SharedFarmCell> }
-type FarmResult = { requestId: string; ok: boolean; reason?: string; op?: 'claim' | 'plant' | 'water' | 'harvest'; farmId?: number; cellIndex?: number; crop?: CropKind; quantity?: number }
+type FarmResult = { requestId: string; ok: boolean; reason?: string; op?: 'claim' | 'plant' | 'water' | 'harvest' | 'rain'; farmId?: number; cellIndex?: number; crop?: CropKind; quantity?: number }
 type DeedResult = { requestId: string; ok: boolean; quantity: number; personalCount: number; globalCount: number; personalAvailable: boolean; globalRemaining: number; reason?: string }
+type MerchantPurchaseResult = { requestId: string; ok: boolean; reason?: string; itemId?: MerchantItemId; price?: number; cycle?: MerchantCycle }
 
 const MAX_PLAYERS = 6
 const GLOBAL_EXPANSION_DEEDS = 2
 const RAIN_CYCLE_COOLDOWN_MS = Number(process.env.TEST_RAIN_COOLDOWN_MS) >= 0 ? Number(process.env.TEST_RAIN_COOLDOWN_MS) : 340_000
 const FARM_CENTERS = [[-54, -16], [-18, -14], [19, -17], [55, -13], [-53, -50], [-17, -49], [20, -53], [56, -48]] as const
 const CROP_IDS = new Set<CropKind>(Object.keys(CROP_CONFIG) as CropKind[])
-const NON_TRADABLE_EQUIPMENT = new Set(['worn-pickaxe', 'iron-pickaxe', 'steel-pickaxe', 'crystal-pickaxe', 'basket', 'reinforced-basket', 'master-basket', 'harvest-charm'])
+const NON_TRADABLE_EQUIPMENT = new Set(['worn-pickaxe', 'iron-pickaxe', 'steel-pickaxe', 'crystal-pickaxe', 'basket', 'reinforced-basket', 'master-basket', 'harvest-charm', 'upgrade-coupon', 'upgrade-guard-4', 'upgrade-guard-5', 'upgrade-guard-6'])
 const farmGrowthMs = (crop: CropKind) => Number(process.env.TEST_FARM_GROWTH_MS) > 0 ? Number(process.env.TEST_FARM_GROWTH_MS) : CROP_CONFIG[crop].growthSeconds * 1000
 
 const zoneBounds: Record<ZoneId, { x: number; zMin: number; zMax: number }> = {
@@ -40,6 +42,7 @@ class WoodlandRoom extends Room {
   private matchStartedAt = 0
   private matchDurationSeconds = MATCH_CONFIG.defaultDurationSeconds
   private matchStarted = false
+  private roomStartedAt = Date.now()
   private hostId: string | null = null
   private lobbyEligible = new Set<string>()
   private players = new Map<string, Presence>()
@@ -58,6 +61,9 @@ class WoodlandRoom extends Room {
   private globalDeedsRemaining = GLOBAL_EXPANSION_DEEDS
   private deedResults = new Map<string, Map<string, DeedResult>>()
   private lastRainAt = 0
+  private merchantCycleState: MerchantCycle | null = null
+  private merchantResults = new Map<string, Map<string, MerchantPurchaseResult>>()
+  private settledMinigames = new Set<number>()
 
   private sendTo(id: string, type: string, payload: unknown) {
     this.clients.find((client) => client.sessionId === id)?.send(type, payload)
@@ -89,6 +95,25 @@ class WoodlandRoom extends Room {
       personalAvailable: !this.personalDeedsPurchased.has(client.sessionId),
       globalRemaining: this.globalDeedsRemaining,
     })
+  }
+
+  private currentMerchant() {
+    const matchStartedAtMs = this.matchStarted ? this.matchStartedAt : this.roomStartedAt
+    const cycle = currentMerchantCycle({ matchSeed: this.matchSeed, matchStartedAtMs, matchDurationMs: this.matchDurationSeconds * 1000 }, Date.now())
+    if (!cycle) return null
+    if (this.merchantCycleState?.id !== cycle.id) this.merchantCycleState = cycle
+    return this.merchantCycleState
+  }
+
+  private sendMerchantSnapshot(client: Client) {
+    const cycle = this.currentMerchant()
+    if (cycle) client.send('merchant:snapshot', cycle)
+  }
+
+  private resetMerchant() {
+    this.merchantCycleState = null
+    this.merchantResults.clear()
+    this.clients.forEach((client) => this.sendMerchantSnapshot(client))
   }
 
   private resetDeeds() {
@@ -223,19 +248,20 @@ class WoodlandRoom extends Room {
   }
 
   private finalizeMinigame(milestone: number) {
+    if (this.settledMinigames.has(milestone)) return
     this.resumeOreRespawns()
     const entries = [...(this.minigameResults.get(milestone)?.entries() ?? [])].sort((a, b) => b[1].score - a[1].score || a[0].localeCompare(b[0]))
     if (!entries.length) return
     const progress = entries.map(([, result]) => result.progressValue).sort((a, b) => a - b)
     const middle = Math.floor(progress.length / 2)
     const economyReference = progress.length % 2 ? progress[middle] : Math.round((progress[middle - 1] + progress[middle]) / 2)
-    const leaderCash = Math.max(...entries.map(([id]) => this.players.get(id)?.cash ?? 0))
+    const leaderProgress = Math.max(...entries.map(([, result]) => result.progressValue))
     entries.forEach(([id, result], index) => {
       const placement = index + 1
-      const playerCash = this.players.get(id)?.cash ?? 0
-      const reward = minigameRewardPackage(economyReference, placement, playerCash, leaderCash)
-      this.sendTo(id, 'minigame:result', { milestone, score: result.score, placement, economyReference, cashReward: reward.cash, cookbookBoxes: reward.boxes })
+      const reward = minigameRewards({ economyReference, placement, playerProgress: result.progressValue, leaderProgress, matchSeed: this.matchSeed, milestone, playerId: id })
+      this.sendTo(id, 'minigame:result', { milestone, score: result.score, placement, economyReference, cashReward: reward.cash, itemRolls: reward.itemRolls })
     })
+    this.settledMinigames.add(milestone)
     this.minigameResults.delete(milestone)
     const timer = this.minigameTimers.get(milestone)
     if (timer) clearTimeout(timer)
@@ -251,6 +277,7 @@ class WoodlandRoom extends Room {
       this.sendOreSnapshot(client)
       this.farmSnapshot(client)
       this.deedSnapshot(client)
+      this.sendMerchantSnapshot(client)
     })
     this.onMessage('lobby:update', (client, message: { durationSeconds?: number }) => {
       if (this.matchStarted || client.sessionId !== this.hostId) return
@@ -268,6 +295,8 @@ class WoodlandRoom extends Room {
       this.resetOreNodes()
       this.resetFarms()
       this.resetDeeds()
+      this.resetMerchant()
+      this.settledMinigames.clear()
       this.broadcast('match:sync', { seed: this.matchSeed, startedAt: this.matchStartedAt, durationSeconds: this.matchDurationSeconds })
       this.broadcastLobby()
     })
@@ -334,6 +363,37 @@ class WoodlandRoom extends Room {
       client.send('mine:award', { id, ore, quantity, ...next })
       this.scheduleOreRespawn(id)
     })
+    this.onMessage('merchant:request', (client) => this.sendMerchantSnapshot(client))
+    this.onMessage('merchant:buy', (client, message: { requestId?: string; cycleId?: string; itemId?: MerchantItemId }) => {
+      const requestId = typeof message?.requestId === 'string' ? message.requestId.slice(0, 80) : ''
+      if (!requestId) return
+      const results = this.merchantResults.get(client.sessionId) ?? new Map<string, MerchantPurchaseResult>()
+      const prior = results.get(requestId)
+      if (prior) return client.send('merchant:result', prior)
+      const cycle = this.currentMerchant()
+      const fail = (reason: string) => {
+        const result: MerchantPurchaseResult = { requestId, ok: false, reason, cycle: cycle ?? undefined }
+        results.set(requestId, result)
+        this.merchantResults.set(client.sessionId, results)
+        client.send('merchant:result', result)
+      }
+      if (!cycle || cycle.id !== message.cycleId) return fail('Stock changed')
+      const itemId = message.itemId
+      if (!itemId) return fail('Unavailable')
+      const offer = cycle.inventory.find((entry) => entry.id === itemId)
+      if (!offer) return fail('Unavailable')
+      const playerCash = this.players.get(client.sessionId)?.cash ?? 0
+      if (playerCash < offer.price) return fail('Not enough coins')
+      const purchase = consumeMerchantStock(cycle, itemId)
+      if (!purchase.ok) return fail(purchase.reason === 'sold-out' ? 'Sold out' : 'Unavailable')
+      this.merchantCycleState = purchase.cycle
+      const result: MerchantPurchaseResult = { requestId, ok: true, itemId, price: offer.price, cycle: purchase.cycle }
+      results.set(requestId, result)
+      while (results.size > 64) results.delete(results.keys().next().value!)
+      this.merchantResults.set(client.sessionId, results)
+      client.send('merchant:result', result)
+      this.broadcast('merchant:snapshot', purchase.cycle)
+    })
     this.onMessage('deed:purchase', (client, message: { requestId?: string; quantity?: number }) => {
       const requestId = typeof message?.requestId === 'string' ? message.requestId.slice(0, 80) : ''
       if (!requestId) return
@@ -365,7 +425,7 @@ class WoodlandRoom extends Room {
       client.send('deed:result', result)
       if (globalCount > 0) this.broadcast('deed:stock', { globalRemaining: this.globalDeedsRemaining })
     })
-    this.onMessage('farm:action', (client, message: { requestId?: string; op?: 'claim' | 'plant' | 'water' | 'harvest'; farmId?: number; cellIndex?: number; crop?: CropKind; watered?: boolean }) => {
+    this.onMessage('farm:action', (client, message: { requestId?: string; op?: 'claim' | 'plant' | 'water' | 'harvest' | 'rain'; farmId?: number; cellIndex?: number; crop?: CropKind; watered?: boolean }) => {
       const requestId = typeof message?.requestId === 'string' ? message.requestId.slice(0, 80) : ''
       const op = message?.op
       const farmId = Math.floor(Number(message?.farmId))
@@ -394,6 +454,17 @@ class WoodlandRoom extends Room {
         return respond({ ok: true })
       }
       if (farm.ownerId !== client.sessionId) return respond({ ok: false, reason: 'Not your farm' })
+      if (op === 'rain') {
+        const dryCells = [...farm.cells.entries()].filter(([, cell]) => cell.stage === 'planted' && cell.crop)
+        if (!dryCells.length) return respond({ ok: false, reason: 'No dry crops' })
+        for (const [index, current] of dryCells) {
+          const cell: SharedFarmCell = { ...current, stage: 'watered', readyAt: Date.now() + farmGrowthMs(current.crop!) }
+          farm.cells.set(index, cell)
+          this.broadcast('farm:update', { farmId, cellIndex: index, cell })
+          this.scheduleFarmReady(farmId, index)
+        }
+        return respond({ ok: true })
+      }
       if (cellIndex < 0 || cellIndex >= 64) return respond({ ok: false, reason: 'Invalid plot' })
       const column = cellIndex % 8
       const row = Math.floor(cellIndex / 8)
@@ -518,6 +589,7 @@ class WoodlandRoom extends Room {
     this.sendOreSnapshot(client)
     this.farmSnapshot(client)
     this.deedSnapshot(client)
+    this.sendMerchantSnapshot(client)
     const presence: Presence = { id: client.sessionId, nickname: `Player ${client.sessionId.slice(0, 4)}`, zone: 'hub', position: [0, 0.86, 14], cash: 100_000, stats: { foraged: 0, mined: 0, harvested: 0, sold: 0 }, seenAt: Date.now() }
     this.players.set(client.sessionId, presence)
     this.broadcast('presence:move', presence, { except: client })
@@ -530,8 +602,10 @@ class WoodlandRoom extends Room {
       this.trades.delete(trade.id)
     }
     this.players.delete(client.sessionId)
+    this.minigameResults.forEach((results) => results.delete(client.sessionId))
     this.farmResults.delete(client.sessionId)
     this.deedResults.delete(client.sessionId)
+    this.merchantResults.delete(client.sessionId)
     this.lobbyEligible.delete(client.sessionId)
     this.releaseEventBay(client.sessionId)
     this.broadcast('presence:leave', client.sessionId)

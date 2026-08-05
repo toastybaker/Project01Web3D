@@ -8,20 +8,47 @@ export const ENHANCEABLE_ITEMS = [
 
 export type EnhanceableItem = typeof ENHANCEABLE_ITEMS[number]
 export type EnhancementLevels = Partial<Record<EnhanceableItem, number>>
-export type EnhancementRequirements = { coins: number; materials: Partial<Record<ItemId, number>> }
+export const ENHANCEMENT_WARDS = {
+  4: 'upgrade-guard-4',
+  5: 'upgrade-guard-5',
+  6: 'upgrade-guard-6',
+} as const
+export const ENHANCEMENT_VOUCHER = 'upgrade-coupon' as const
+
+export type EnhancementWardId = typeof ENHANCEMENT_WARDS[keyof typeof ENHANCEMENT_WARDS]
+export type EnhancementConsumableId = EnhancementWardId | typeof ENHANCEMENT_VOUCHER
+export type EnhancementInventory = Partial<Record<ItemId | EnhancementConsumableId, number>>
+export type EnhancementAttemptOptions = { ward?: EnhancementWardId; voucher?: boolean }
+export type EnhancementRequirements = {
+  coins: number
+  coinDiscount: number
+  materials: Partial<Record<ItemId, number>>
+}
 export type EnhancementAttempt = {
   ok: boolean
-  reason?: 'max' | 'coins' | 'materials'
+  reason?: 'max' | 'coins' | 'materials' | 'ward' | 'voucher'
   cash: number
-  inventory: Partial<Record<ItemId, number>>
+  inventory: EnhancementInventory
   success?: boolean
   level: number
   target: number
+  wardUsed?: EnhancementWardId
+  voucherUsed?: boolean
 }
 
 const enhanceableSet = new Set<string>(ENHANCEABLE_ITEMS)
 const chances = [0, 1, .95, .85, .72, .58, .38, .30, .24, .18, .12] as const
 const coinCosts = [0, 40_000, 90_000, 180_000, 350_000, 650_000, 1_000_000, 1_600_000, 2_500_000, 4_000_000, 6_500_000] as const
+const coinMultipliers: Record<EnhanceableItem, number> = {
+  'worn-pickaxe': .75,
+  'iron-pickaxe': 1,
+  'steel-pickaxe': 1.5,
+  'crystal-pickaxe': 2.25,
+  basket: 1,
+  'reinforced-basket': 1.5,
+  'master-basket': 2.25,
+  'harvest-charm': 1,
+}
 const speedBonuses = [0, .005, .01, .02, .03, .045, .065, .09, .12, .155, .20] as const
 const capacityBonuses = [0, .01, .02, .04, .06, .09, .13, .18, .24, .31, .40] as const
 
@@ -36,8 +63,8 @@ const pickaxeMaterials = materialRows([
   { 'silver-ore': 8, 'gold-ore': 4, truffle: 1, watermelon: 1 },
   { 'gold-ore': 8, 'crystal-ore': 2, truffle: 1, watermelon: 1 },
   { 'gold-ore': 6, 'crystal-ore': 4, 'natural-discovery': 1, watermelon: 2 },
-  { 'crystal-ore': 6, 'ancient-ore': 1, 'natural-discovery': 1, truffle: 1, watermelon: 2 },
-  { 'crystal-ore': 10, 'ancient-ore': 2, 'natural-discovery': 2, truffle: 1, watermelon: 3 },
+  { 'crystal-ore': 8, 'ancient-ore': 2, 'natural-discovery': 1, truffle: 1, watermelon: 2 },
+  { 'crystal-ore': 12, 'ancient-ore': 3, 'natural-discovery': 2, truffle: 2, watermelon: 4 },
 ])
 
 const basketMaterials = materialRows([
@@ -46,11 +73,11 @@ const basketMaterials = materialRows([
   { apple: 24, orange: 18, 'iron-ore': 4 },
   { apple: 30, orange: 24, 'iron-ore': 4, 'silver-ore': 2 },
   { apple: 36, orange: 30, 'silver-ore': 4, pumpkin: 1 },
-  { apple: 45, orange: 36, 'gold-ore': 2, truffle: 1, pumpkin: 1 },
-  { apple: 55, orange: 44, 'gold-ore': 2, 'crystal-ore': 1, truffle: 1 },
-  { apple: 70, orange: 55, 'crystal-ore': 3, 'natural-discovery': 1, watermelon: 1 },
-  { apple: 85, orange: 70, 'ancient-ore': 1, 'natural-discovery': 1, watermelon: 2 },
-  { apple: 110, orange: 90, 'ancient-ore': 2, 'natural-discovery': 2, watermelon: 3 },
+  { apple: 45, orange: 36, 'silver-ore': 4, 'gold-ore': 2, truffle: 1, watermelon: 1 },
+  { apple: 55, orange: 44, 'gold-ore': 4, 'crystal-ore': 2, truffle: 1, watermelon: 1 },
+  { apple: 70, orange: 55, 'crystal-ore': 3, 'ancient-ore': 1, 'natural-discovery': 1, watermelon: 1 },
+  { apple: 85, orange: 70, 'crystal-ore': 5, 'ancient-ore': 2, 'natural-discovery': 1, truffle: 1, watermelon: 2 },
+  { apple: 110, orange: 90, 'crystal-ore': 8, 'ancient-ore': 3, 'natural-discovery': 2, truffle: 1, watermelon: 3 },
 ])
 
 const charmMaterials = materialRows([
@@ -58,19 +85,13 @@ const charmMaterials = materialRows([
   { tomato: 8, orange: 6, 'copper-ore': 2 },
   { lettuce: 6, 'iron-ore': 2, apple: 8 },
   { lettuce: 6, pumpkin: 1, 'silver-ore': 3, orange: 10 },
-  { pumpkin: 2, 'silver-ore': 4, orange: 14 },
-  { watermelon: 1, 'gold-ore': 2, truffle: 1, apple: 16 },
-  { watermelon: 2, 'crystal-ore': 1, truffle: 1, orange: 20 },
-  { watermelon: 2, 'crystal-ore': 2, 'natural-discovery': 1, apple: 20 },
-  { watermelon: 3, 'ancient-ore': 1, 'natural-discovery': 1, truffle: 1 },
-  { watermelon: 4, 'ancient-ore': 2, 'natural-discovery': 2, truffle: 1 },
+  { pumpkin: 3, 'silver-ore': 6, orange: 20 },
+  { watermelon: 1, 'silver-ore': 4, 'gold-ore': 2, truffle: 1, tomato: 8, apple: 16 },
+  { watermelon: 2, 'gold-ore': 4, 'crystal-ore': 1, truffle: 1, orange: 20 },
+  { watermelon: 2, 'crystal-ore': 2, 'ancient-ore': 1, 'natural-discovery': 1, apple: 20 },
+  { watermelon: 3, 'crystal-ore': 5, 'ancient-ore': 1, 'natural-discovery': 1, truffle: 1, 'gold-ore': 2 },
+  { watermelon: 4, 'crystal-ore': 8, 'ancient-ore': 2, 'natural-discovery': 2, truffle: 1, 'gold-ore': 4 },
 ])
-
-const stabilization: Partial<Record<number, EnhancementRequirements>> = {
-  8: { coins: 1_000_000, materials: { 'natural-discovery': 1, truffle: 1, 'crystal-ore': 2 } },
-  9: { coins: 2_000_000, materials: { 'natural-discovery': 1, truffle: 1, 'ancient-ore': 1 } },
-  10: { coins: 4_000_000, materials: { 'natural-discovery': 2, truffle: 1, 'ancient-ore': 2 } },
-}
 
 function outcomes(...percentages: number[]): FortuneOutcome[] {
   return percentages.map((chance, bonus) => ({ chance: chance / 100, bonus }))
@@ -130,7 +151,14 @@ export function enhancementName(item: EnhanceableItem, level: number, includeZer
 }
 
 export function enhancementChance(target: number) { return chances[Math.max(0, Math.min(10, Math.floor(target)))] ?? 0 }
-export function enhancementCoinCost(target: number) { return coinCosts[Math.max(0, Math.min(10, Math.floor(target)))] ?? 0 }
+export function enhancementBaseCoinCost(target: number) { return coinCosts[Math.max(0, Math.min(10, Math.floor(target)))] ?? 0 }
+export function enhancementCoinMultiplier(item: EnhanceableItem) { return coinMultipliers[item] }
+export function enhancementCoinCost(target: number): number
+export function enhancementCoinCost(item: EnhanceableItem, target: number): number
+export function enhancementCoinCost(itemOrTarget: EnhanceableItem | number, maybeTarget?: number) {
+  if (typeof itemOrTarget === 'number') return enhancementBaseCoinCost(itemOrTarget)
+  return Math.round(enhancementBaseCoinCost(maybeTarget ?? 0) * enhancementCoinMultiplier(itemOrTarget) / 10_000) * 10_000
+}
 export function miningSpeedBonus(level: number) { return speedBonuses[Math.max(0, Math.min(10, Math.floor(level)))] ?? 0 }
 export function basketCapacityBonus(level: number) { return capacityBonuses[Math.max(0, Math.min(10, Math.floor(level)))] ?? 0 }
 
@@ -154,48 +182,75 @@ export function enhancedYield(item: EnhanceableItem, level: number, random = Mat
   return 1 + fortuneBonus(fortuneFor(item, level), random)
 }
 
-export function enhancementRequirements(item: EnhanceableItem, target: number, stabilized = false): EnhancementRequirements {
+export function enhancementWardForTarget(target: number): EnhancementWardId | undefined {
+  return ENHANCEMENT_WARDS[Math.floor(target) as keyof typeof ENHANCEMENT_WARDS]
+}
+
+export function canUseEnhancementWard(ward: EnhancementWardId | undefined, target: number) {
+  return Boolean(ward && enhancementWardForTarget(target) === ward)
+}
+
+export function canUseEnhancementVoucher(target: number) {
+  const safeTarget = Math.floor(target)
+  return safeTarget >= 1 && safeTarget <= 6
+}
+
+export function enhancementVoucherDiscount(coins: number) {
+  return Math.min(Math.round(Math.max(0, coins) * .30), 750_000)
+}
+
+export function enhancementRequirements(
+  item: EnhanceableItem,
+  target: number,
+  options: Pick<EnhancementAttemptOptions, 'voucher'> = {},
+): EnhancementRequirements {
   const safeTarget = Math.max(1, Math.min(10, Math.floor(target)))
   const baseMaterials = item === 'harvest-charm' ? charmMaterials[safeTarget]
     : item.endsWith('pickaxe') ? pickaxeMaterials[safeTarget]
       : basketMaterials[safeTarget]
-  const extra = stabilized ? stabilization[safeTarget] : undefined
   const materials = { ...baseMaterials }
-  Object.entries(extra?.materials ?? {}).forEach(([id, quantity]) => {
-    const itemId = id as ItemId
-    materials[itemId] = (materials[itemId] ?? 0) + Number(quantity)
-  })
-  return { coins: enhancementCoinCost(safeTarget) + (extra?.coins ?? 0), materials }
+  const baseCoins = enhancementCoinCost(item, safeTarget)
+  const coinDiscount = options.voucher && canUseEnhancementVoucher(safeTarget) ? enhancementVoucherDiscount(baseCoins) : 0
+  return { coins: baseCoins - coinDiscount, coinDiscount, materials }
 }
 
-export function canStabilize(target: number) { return target >= 8 && target <= 10 }
-
-export function enhancementResultLevel(current: number, success: boolean, stabilized = false) {
+export function enhancementResultLevel(current: number, success: boolean, ward?: EnhancementWardId) {
   const safe = Math.max(0, Math.min(10, Math.floor(current)))
   if (success) return Math.min(10, safe + 1)
-  if (safe + 1 >= 4 && !stabilized) return Math.max(0, safe - 1)
+  if (safe + 1 >= 4 && !canUseEnhancementWard(ward, safe + 1)) return Math.max(0, safe - 1)
   return safe
 }
 
-export function enhancementRoll(current: number, random = Math.random(), stabilized = false) {
+export function enhancementRoll(current: number, random = Math.random(), ward?: EnhancementWardId) {
   const target = Math.min(10, Math.max(0, Math.floor(current)) + 1)
   const success = random < enhancementChance(target)
-  return { success, target, level: enhancementResultLevel(current, success, stabilized && canStabilize(target)) }
+  return { success, target, level: enhancementResultLevel(current, success, ward) }
 }
 
 export function resolveEnhancementAttempt(
   item: EnhanceableItem,
   current: number,
   cash: number,
-  inventory: Partial<Record<ItemId, number>>,
-  stabilized = false,
+  inventory: EnhancementInventory,
+  options: EnhancementAttemptOptions = {},
   random = Math.random(),
 ): EnhancementAttempt {
   const safeCurrent = Math.max(0, Math.min(10, Math.floor(current)))
   const target = Math.min(10, safeCurrent + 1)
   if (safeCurrent >= 10) return { ok: false, reason: 'max', cash, inventory, level: safeCurrent, target }
-  const protectedAttempt = stabilized && canStabilize(target)
-  const requirements = enhancementRequirements(item, target, protectedAttempt)
+  if (options.ward && !canUseEnhancementWard(options.ward, target)) {
+    return { ok: false, reason: 'ward', cash, inventory, level: safeCurrent, target }
+  }
+  if (options.voucher && !canUseEnhancementVoucher(target)) {
+    return { ok: false, reason: 'voucher', cash, inventory, level: safeCurrent, target }
+  }
+  if (options.ward && (inventory[options.ward] ?? 0) < 1) {
+    return { ok: false, reason: 'ward', cash, inventory, level: safeCurrent, target }
+  }
+  if (options.voucher && (inventory[ENHANCEMENT_VOUCHER] ?? 0) < 1) {
+    return { ok: false, reason: 'voucher', cash, inventory, level: safeCurrent, target }
+  }
+  const requirements = enhancementRequirements(item, target, options)
   if (cash < requirements.coins) return { ok: false, reason: 'coins', cash, inventory, level: safeCurrent, target }
   const missing = Object.entries(requirements.materials).some(([id, quantity]) => (inventory[id as ItemId] ?? 0) < Number(quantity))
   if (missing) return { ok: false, reason: 'materials', cash, inventory, level: safeCurrent, target }
@@ -204,7 +259,9 @@ export function resolveEnhancementAttempt(
     const itemId = id as ItemId
     nextInventory[itemId] = (nextInventory[itemId] ?? 0) - Number(quantity)
   })
-  const result = enhancementRoll(safeCurrent, random, protectedAttempt)
+  if (options.ward) nextInventory[options.ward] = (nextInventory[options.ward] ?? 0) - 1
+  if (options.voucher) nextInventory[ENHANCEMENT_VOUCHER] = (nextInventory[ENHANCEMENT_VOUCHER] ?? 0) - 1
+  const result = enhancementRoll(safeCurrent, random, options.ward)
   return {
     ok: true,
     cash: cash - requirements.coins,
@@ -212,5 +269,7 @@ export function resolveEnhancementAttempt(
     success: result.success,
     level: result.level,
     target,
+    wardUsed: options.ward,
+    voucherUsed: options.voucher || undefined,
   }
 }

@@ -3,6 +3,8 @@ import { enhancedBasketCapacity, enhancementName, expectedFortune, fortuneFor, m
 
 export type ItemId =
   | 'farm-deed' | 'lottery-ticket' | 'information-note' | 'cookbook-box' | 'furnace' | 'water-can' | 'home-charm' | 'gold-coins'
+  | 'mining-boost' | 'fortune-boost' | 'cook-timer' | 'rain-bottle' | 'upgrade-coupon'
+  | 'upgrade-guard-4' | 'upgrade-guard-5' | 'upgrade-guard-6'
   | 'worn-pickaxe' | 'iron-pickaxe' | 'steel-pickaxe' | 'crystal-pickaxe'
   | 'basket' | 'reinforced-basket' | 'master-basket' | 'harvest-charm'
   | 'wheat-seeds' | 'tomato-seeds' | 'lettuce-seeds' | 'pumpkin-seeds' | 'watermelon-seeds'
@@ -31,7 +33,15 @@ export const ITEMS: Record<ItemId, ItemDefinition> = {
   'farm-deed': { id: 'farm-deed', name: 'Farm Deed', icon: '/assets/ui/items/land-deed.png', buyPrice: 2_500_000, category: 'utility', limited: true, hotbar: false },
   'lottery-ticket': { id: 'lottery-ticket', name: 'Lottery', icon: '/assets/ui/items/lottery-ticket.png', buyPrice: 30_000, category: 'utility' },
   'information-note': { id: 'information-note', name: 'Broker Note', icon: '/assets/ui/cooking/cookbook.png', category: 'utility' },
-  'cookbook-box': { id: 'cookbook-box', name: 'Cookbook Box', icon: '/assets/ui/cooking/cookbook.png', buyPrice: 600_000, category: 'cooking' },
+  'cookbook-box': { id: 'cookbook-box', name: 'Cookbook Box', icon: '/assets/ui/items/merchant/cookbook-box-merchant.png', buyPrice: 600_000, category: 'cooking' },
+  'mining-boost': { id: 'mining-boost', name: 'Mining Tonic', icon: '/assets/ui/items/merchant/mining-boost.png', category: 'utility', hotbar: false },
+  'fortune-boost': { id: 'fortune-boost', name: 'Luck Tonic', icon: '/assets/ui/items/merchant/fortune-boost.png', category: 'utility', hotbar: false },
+  'cook-timer': { id: 'cook-timer', name: 'Cook Timer', icon: '/assets/ui/items/merchant/cook-timer.png', category: 'utility', hotbar: false },
+  'rain-bottle': { id: 'rain-bottle', name: 'Rain Bottle', icon: '/assets/ui/items/merchant/rain-bottle.png', category: 'utility', hotbar: false },
+  'upgrade-coupon': { id: 'upgrade-coupon', name: 'Forge Coupon', icon: '/assets/ui/items/merchant/upgrade-coupon.png', category: 'utility', hotbar: false },
+  'upgrade-guard-4': { id: 'upgrade-guard-4', name: '+4 Ward', icon: '/assets/ui/items/merchant/upgrade-guard-4.png', category: 'utility', hotbar: false },
+  'upgrade-guard-5': { id: 'upgrade-guard-5', name: '+5 Ward', icon: '/assets/ui/items/merchant/upgrade-guard-5.png', category: 'utility', hotbar: false },
+  'upgrade-guard-6': { id: 'upgrade-guard-6', name: '+6 Ward', icon: '/assets/ui/items/merchant/upgrade-guard-6.png', category: 'utility', hotbar: false },
   furnace: { id: 'furnace', name: 'Farm Furnace', icon: '/assets/ui/cooking/furnace-idle-v2.png', buyPrice: 1_500_000, category: 'cooking', hotbar: false },
   'water-can': { id: 'water-can', name: 'Watering Can', icon: '/assets/ui/items/water-can-v2.png', buyPrice: 90_000, category: 'tool' },
   'worn-pickaxe': { id: 'worn-pickaxe', name: PICKAXE_CONFIG['worn-pickaxe'].name, icon: '/assets/ui/items/worn-pickaxe.png', category: 'tool' },
@@ -124,6 +134,14 @@ export function itemTooltip(id: ItemId, enhancement = 0): string[] | null {
   if (id === 'home-charm') return ['LMB Common · RMB Choose destination']
   if (id === 'lottery-ticket') return ['RMB View chosen numbers']
   if (id === 'information-note') return ['RMB Read information']
+  if (id === 'mining-boost') return ['Use: +12% mining speed · 3m', 'Pauses during events']
+  if (id === 'fortune-boost') return ['Use on gear: Fortune +1 level', '20 mines · 30 trees · 32 crops']
+  if (id === 'cook-timer') return ['Use: cuts active cook times', 'Up to 30s each · 90s total']
+  if (id === 'rain-bottle') return ['Use on a farm', 'Waters every planted crop']
+  if (id === 'upgrade-coupon') return ['Forge: 30% off coins', 'Up to 750K · targets +1 to +6']
+  if (id === 'upgrade-guard-4') return ['Forge: protects the +4 attempt', 'Consumed when used']
+  if (id === 'upgrade-guard-5') return ['Forge: protects the +5 attempt', 'Consumed when used']
+  if (id === 'upgrade-guard-6') return ['Forge: protects the +6 attempt', 'Consumed when used']
   if (id in PICKAXE_CONFIG) {
     const pickaxe = PICKAXE_CONFIG[id as keyof typeof PICKAXE_CONFIG]
     const item = id as keyof typeof PICKAXE_CONFIG
