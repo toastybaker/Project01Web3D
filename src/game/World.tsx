@@ -210,7 +210,7 @@ function minigameGroundHeight(kind: MinigameKind, x: number, z: number) {
   return forageGroundHeight(x, z)
 }
 
-function SceneLighting() {
+function SceneLighting({ reduced = false }: { reduced?: boolean }) {
   const { scene } = useThree()
   const zone = useGameStore((state) => state.zone)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
@@ -229,7 +229,7 @@ function SceneLighting() {
     <>
       <hemisphereLight color={mineLike ? '#efe7dc' : '#fff0cc'} groundColor={mineLike ? '#5b5046' : '#263b29'} intensity={eventMining ? 1.7 : mineLike ? 1.32 : 1.12} />
       <directionalLight
-        castShadow={!mineLike && graphicsMode !== 'low'}
+        castShadow={!mineLike && graphicsMode !== 'low' && !reduced}
         color={mineLike ? '#a8babd' : '#ffdca0'}
         intensity={eventMining ? 2.35 : mineLike ? 2.05 : 2.05}
         position={[-12, 19, 10]}
@@ -242,7 +242,7 @@ function SceneLighting() {
       />
       {zone === 'hub' && <pointLight color="#efb25d" intensity={4.2} distance={10} decay={2} position={[2.6, 2.5, 1.8]} />}
       {mineLike && <><pointLight color="#efbd79" intensity={eventMining ? 12 : 10.2} distance={48} decay={2} position={[0, 4.6, 18]} /><pointLight color="#d99a5c" intensity={eventMining ? 9.5 : 8.8} distance={48} decay={2} position={[-14, 3.2, -2]} /><pointLight color="#9cbcc0" intensity={eventMining ? 9.5 : 8.4} distance={48} decay={2} position={[14, 3.2, -4]} /></>}
-      {zone === 'mine' && !minigameOpen && <><pointLight color="#e5aa68" intensity={8.8} distance={50} decay={2} position={[-41, -5, -75]} /><pointLight color="#9dc7d0" intensity={9.2} distance={50} decay={2} position={[42, -6, -78]} /><pointLight color="#e0ad70" intensity={9} distance={52} decay={2} position={[-31, -13, -124]} /><pointLight color="#98c2cd" intensity={9} distance={50} decay={2} position={[32, -13, -126]} /><pointLight color="#dba266" intensity={8.6} distance={54} decay={2} position={[0, -25, -206]} /></>}
+      {zone === 'mine' && !minigameOpen && <><pointLight color="#e5aa68" intensity={8.8} distance={50} decay={2} position={[-41, -5, -75]} />{!reduced && <pointLight color="#9dc7d0" intensity={9.2} distance={50} decay={2} position={[42, -6, -78]} />}<pointLight color="#e0ad70" intensity={9} distance={52} decay={2} position={[-31, -13, -124]} />{!reduced && <pointLight color="#98c2cd" intensity={9} distance={50} decay={2} position={[32, -13, -126]} />}<pointLight color="#dba266" intensity={8.6} distance={54} decay={2} position={[0, -25, -206]} /></>}
     </>
   )
 }
@@ -287,7 +287,7 @@ function WeatherEffect() {
   )
 }
 
-function AdaptiveRenderScale({ rendererLow }: { rendererLow: boolean }) {
+function AdaptiveRenderScale({ rendererLow, onReduced }: { rendererLow: boolean; onReduced: (reduced: boolean) => void }) {
   const setDpr = useThree((state) => state.setDpr)
   const graphicsMode = useGameStore((state) => state.graphicsMode)
   const deviceDpr = useMemo(() => window.devicePixelRatio || 1, [])
@@ -299,13 +299,14 @@ function AdaptiveRenderScale({ rendererLow }: { rendererLow: boolean }) {
       : graphicsMode === 'high'
         ? Math.min(deviceDpr, 1.5)
         : autoDpr
-  const sample = useRef({ startedAt: performance.now(), frames: 0, currentDpr: presetDpr, recoveryWindows: 0, grace: true })
+  const sample = useRef({ startedAt: performance.now(), frames: 0, currentDpr: presetDpr, recoveryWindows: 0, grace: true, reduced: false })
 
   useEffect(() => {
     const dpr = presetDpr
-    sample.current = { startedAt: performance.now(), frames: 0, currentDpr: dpr, recoveryWindows: 0, grace: true }
+    sample.current = { startedAt: performance.now(), frames: 0, currentDpr: dpr, recoveryWindows: 0, grace: true, reduced: false }
+    onReduced(false)
     setDpr(dpr)
-  }, [graphicsMode, presetDpr, rendererLow, setDpr])
+  }, [graphicsMode, onReduced, presetDpr, rendererLow, setDpr])
 
   useFrame(() => {
     if (graphicsMode !== 'auto') return
@@ -319,6 +320,10 @@ function AdaptiveRenderScale({ rendererLow }: { rendererLow: boolean }) {
     state.startedAt = now
     state.frames = 0
     state.grace = false
+    if (fps < 60 && !state.reduced) {
+      state.reduced = true
+      onReduced(true)
+    }
     // Keep the full render scale when the browser is close to the 120 Hz target.
     // The fallback never renders below one physical pixel per CSS pixel.
     if (fps < 90 && state.currentDpr > Math.min(deviceDpr, .85)) {
@@ -466,7 +471,7 @@ function syncFruitBatches(batches: FruitBatch[]) {
   }
 }
 
-function EnvironmentScene() {
+function EnvironmentScene({ reduced = false }: { reduced?: boolean }) {
   const zone = useGameStore((state) => state.zone)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
@@ -677,7 +682,7 @@ function EnvironmentScene() {
         colliders.push({ x: point.x, z: point.z, radius: object.userData.colliderRadius * Math.max(scale.x, scale.z) })
       }
       if (object instanceof THREE.Mesh) {
-        object.castShadow = true
+        object.castShadow = !reduced
         object.receiveShadow = true
         const materials = Array.isArray(object.material) ? object.material : [object.material]
         materials.forEach((material) => {
@@ -687,7 +692,7 @@ function EnvironmentScene() {
     })
     setAnchors(anchors)
     setColliders(colliders)
-  }, [collectedForage, eventBay, farmRushCooking, forageRushCollected, furnaceBodies, furnaceCount, matchStartedAt, minedNodes, mineGenerations, minigameKind, minigameMilestone, minigameOpen, ownedFarms, rareResourceIds, rushNodes, scene, sessionSeed, setAnchors, setColliders])
+  }, [collectedForage, eventBay, farmRushCooking, forageRushCollected, furnaceBodies, furnaceCount, matchStartedAt, minedNodes, mineGenerations, minigameKind, minigameMilestone, minigameOpen, ownedFarms, rareResourceIds, reduced, rushNodes, scene, sessionSeed, setAnchors, setColliders])
 
   return <primitive object={scene} />
 }
@@ -1696,6 +1701,7 @@ function LoadingMark() {
 
 export function GameWorld() {
   const graphicsMode = useGameStore((state) => state.graphicsMode)
+  const [autoReduced, setAutoReduced] = useState(false)
   // Auto quality changes render scale in-place through AdaptiveRenderScale.
   // Do not replace the WebGL canvas when an FPS sample crosses a threshold:
   // destroying and recreating the context caused a visible green/loading flash
@@ -1703,11 +1709,11 @@ export function GameWorld() {
   const low = graphicsMode === 'low'
   return (
     <Canvas key={low ? 'low-renderer' : 'full-renderer'} shadows={low ? false : 'basic'} dpr={[1, 1.25]} camera={{ fov: 48, near: 0.1, far: 300, position: [0, 4.2, 20.2] }} gl={{ antialias: !low, powerPreference: 'high-performance' }}>
-      <AdaptiveRenderScale rendererLow={low} />
-      <SceneLighting />
+      <AdaptiveRenderScale rendererLow={low} onReduced={setAutoReduced} />
+      <SceneLighting reduced={autoReduced} />
       <WeatherEffect />
       <Suspense fallback={<LoadingMark />}>
-        <EnvironmentScene />
+        <EnvironmentScene reduced={autoReduced} />
         <Player />
         <MultiplayerPresence />
         <InteractiveWorldObjects />
