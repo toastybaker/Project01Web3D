@@ -1,33 +1,102 @@
 import { Room, Server, type Client } from '@colyseus/core'
 import { WebSocketTransport } from '@colyseus/ws-transport'
+import { createReadStream, existsSync, statSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { extname, resolve, sep } from 'node:path'
 import { minigameMilestones, minigameRewards, scheduledMinigame } from '../src/game/minigame'
 import { consumeMerchantStock, currentMerchantCycle, type MerchantCycle, type MerchantItemId } from '../src/game/merchant'
-import { CROP_CONFIG, MATCH_CONFIG } from '../src/game/config'
+import { CROP_CONFIG, MATCH_CONFIG, activeRareForageIds, fruitTreeCapacity, nextRareForageRollAt } from '../src/game/config'
 import { canMineOre, miningYield, oreKindAtDepth, oreRespawnMs, type PickaxeItem } from '../src/game/ore'
 import { MINE_NODE_BY_ID, MINE_NODE_SITES } from '../shared/mine-nodes.js'
 
 type ZoneId = 'hub' | 'forage' | 'farm' | 'mine'
 type MinigameKind = 'mining' | 'farm' | 'forage'
 type PublicStats = { foraged: number; mined: number; harvested: number; sold: number }
-type Presence = { id: string; nickname: string; zone: ZoneId; position: [number, number, number]; cash: number; progressValue?: number; stats: PublicStats; seenAt: number; minigameOpen?: boolean; minigameKind?: MinigameKind; minigameMilestone?: number; minigameScore?: number; eventBay?: number }
+type Presence = { id: string; nickname: string; zone: ZoneId; position: [number, number, number]; yaw?: number; animation?: string; cash: number; progressValue?: number; stats: PublicStats; seenAt: number; minigameOpen?: boolean; minigameKind?: MinigameKind; minigameMilestone?: number; minigameScore?: number; eventBay?: number }
 type TradeOffer = { cash: number; items: Record<string, number> }
 type TradeSession = { id: string; a: string; b: string; offers: Record<string, TradeOffer>; ready: Record<string, boolean> }
 type MinigameResult = { score: number; progressValue: number }
 type EventReadyGate = { participants: Set<string>; ready: Set<string>; gameplayAt: number | null; timeout: ReturnType<typeof setTimeout> }
 type SharedOreNode = { generation: number; readyAt: number }
+type ForageItem = 'apple' | 'orange' | 'truffle' | 'natural-discovery'
+type ForageNodeDefinition = { id: string; item: ForageItem; capacity: number; x: number; z: number; rare?: boolean }
+type SharedForageNode = ForageNodeDefinition & { fullAt: number; rareAvailable?: boolean }
 type CropKind = keyof typeof CROP_CONFIG
 type SharedFarmCell = { crop: CropKind | null; stage: 'empty' | 'planted' | 'watered' | 'ready'; readyAt: number | null }
 type SharedFarm = { ownerId: string | null; cells: Map<number, SharedFarmCell> }
 type FarmResult = { requestId: string; ok: boolean; reason?: string; op?: 'claim' | 'plant' | 'water' | 'harvest' | 'rain'; farmId?: number; cellIndex?: number; crop?: CropKind; quantity?: number }
 type DeedResult = { requestId: string; ok: boolean; quantity: number; personalCount: number; globalCount: number; personalAvailable: boolean; globalRemaining: number; reason?: string }
 type MerchantPurchaseResult = { requestId: string; ok: boolean; reason?: string; itemId?: MerchantItemId; price?: number; cycle?: MerchantCycle }
+type MinigameSettlement = { settlementId: string; profileId: string; matchSeed: number; milestone: number; kind: MinigameKind; score: number; placement: number; economyReference: number; cashReward: number; itemRolls: ReturnType<typeof minigameRewards>['itemRolls'] }
+
+const normalizeProfileId = (value: unknown) => {
+  const candidate = typeof value === 'string' ? value.trim() : ''
+  return /^[a-zA-Z0-9_-]{16,80}$/.test(candidate) ? candidate : null
+}
 
 const MAX_PLAYERS = 6
-const GLOBAL_EXPANSION_DEEDS = 2
+const MAX_FARMS = 8
+const DEFAULT_GLOBAL_EXPANSION_DEEDS = 2
 const ALLOW_EARLY_TEST_RESET = process.env.TEST_ALLOW_EARLY_RESET === '1'
+const ALLOW_EARLY_TEST_MINIGAME = process.env.TEST_ALLOW_EARLY_MINIGAME === '1'
+const FORCE_TEST_RARES = process.env.TEST_RARE_FORAGE_ALWAYS === '1'
+const FORAGE_REGROW_MS = Number(process.env.TEST_FORAGE_REGROW_MS) > 0 ? Number(process.env.TEST_FORAGE_REGROW_MS) : 30_000
 const RAIN_CYCLE_COOLDOWN_MS = Number(process.env.TEST_RAIN_COOLDOWN_MS) >= 0 ? Number(process.env.TEST_RAIN_COOLDOWN_MS) : 340_000
 const FARM_CENTERS = [[-54, -16], [-18, -14], [19, -17], [55, -13], [-53, -50], [-17, -49], [20, -53], [56, -48]] as const
 const CROP_IDS = new Set<CropKind>(Object.keys(CROP_CONFIG) as CropKind[])
+const PLAYER_ANIMATIONS = new Set(['Armature|Idle_Loop', 'Armature|Walk_Loop', 'Armature|Sprint_Loop', 'Armature|Jump_Loop', 'Armature|Interact'])
+const FORAGE_TRAIL = [[0, 22], [1, 12], [-2, 0], [-8, -16], [-3, -34], [9, -52], [4, -72], [-12, -91], [-5, -112], [8, -132], [-2, -154], [10, -177], [2, -203]] as const
+const forageSeeded = (index: number, salt = 0) => {
+  const value = Math.sin((index + 1) * 91.733 + salt * 37.17) * 43758.5453
+  return value - Math.floor(value)
+}
+const forageTrailCenterAt = (z: number) => {
+  if (z >= FORAGE_TRAIL[0][1]) return FORAGE_TRAIL[0][0]
+  for (let index = 0; index < FORAGE_TRAIL.length - 1; index += 1) {
+    const [ax, az] = FORAGE_TRAIL[index]
+    const [bx, bz] = FORAGE_TRAIL[index + 1]
+    if (z <= az && z >= bz) {
+      const t = (az - z) / (az - bz)
+      return ax + (bx - ax) * t
+    }
+  }
+  return FORAGE_TRAIL.at(-1)![0]
+}
+const orchardSites = (cx: number, cz: number, count: number, salt: number) => Array.from({ length: count }, (_, index) => {
+  const column = index % 5
+  const row = Math.floor(index / 5)
+  return [cx + (column - 2) * 8.4 + (forageSeeded(index, salt) - 0.5) * 3.6, cz + (row - 1.5) * 8.8 + (forageSeeded(index, salt + 1) - 0.5) * 3.8] as const
+})
+const distributedFruitSites = (count: number, salt: number) => Array.from({ length: count }, (_, index) => {
+  const columns = 7
+  const rows = Math.ceil(count / columns)
+  const column = index % columns
+  const row = Math.floor(index / columns)
+  let x = -174 + (348 * (column + 0.5)) / columns + (forageSeeded(index, salt) - 0.5) * 16
+  const z = -22 - (178 * (row + 0.5)) / rows + (forageSeeded(index, salt + 1) - 0.5) * 13
+  const trail = forageTrailCenterAt(z)
+  if (Math.abs(x - trail) < 9) x += x <= trail ? -13 : 13
+  return [Math.max(-188, Math.min(188, x)), z] as const
+})
+const FORAGE_APPLE_SITES = [
+  [3, -82], [-13, -87], [-18, -97], [20, -102],
+  ...orchardSites(-49, -44, 8, 6101), ...orchardSites(54, -117, 12, 6127),
+  ...orchardSites(-64, -181, 12, 6151), ...distributedFruitSites(34, 6173),
+] as ReadonlyArray<readonly [number, number]>
+const FORAGE_ORANGE_SITES = [
+  [8, -89], [-15, -105], [23, -112],
+  ...orchardSites(54, -69, 9, 6203), ...orchardSites(-52, -124, 12, 6229),
+  ...distributedFruitSites(36, 6257),
+] as ReadonlyArray<readonly [number, number]>
+const FORAGE_TRUFFLE_SITES = [[-112, -66], [97, -104], [-78, -204], [126, -167], [34, -151]] as const
+const FORAGE_DISCOVERY_SITES = [[-178, -185], [164, -201], [-139, -16]] as const
+const FORAGE_NODE_DEFINITIONS: ForageNodeDefinition[] = [
+  ...FORAGE_APPLE_SITES.map(([x, z], index) => ({ id: `ForageApple${String(index).padStart(3, '0')}`, item: 'apple' as const, capacity: fruitTreeCapacity(`ForageApple${String(index).padStart(3, '0')}`), x, z })),
+  ...FORAGE_ORANGE_SITES.map(([x, z], index) => ({ id: `ForageOrange${String(index).padStart(3, '0')}`, item: 'orange' as const, capacity: fruitTreeCapacity(`ForageOrange${String(index).padStart(3, '0')}`), x, z })),
+  ...FORAGE_TRUFFLE_SITES.map(([x, z], index) => ({ id: `ForageTruffle${String(index).padStart(3, '0')}`, item: 'truffle' as const, capacity: 1, x, z, rare: true })),
+  ...FORAGE_DISCOVERY_SITES.map(([x, z], index) => ({ id: `ForageDiscovery${String(index).padStart(2, '0')}`, item: 'natural-discovery' as const, capacity: 1, x, z, rare: true })),
+]
+const FORAGE_NODE_BY_ID = new Map(FORAGE_NODE_DEFINITIONS.map((node) => [node.id, node]))
 const NON_TRADABLE_EQUIPMENT = new Set(['worn-pickaxe', 'iron-pickaxe', 'steel-pickaxe', 'crystal-pickaxe', 'basket', 'reinforced-basket', 'master-basket', 'harvest-charm', 'upgrade-coupon', 'upgrade-guard-4', 'upgrade-guard-5', 'upgrade-guard-6'])
 const farmGrowthMs = (crop: CropKind) => Number(process.env.TEST_FARM_GROWTH_MS) > 0 ? Number(process.env.TEST_FARM_GROWTH_MS) : CROP_CONFIG[crop].growthSeconds * 1000
 
@@ -35,7 +104,10 @@ const zoneBounds: Record<ZoneId, { x: number; zMin: number; zMax: number }> = {
   hub: { x: 68, zMin: -68, zMax: 68 },
   forage: { x: 218, zMin: -222, zMax: 48 },
   farm: { x: 100, zMin: -112, zMax: 38 },
-  mine: { x: 68, zMin: -200, zMax: 77 },
+  // The authored cave perimeter reaches z=-253 and the deepest node cluster
+  // reaches roughly z=-249. Keep the authoritative movement envelope aligned
+  // with that scene so lower-cave interaction requests are not clamped away.
+  mine: { x: 68, zMin: -258, zMax: 77 },
 }
 
 class WoodlandRoom extends Room {
@@ -48,20 +120,28 @@ class WoodlandRoom extends Room {
   private hostId: string | null = null
   private lobbyEligible = new Set<string>()
   private players = new Map<string, Presence>()
+  private profileBySession = new Map<string, string>()
+  private sessionByProfile = new Map<string, string>()
   private trades = new Map<string, TradeSession>()
   private minigameResults = new Map<number, Map<string, MinigameResult>>()
+  private minigameRewardLedger = new Map<string, MinigameSettlement>()
   private minigameTimers = new Map<number, ReturnType<typeof setTimeout>>()
   private eventBays = new Map<string, Map<string, number>>()
   private eventStartedAt = new Map<string, number>()
   private eventReady = new Map<string, EventReadyGate>()
   private oreNodes = new Map<string, SharedOreNode>(MINE_NODE_SITES.map(({ id }) => [id, { generation: 0, readyAt: 0 }]))
   private oreTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private forageNodes = new Map<string, SharedForageNode>(FORAGE_NODE_DEFINITIONS.map((node) => [node.id, { ...node, fullAt: 0 }]))
+  private forageTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private forageRareTimer: ReturnType<typeof setTimeout> | null = null
   private orePauseStartedAt = 0
   private farms = new Map<number, SharedFarm>(FARM_CENTERS.map((_, index) => [index, { ownerId: null, cells: new Map() }]))
   private farmTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private farmResults = new Map<string, Map<string, FarmResult>>()
   private personalDeedsPurchased = new Set<string>()
-  private globalDeedsRemaining = GLOBAL_EXPANSION_DEEDS
+  private deedEntitlements = new Map<string, number>()
+  private configuredGlobalExpansionDeeds = DEFAULT_GLOBAL_EXPANSION_DEEDS
+  private globalDeedsRemaining = this.configuredGlobalExpansionDeeds
   private deedResults = new Map<string, Map<string, DeedResult>>()
   private lastRainAt = 0
   private merchantCycleState: MerchantCycle | null = null
@@ -70,6 +150,40 @@ class WoodlandRoom extends Room {
 
   private sendTo(id: string, type: string, payload: unknown) {
     this.clients.find((client) => client.sessionId === id)?.send(type, payload)
+  }
+
+  private profileIdFor(sessionId: string) {
+    return this.profileBySession.get(sessionId) ?? `session-${sessionId}`
+  }
+
+  private settlementKey(profileId: string, milestone: number) {
+    return `${profileId}:${this.matchSeed}:${milestone}`
+  }
+
+  private settlementPayload(settlement: MinigameSettlement) {
+    return {
+      settlementId: settlement.settlementId,
+      milestone: settlement.milestone,
+      kind: settlement.kind,
+      score: settlement.score,
+      placement: settlement.placement,
+      economyReference: settlement.economyReference,
+      cashReward: settlement.cashReward,
+      itemRolls: settlement.itemRolls,
+    }
+  }
+
+  private sendSettlement(client: Client, settlement: MinigameSettlement) {
+    client.send('minigame:result', this.settlementPayload(settlement))
+  }
+
+  private sendPendingSettlements(client: Client, milestone?: number) {
+    const profileId = this.profileIdFor(client.sessionId)
+    for (const settlement of this.minigameRewardLedger.values()) {
+      if (settlement.profileId !== profileId || settlement.matchSeed !== this.matchSeed) continue
+      if (milestone !== undefined && settlement.milestone !== milestone) continue
+      this.sendSettlement(client, settlement)
+    }
   }
 
   private effectiveMatchStartedAt(now = Date.now()) {
@@ -96,6 +210,93 @@ class WoodlandRoom extends Room {
     client.send('mine:snapshot', this.oreSnapshot())
   }
 
+  private forageAvailability(node: SharedForageNode, now = Date.now()) {
+    if (node.rare) return node.rareAvailable ? 1 : 0
+    if (node.fullAt <= now) return node.capacity
+    const missing = Math.ceil((node.fullAt - now) / FORAGE_REGROW_MS)
+    return Math.max(0, Math.min(node.capacity, node.capacity - missing))
+  }
+
+  private forageNodePayload(node: SharedForageNode, now = Date.now()) {
+    const available = this.forageAvailability(node, now)
+    return { id: node.id, item: node.item, capacity: node.capacity, available, fullAt: available >= node.capacity ? 0 : node.fullAt }
+  }
+
+  private forageSnapshot() {
+    const now = Date.now()
+    return {
+      regrowMs: FORAGE_REGROW_MS,
+      nodes: Object.fromEntries([...this.forageNodes.values()].map((node) => [node.id, this.forageNodePayload(node, now)])),
+    }
+  }
+
+  private sendForageSnapshot(client: Client) {
+    client.send('forage:snapshot', this.forageSnapshot())
+  }
+
+  private clearForageTimer(id: string) {
+    const timer = this.forageTimers.get(id)
+    if (timer) clearTimeout(timer)
+    this.forageTimers.delete(id)
+  }
+
+  private clearRareForageTimer() {
+    if (this.forageRareTimer) clearTimeout(this.forageRareTimer)
+    this.forageRareTimer = null
+  }
+
+  private refreshRareForage(now = Date.now(), broadcast = true) {
+    this.clearRareForageTimer()
+    const rareNodes = [...this.forageNodes.values()].filter((node) => node.rare)
+    if (!rareNodes.length) return
+    const rareIds = rareNodes.map((node) => node.id)
+    const active = FORCE_TEST_RARES
+      ? new Set(rareNodes.filter((node) => node.id === 'ForageTruffle000' || node.id === 'ForageDiscovery00').map((node) => node.id))
+      : this.matchStarted ? activeRareForageIds(rareIds, false, this.matchSeed, this.matchStartedAt, now) : new Set<string>()
+    for (const node of rareNodes) {
+      const nextAt = nextRareForageRollAt(node.item === 'truffle' ? 'truffle' : 'natural-discovery', false, this.matchStartedAt || now, now)
+      const available = active.has(node.id) && node.fullAt <= now
+      node.rareAvailable = available
+      node.fullAt = available ? 0 : Math.max(node.fullAt, nextAt)
+      if (broadcast) this.broadcast('forage:node', this.forageNodePayload(node, now))
+    }
+    if (!this.matchStarted) return
+    const nextTruffle = nextRareForageRollAt('truffle', false, this.matchStartedAt, now)
+    const nextDiscovery = nextRareForageRollAt('natural-discovery', false, this.matchStartedAt, now)
+    this.forageRareTimer = setTimeout(() => this.refreshRareForage(Date.now()), Math.max(0, Math.min(nextTruffle, nextDiscovery) - now) + 20)
+  }
+
+  private scheduleForageRegrowth(id: string) {
+    this.clearForageTimer(id)
+    const node = this.forageNodes.get(id)
+    if (!node || node.rare || node.fullAt <= 0) return
+    const now = Date.now()
+    const available = this.forageAvailability(node, now)
+    if (available >= node.capacity) {
+      node.fullAt = 0
+      return
+    }
+    const nextRegrowAt = node.fullAt - (node.capacity - available - 1) * FORAGE_REGROW_MS
+    this.forageTimers.set(id, setTimeout(() => {
+      this.forageTimers.delete(id)
+      const current = this.forageNodes.get(id)
+      if (!current || current.fullAt <= 0) return
+      const tickNow = Date.now()
+      if (this.forageAvailability(current, tickNow) >= current.capacity) current.fullAt = 0
+      this.broadcast('forage:node', this.forageNodePayload(current, tickNow))
+      this.scheduleForageRegrowth(id)
+    }, Math.max(0, nextRegrowAt - now) + 15))
+  }
+
+  private resetForageNodes() {
+    this.forageTimers.forEach((timer) => clearTimeout(timer))
+    this.forageTimers.clear()
+    this.clearRareForageTimer()
+    this.forageNodes = new Map(FORAGE_NODE_DEFINITIONS.map((node) => [node.id, { ...node, fullAt: 0 }]))
+    this.refreshRareForage(Date.now(), false)
+    if (this.clients.length) this.broadcast('forage:snapshot', this.forageSnapshot())
+  }
+
   private farmSnapshot(client: Client) {
     const owners: Record<number, string | null> = {}
     const cells: Record<string, SharedFarmCell> = {}
@@ -111,6 +312,16 @@ class WoodlandRoom extends Room {
       personalAvailable: !this.personalDeedsPurchased.has(client.sessionId),
       globalRemaining: this.globalDeedsRemaining,
     })
+  }
+
+  private maxGlobalExpansionDeeds() {
+    const playerCount = Math.max(1, this.lobbyEligible.size || this.clients.length)
+    return Math.max(0, MAX_FARMS - playerCount)
+  }
+
+  private clampGlobalExpansionDeeds() {
+    this.configuredGlobalExpansionDeeds = Math.min(this.configuredGlobalExpansionDeeds, this.maxGlobalExpansionDeeds())
+    if (!this.matchStarted) this.globalDeedsRemaining = Math.min(this.globalDeedsRemaining, this.configuredGlobalExpansionDeeds)
   }
 
   private currentMerchant() {
@@ -134,7 +345,8 @@ class WoodlandRoom extends Room {
 
   private resetDeeds() {
     this.personalDeedsPurchased.clear()
-    this.globalDeedsRemaining = GLOBAL_EXPANSION_DEEDS
+    this.deedEntitlements.clear()
+    this.globalDeedsRemaining = this.configuredGlobalExpansionDeeds
     this.deedResults.clear()
     this.clients.forEach((client) => this.deedSnapshot(client))
     this.broadcast('deed:stock', { globalRemaining: this.globalDeedsRemaining })
@@ -230,10 +442,13 @@ class WoodlandRoom extends Room {
   private other(trade: TradeSession, id: string) { return trade.a === id ? trade.b : trade.a }
 
   private lobbyStateFor(client: Client) {
+    this.clampGlobalExpansionDeeds()
     return {
       isHost: client.sessionId === this.hostId,
       started: this.matchStarted,
       durationSeconds: this.matchDurationSeconds,
+      globalExpansionDeeds: this.configuredGlobalExpansionDeeds,
+      maxGlobalExpansionDeeds: this.maxGlobalExpansionDeeds(),
       playerCount: this.clients.length,
     }
   }
@@ -254,12 +469,14 @@ class WoodlandRoom extends Room {
     this.eventBays.clear()
     this.eventStartedAt.clear()
     this.minigameResults.clear()
+    this.minigameRewardLedger.clear()
     this.settledMinigames.clear()
     this.matchStarted = false
     this.matchStartedAt = 0
     this.roomStartedAt = Date.now()
     this.matchSeed = Math.floor(Math.random() * 1_000_000_000)
     this.resetOreNodes()
+    this.resetForageNodes()
     this.resetFarms()
     this.resetDeeds()
     this.resetMerchant()
@@ -269,6 +486,11 @@ class WoodlandRoom extends Room {
 
   private validMinigameMilestone(value: number) {
     return minigameMilestones(this.matchDurationSeconds).includes(value)
+  }
+
+  private minigameMilestoneIsDue(value: number) {
+    if (!this.matchStarted || !this.validMinigameMilestone(value)) return false
+    return ALLOW_EARLY_TEST_MINIGAME || Date.now() - this.effectiveMatchStartedAt() >= value * 1000
   }
 
   private assignEventBay(clientId: string, key: string) {
@@ -302,7 +524,7 @@ class WoodlandRoom extends Room {
     const gate = this.eventReady.get(key)
     if (!gate || gate.gameplayAt) return
     clearTimeout(gate.timeout)
-    const gameplayAt = Date.now() + 9_000
+    const gameplayAt = Date.now() + 5_000
     gate.gameplayAt = gameplayAt
     this.eventStartedAt.set(key, Date.now())
     const [milestone, kind] = key.split(':')
@@ -342,10 +564,24 @@ class WoodlandRoom extends Room {
       const middle = Math.floor(progress.length / 2)
       const economyReference = progress.length % 2 ? progress[middle] : Math.round((progress[middle - 1] + progress[middle]) / 2)
       const leaderProgress = Math.max(...entries.map(([, result]) => result.progressValue))
-      entries.forEach(([id, result], index) => {
+      entries.forEach(([profileId, result], index) => {
         const placement = index + 1
-        const reward = minigameRewards({ economyReference, placement, playerProgress: result.progressValue, leaderProgress, matchSeed: this.matchSeed, milestone, playerId: id })
-        this.sendTo(id, 'minigame:result', { milestone, score: result.score, placement, economyReference, cashReward: reward.cash, itemRolls: reward.itemRolls })
+        const reward = minigameRewards({ economyReference, placement, playerProgress: result.progressValue, leaderProgress, matchSeed: this.matchSeed, milestone, playerId: profileId })
+        const settlement: MinigameSettlement = {
+          settlementId: `${profileId}:${this.matchSeed}:${milestone}`,
+          profileId,
+          matchSeed: this.matchSeed,
+          milestone,
+          kind: scheduledMinigame(milestone, this.matchSeed, this.matchDurationSeconds),
+          score: result.score,
+          placement,
+          economyReference,
+          cashReward: reward.cash,
+          itemRolls: reward.itemRolls,
+        }
+        this.minigameRewardLedger.set(this.settlementKey(profileId, milestone), settlement)
+        const sessionId = this.sessionByProfile.get(profileId)
+        if (sessionId) this.sendTo(sessionId, 'minigame:result', this.settlementPayload(settlement))
       })
     }
     this.settledMinigames.add(milestone)
@@ -364,28 +600,41 @@ class WoodlandRoom extends Room {
       if (this.matchStarted) client.send('match:sync', this.matchSyncPayload())
       client.send('presence:snapshot', [...this.players.values()].filter((player) => player.id !== client.sessionId))
       this.sendOreSnapshot(client)
+      this.sendForageSnapshot(client)
       this.farmSnapshot(client)
       this.deedSnapshot(client)
       this.sendMerchantSnapshot(client)
+      this.sendPendingSettlements(client)
     })
-    this.onMessage('lobby:update', (client, message: { durationSeconds?: number }) => {
+    this.onMessage('lobby:update', (client, message: { durationSeconds?: number; globalExpansionDeeds?: number }) => {
       if (this.matchStarted || client.sessionId !== this.hostId) return
       const duration = Math.floor(Number(message?.durationSeconds))
-      if (!MATCH_CONFIG.selectableDurationsSeconds.includes(duration as typeof MATCH_CONFIG.selectableDurationsSeconds[number])) return
-      this.matchDurationSeconds = duration
-      this.broadcastLobby()
+      const globalExpansionDeeds = Math.floor(Number(message?.globalExpansionDeeds))
+      let changed = false
+      if (MATCH_CONFIG.selectableDurationsSeconds.includes(duration as typeof MATCH_CONFIG.selectableDurationsSeconds[number])) {
+        this.matchDurationSeconds = duration
+        changed = true
+      }
+      if (globalExpansionDeeds >= 0 && globalExpansionDeeds <= this.maxGlobalExpansionDeeds()) {
+        this.configuredGlobalExpansionDeeds = globalExpansionDeeds
+        changed = true
+      }
+      if (changed) this.broadcastLobby()
     })
     this.onMessage('lobby:start', (client) => {
       if (this.matchStarted || client.sessionId !== this.hostId) return
+      this.clampGlobalExpansionDeeds()
       this.matchSeed = Math.floor(Math.random() * 1_000_000_000)
       this.matchStartedAt = Date.now()
       this.lastRainAt = this.matchStartedAt
       this.matchStarted = true
       this.resetOreNodes()
+      this.resetForageNodes()
       this.resetFarms()
       this.resetDeeds()
       this.resetMerchant()
       this.settledMinigames.clear()
+      this.minigameRewardLedger.clear()
       this.broadcast('match:sync', { seed: this.matchSeed, startedAt: this.matchStartedAt, durationSeconds: this.matchDurationSeconds })
       this.broadcastLobby()
     })
@@ -396,12 +645,13 @@ class WoodlandRoom extends Room {
       this.resetMatchToLobby()
     })
     this.onMessage('move', (client, message: Partial<Presence>) => {
+      if (!message || typeof message !== 'object') return
       const zone = message.zone
       const position = message.position
       if (!zone || !zoneBounds[zone] || !Array.isArray(position) || position.length !== 3 || position.some((value) => !Number.isFinite(value))) return
       const minigameKind = message.minigameKind === 'mining' || message.minigameKind === 'farm' || message.minigameKind === 'forage' ? message.minigameKind : undefined
       const minigameMilestone = Number(message.minigameMilestone)
-      const minigameOpen = this.matchStarted && Boolean(message.minigameOpen) && Boolean(minigameKind) && this.validMinigameMilestone(minigameMilestone) && minigameKind === scheduledMinigame(minigameMilestone, this.matchSeed, this.matchDurationSeconds)
+      const minigameOpen = this.matchStarted && Boolean(message.minigameOpen) && Boolean(minigameKind) && this.minigameMilestoneIsDue(minigameMilestone) && minigameKind === scheduledMinigame(minigameMilestone, this.matchSeed, this.matchDurationSeconds)
       const bounds = minigameOpen && minigameKind === 'forage' ? zoneBounds.forage : minigameOpen ? zoneBounds.hub : zoneBounds[zone]
       const eventKey = minigameOpen ? `${minigameMilestone}:${minigameKind}` : null
       const eventBay = eventKey ? this.assignEventBay(client.sessionId, eventKey) : undefined
@@ -413,14 +663,17 @@ class WoodlandRoom extends Room {
         Math.max(bounds.zMin, Math.min(bounds.zMax, Number(position[2]))),
       ]
       const previous = this.players.get(client.sessionId)
-      const nickname = typeof message.nickname === 'string' ? message.nickname.trim().replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 18) : previous?.nickname
+      const rawYaw = Number(message.yaw)
+      const yaw = Number.isFinite(rawYaw) ? Math.atan2(Math.sin(rawYaw), Math.cos(rawYaw)) : previous?.yaw ?? 0
+      const animation = typeof message.animation === 'string' && PLAYER_ANIMATIONS.has(message.animation) ? message.animation : previous?.animation ?? 'Armature|Idle_Loop'
+      const nickname = typeof message.nickname === 'string' ? message.nickname.trim().replace(/[^\p{L}\p{N} _-]/gu, '').slice(0, 18) : previous?.nickname
       const cash = Math.max(0, Math.min(5_000_000_000, Math.floor(Number(message.cash) || previous?.cash || 0)))
       const progressValue = Math.max(cash, Math.min(5_000_000_000, Math.floor(Number(message.progressValue) || previous?.progressValue || cash)))
       const rawStats = message.stats ?? previous?.stats
       const safeStat = (value: unknown) => Math.max(0, Math.min(1_000_000, Math.floor(Number(value) || 0)))
       const stats = { foraged: safeStat(rawStats?.foraged), mined: safeStat(rawStats?.mined), harvested: safeStat(rawStats?.harvested), sold: safeStat(rawStats?.sold) }
       const minigameScore = minigameOpen ? safeStat(message.minigameScore) : undefined
-      const presence = { id: client.sessionId, nickname: nickname || `Player ${client.sessionId.slice(0, 4)}`, zone, position: safePosition, cash, progressValue, stats, minigameOpen, minigameKind, minigameMilestone: minigameOpen ? minigameMilestone : undefined, minigameScore, eventBay, seenAt: Date.now() }
+      const presence = { id: client.sessionId, nickname: nickname || `Player ${client.sessionId.slice(0, 4)}`, zone, position: safePosition, yaw, animation, cash, progressValue, stats, minigameOpen, minigameKind, minigameMilestone: minigameOpen ? minigameMilestone : undefined, minigameScore, eventBay, seenAt: Date.now() }
       this.players.set(client.sessionId, presence)
       if (this.orePauseStartedAt && ![...this.players.values()].some((entry) => entry.minigameOpen)) this.resumeOreRespawns()
       if (eventBay !== undefined && previous?.eventBay !== eventBay) this.sendTo(client.sessionId, 'minigame:bay', { bay: eventBay })
@@ -430,8 +683,11 @@ class WoodlandRoom extends Room {
       const id = message?.id
       const site = id ? MINE_NODE_BY_ID.get(id) : null
       const player = this.players.get(client.sessionId)
-      if (!id || !site || !player || player.zone !== 'mine' || player.minigameOpen || this.orePauseStartedAt) return
-      if (Math.hypot(player.position[0] - site.x, player.position[2] - site.z) > 5.5) return
+      const deny = (reason: 'invalid' | 'wrong-zone' | 'too-far' | 'paused' | 'tier') => client.send('mine:denied', { id, reason })
+      if (!id || !site || !player) return deny('invalid')
+      if (player.zone !== 'mine' || player.minigameOpen) return deny('wrong-zone')
+      if (this.orePauseStartedAt) return deny('paused')
+      if (Math.hypot(player.position[0] - site.x, player.position[2] - site.z) > 5.5) return deny('too-far')
       const node = this.oreNodes.get(id)
       if (!node) return
       if (node.readyAt > Date.now()) {
@@ -442,7 +698,7 @@ class WoodlandRoom extends Room {
       const ore = oreKindAtDepth(id, site.z, node.generation, this.matchSeed)
       const tool = message.tool as PickaxeItem
       if (!canMineOre(tool, ore)) {
-        client.send('mine:denied', { id, reason: 'tier' })
+        deny('tier')
         return
       }
       const enhancement = Math.max(0, Math.min(10, Math.floor(Number(message.enhancement) || 0)))
@@ -454,6 +710,40 @@ class WoodlandRoom extends Room {
       this.broadcast('mine:node', { id, ...next })
       client.send('mine:award', { id, ore, quantity, ...next })
       this.scheduleOreRespawn(id)
+    })
+    this.onMessage('forage:request', (client, message: { id?: string; item?: string; remainingCapacity?: number }) => {
+      const id = typeof message?.id === 'string' ? message.id : ''
+      const item = typeof message?.item === 'string' ? message.item : ''
+      const definition = FORAGE_NODE_BY_ID.get(id)
+      const deny = (reason: 'invalid-id' | 'invalid-item' | 'item-mismatch' | 'wrong-zone' | 'too-far' | 'no-capacity' | 'depleted') => client.send('forage:denied', { id, item, reason })
+      if (!definition) return deny('invalid-id')
+      if (item !== 'apple' && item !== 'orange' && item !== 'truffle' && item !== 'natural-discovery') return deny('invalid-item')
+      if (item !== definition.item) return deny('item-mismatch')
+      const player = this.players.get(client.sessionId)
+      if (!player || player.zone !== 'forage' || player.minigameOpen) return deny('wrong-zone')
+      if (Math.hypot(player.position[0] - definition.x, player.position[2] - definition.z) > 5.5) return deny('too-far')
+      const remainingCapacity = Math.max(0, Math.min(10_000, Math.floor(Number(message?.remainingCapacity))))
+      if (!Number.isFinite(remainingCapacity) || remainingCapacity <= 0) return deny('no-capacity')
+      const node = this.forageNodes.get(id)
+      if (!node) return deny('invalid-id')
+      const now = Date.now()
+      const available = this.forageAvailability(node, now)
+      if (available <= 0) {
+        client.send('forage:node', this.forageNodePayload(node, now))
+        return deny('depleted')
+      }
+      const quantity = Math.min(available, remainingCapacity)
+      if (node.rare) {
+        node.rareAvailable = false
+        node.fullAt = nextRareForageRollAt(node.item === 'truffle' ? 'truffle' : 'natural-discovery', false, this.matchStartedAt || now, now)
+      } else {
+        const remaining = available - quantity
+        node.fullAt = remaining >= node.capacity ? 0 : now + (node.capacity - remaining) * FORAGE_REGROW_MS
+      }
+      const payload = this.forageNodePayload(node, now)
+      this.broadcast('forage:node', payload)
+      client.send('forage:award', { ...payload, quantity })
+      if (!node.rare) this.scheduleForageRegrowth(id)
     })
     this.onMessage('merchant:request', (client) => this.sendMerchantSnapshot(client))
     this.onMessage('merchant:buy', (client, message: { requestId?: string; cycleId?: string; itemId?: MerchantItemId }) => {
@@ -487,20 +777,28 @@ class WoodlandRoom extends Room {
       client.send('merchant:result', result)
       this.broadcast('merchant:snapshot', purchase.cycle)
     })
-    this.onMessage('deed:purchase', (client, message: { requestId?: string; quantity?: number }) => {
+    this.onMessage('deed:purchase', (client, message: { requestId?: string; quantity?: number; kind?: 'personal' | 'global' }) => {
       const requestId = typeof message?.requestId === 'string' ? message.requestId.slice(0, 80) : ''
       if (!requestId) return
       const prior = this.deedResults.get(client.sessionId)?.get(requestId)
       if (prior) return client.send('deed:result', prior)
-      const requested = Math.max(1, Math.min(1 + GLOBAL_EXPANSION_DEEDS, Math.floor(Number(message?.quantity) || 1)))
+      const requested = Math.max(1, Math.min(Math.max(1, this.configuredGlobalExpansionDeeds), Math.floor(Number(message?.quantity) || 1)))
+      const kind = message?.kind === 'global' ? 'global' : 'personal'
       let personalCount = 0
-      if (!this.personalDeedsPurchased.has(client.sessionId)) {
+      let reason: string | undefined
+      if (kind === 'personal' && !this.personalDeedsPurchased.has(client.sessionId)) {
         this.personalDeedsPurchased.add(client.sessionId)
         personalCount = 1
+      } else if (kind === 'personal') {
+        reason = 'Already owned'
+      } else if (!this.personalDeedsPurchased.has(client.sessionId)) {
+        reason = 'Buy personal deed first'
       }
-      const globalCount = personalCount > 0 ? 0 : Math.min(requested, this.globalDeedsRemaining)
+      const globalCount = kind === 'global' && !reason ? Math.min(requested, this.globalDeedsRemaining) : 0
       this.globalDeedsRemaining -= globalCount
       const quantity = personalCount + globalCount
+      if (!quantity && !reason) reason = 'Sold out'
+      if (quantity > 0) this.deedEntitlements.set(client.sessionId, (this.deedEntitlements.get(client.sessionId) ?? 0) + quantity)
       const result: DeedResult = {
         requestId,
         ok: quantity > 0,
@@ -509,7 +807,7 @@ class WoodlandRoom extends Room {
         globalCount,
         personalAvailable: !this.personalDeedsPurchased.has(client.sessionId),
         globalRemaining: this.globalDeedsRemaining,
-        reason: quantity > 0 ? undefined : 'Sold out',
+        reason: quantity > 0 ? undefined : reason,
       }
       const results = this.deedResults.get(client.sessionId) ?? new Map<string, DeedResult>()
       results.set(requestId, result)
@@ -542,6 +840,12 @@ class WoodlandRoom extends Room {
         if (Math.hypot(player.position[0] - (centerX + 5.85), player.position[2] - (centerZ + 6.25)) > 5) return respond({ ok: false, reason: 'Move closer' })
         if (farm.ownerId && farm.ownerId !== client.sessionId) return respond({ ok: false, reason: 'Farm already claimed' })
         if (farm.ownerId === client.sessionId) return respond({ ok: false, reason: 'Your farm' })
+        const ownedFarms = [...this.farms.values()].filter((entry) => entry.ownerId === client.sessionId).length
+        if (ownedFarms >= 3) return respond({ ok: false, reason: 'Farm limit reached' })
+        const entitlements = this.deedEntitlements.get(client.sessionId) ?? 0
+        if (entitlements <= 0) return respond({ ok: false, reason: 'Need a farm deed' })
+        if (entitlements === 1) this.deedEntitlements.delete(client.sessionId)
+        else this.deedEntitlements.set(client.sessionId, entitlements - 1)
         farm.ownerId = client.sessionId
         this.broadcast('farm:update', { farmId, ownerId: client.sessionId })
         return respond({ ok: true })
@@ -608,12 +912,16 @@ class WoodlandRoom extends Room {
     })
     this.onMessage('trade:request', (client, message: { targetId?: string }) => {
       const targetId = message?.targetId
-      if (!targetId || targetId === client.sessionId || !this.players.has(targetId)) return
+      const sender = this.players.get(client.sessionId)
+      const target = targetId ? this.players.get(targetId) : null
+      if (!targetId || targetId === client.sessionId || !sender || !target || sender.minigameOpen || target.minigameOpen) return
       this.sendTo(targetId, 'trade:request', { fromId: client.sessionId, fromNickname: this.players.get(client.sessionId)?.nickname })
     })
     this.onMessage('trade:accept', (client, message: { fromId?: string }) => {
       const fromId = message?.fromId
-      if (!fromId || !this.players.has(fromId)) return
+      const sender = fromId ? this.players.get(fromId) : null
+      const receiver = this.players.get(client.sessionId)
+      if (!fromId || !sender || !receiver || sender.minigameOpen || receiver.minigameOpen) return
       const id = `trade-${Date.now()}-${client.sessionId.slice(0, 4)}`
       const empty = () => ({ cash: 0, items: {} })
       const trade: TradeSession = { id, a: fromId, b: client.sessionId, offers: { [fromId]: empty(), [client.sessionId]: empty() }, ready: { [fromId]: false, [client.sessionId]: false } }
@@ -623,6 +931,11 @@ class WoodlandRoom extends Room {
     this.onMessage('trade:update', (client, message: { tradeId?: string; offer?: TradeOffer; ready?: boolean }) => {
       const trade = message?.tradeId ? this.trades.get(message.tradeId) : null
       if (!trade || (trade.a !== client.sessionId && trade.b !== client.sessionId)) return
+      if (this.players.get(trade.a)?.minigameOpen || this.players.get(trade.b)?.minigameOpen) {
+        for (const playerId of [trade.a, trade.b]) this.sendTo(playerId, 'trade:cancel', { tradeId: trade.id })
+        this.trades.delete(trade.id)
+        return
+      }
       const rawItems = message.offer?.items ?? {}
       const items: Record<string, number> = {}
       for (const [id, rawQuantity] of Object.entries(rawItems).slice(0, 12)) {
@@ -644,17 +957,24 @@ class WoodlandRoom extends Room {
       this.sendTo(this.other(trade, client.sessionId), 'trade:cancel', { tradeId: trade.id })
       this.trades.delete(trade.id)
     })
+    this.onMessage('minigame:result:request', (client, message: { milestone?: number }) => {
+      const milestone = Number(message?.milestone)
+      this.sendPendingSettlements(client, Number.isFinite(milestone) && milestone > 0 ? milestone : undefined)
+    })
     this.onMessage('minigame:finish', (client, message: { milestone?: number; score?: number; progressValue?: number }) => {
       const milestone = Number(message?.milestone)
       if (!this.matchStarted || !this.validMinigameMilestone(milestone)) return
+      const profileId = this.profileIdFor(client.sessionId)
+      const existing = this.minigameRewardLedger.get(this.settlementKey(profileId, milestone))
+      if (existing) return this.sendSettlement(client, existing)
       const presence = this.players.get(client.sessionId)
       if (!presence?.minigameOpen || presence.minigameMilestone !== milestone || !presence.minigameKind) return
       const gate = this.eventReady.get(`${milestone}:${presence.minigameKind}`)
       if (!gate?.gameplayAt || Date.now() < gate.gameplayAt) return
       const results = this.minigameResults.get(milestone) ?? new Map<string, MinigameResult>()
-      if (results.has(client.sessionId)) return
+      if (results.has(profileId)) return
       const scoreCap = presence.minigameKind === 'mining' ? 50_000 : presence.minigameKind === 'farm' ? 20_000 : 30_000
-      results.set(client.sessionId, {
+      results.set(profileId, {
         score: Math.max(0, Math.min(scoreCap, Math.floor(Number(message?.score) || 0))),
         progressValue: Math.max(1, Math.min(5_000_000_000, presence.progressValue ?? presence.cash ?? 1)),
       })
@@ -664,7 +984,7 @@ class WoodlandRoom extends Room {
       else if (!this.minigameTimers.has(milestone)) {
         const eventKey = `${milestone}:${presence.minigameKind}`
         const durationMs = (presence.minigameKind === 'mining' ? 180 : 300) * 1000
-        const deadline = (this.eventStartedAt.get(eventKey) ?? Date.now()) + 9_000 + durationMs + 2_000
+        const deadline = (this.eventStartedAt.get(eventKey) ?? Date.now()) + 5_000 + durationMs + 2_000
         this.minigameTimers.set(milestone, setTimeout(() => this.finalizeMinigame(milestone), Math.max(2_000, deadline - Date.now())))
       }
     })
@@ -688,17 +1008,22 @@ class WoodlandRoom extends Room {
     })
   }
 
-  onJoin(client: Client, options: { bypassLobby?: boolean } = {}) {
+  onJoin(client: Client, options: { bypassLobby?: boolean; profileId?: string } = {}) {
+    const profileId = normalizeProfileId(options.profileId) ?? `session-${client.sessionId}`
+    this.profileBySession.set(client.sessionId, profileId)
+    this.sessionByProfile.set(profileId, client.sessionId)
     if (!options.bypassLobby) this.lobbyEligible.add(client.sessionId)
     if (!this.hostId && this.lobbyEligible.has(client.sessionId)) this.hostId = client.sessionId
     client.send('lobby:state', this.lobbyStateFor(client))
     if (this.matchStarted) client.send('match:sync', this.matchSyncPayload())
     client.send('presence:snapshot', [...this.players.values()])
     this.sendOreSnapshot(client)
+    this.sendForageSnapshot(client)
     this.farmSnapshot(client)
     this.deedSnapshot(client)
     this.sendMerchantSnapshot(client)
-    const presence: Presence = { id: client.sessionId, nickname: `Player ${client.sessionId.slice(0, 4)}`, zone: 'hub', position: [0, 0.86, 14], cash: 100_000, stats: { foraged: 0, mined: 0, harvested: 0, sold: 0 }, seenAt: Date.now() }
+    this.sendPendingSettlements(client)
+    const presence: Presence = { id: client.sessionId, nickname: `Player ${client.sessionId.slice(0, 4)}`, zone: 'hub', position: [0, 0.86, 14], yaw: 0, animation: 'Armature|Idle_Loop', cash: 100_000, stats: { foraged: 0, mined: 0, harvested: 0, sold: 0 }, seenAt: Date.now() }
     this.players.set(client.sessionId, presence)
     this.broadcast('presence:move', presence, { except: client })
     this.broadcastLobby()
@@ -710,7 +1035,9 @@ class WoodlandRoom extends Room {
       this.trades.delete(trade.id)
     }
     this.players.delete(client.sessionId)
-    this.minigameResults.forEach((results) => results.delete(client.sessionId))
+    const profileId = this.profileBySession.get(client.sessionId)
+    if (profileId && this.sessionByProfile.get(profileId) === client.sessionId) this.sessionByProfile.delete(profileId)
+    this.profileBySession.delete(client.sessionId)
     this.farmResults.delete(client.sessionId)
     this.deedResults.delete(client.sessionId)
     this.merchantResults.delete(client.sessionId)
@@ -726,6 +1053,9 @@ class WoodlandRoom extends Room {
   onDispose() {
     this.oreTimers.forEach((timer) => clearTimeout(timer))
     this.oreTimers.clear()
+    this.forageTimers.forEach((timer) => clearTimeout(timer))
+    this.forageTimers.clear()
+    this.clearRareForageTimer()
     this.minigameTimers.forEach((timer) => clearTimeout(timer))
     this.minigameTimers.clear()
     this.eventReady.forEach((gate) => clearTimeout(gate.timeout))
@@ -736,7 +1066,74 @@ class WoodlandRoom extends Room {
 }
 
 const port = Number(process.env.PORT ?? 2567)
-const gameServer = new Server({ transport: new WebSocketTransport() })
+const serveStatic = process.env.SERVE_STATIC === '1'
+const staticRoot = resolve(process.cwd(), 'dist')
+const mimeTypes: Record<string, string> = {
+  '.css': 'text/css; charset=utf-8',
+  '.glb': 'model/gltf-binary',
+  '.html': 'text/html; charset=utf-8',
+  '.ico': 'image/x-icon',
+  '.jpeg': 'image/jpeg',
+  '.jpg': 'image/jpeg',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+  '.woff2': 'font/woff2',
+}
+const staticServer = serveStatic ? createServer((request, response) => {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    response.writeHead(405, { Allow: 'GET, HEAD' })
+    return response.end()
+  }
+  let pathname = '/'
+  try { pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://localhost').pathname) } catch { /* use root */ }
+  if (pathname === '/healthz') {
+    response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+    return response.end(JSON.stringify({ ok: true }))
+  }
+  const requestedPath = resolve(staticRoot, `.${pathname}`)
+  const safePath = requestedPath === staticRoot || requestedPath.startsWith(`${staticRoot}${sep}`)
+  let filePath = safePath ? requestedPath : ''
+  if (filePath && existsSync(filePath) && statSync(filePath).isDirectory()) filePath = resolve(filePath, 'index.html')
+  if (!filePath || !existsSync(filePath) || !statSync(filePath).isFile()) {
+    if (extname(pathname)) {
+      response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+      return response.end('Not found')
+    }
+    filePath = resolve(staticRoot, 'index.html')
+  }
+  if (!existsSync(filePath)) {
+    response.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' })
+    return response.end('Build not found. Run npm run build first.')
+  }
+  const extension = extname(filePath).toLowerCase()
+  const fileStats = statSync(filePath)
+  const headers: Record<string, string | number> = {
+    'Content-Type': mimeTypes[extension] ?? 'application/octet-stream',
+    'Cache-Control': extension === '.html' ? 'no-cache' : 'public, max-age=3600',
+    'Accept-Ranges': 'bytes',
+  }
+  const range = request.headers.range?.match(/^bytes=(\d*)-(\d*)$/)
+  if (range) {
+    const start = range[1] ? Number(range[1]) : 0
+    const end = range[2] ? Math.min(Number(range[2]), fileStats.size - 1) : fileStats.size - 1
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || start >= fileStats.size) {
+      response.writeHead(416, { 'Content-Range': `bytes */${fileStats.size}` })
+      return response.end()
+    }
+    response.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${fileStats.size}`, 'Content-Length': end - start + 1 })
+    if (request.method === 'HEAD') return response.end()
+    return createReadStream(filePath, { start, end }).pipe(response)
+  }
+  response.writeHead(200, { ...headers, 'Content-Length': fileStats.size })
+  if (request.method === 'HEAD') return response.end()
+  createReadStream(filePath).pipe(response)
+}) : undefined
+const gameServer = new Server({ transport: new WebSocketTransport(staticServer ? { server: staticServer } : {}) })
 gameServer.define('woodland', WoodlandRoom)
 await gameServer.listen(port, '0.0.0.0')
-console.log(`Woodland multiplayer listening on ${port}`)
+console.log(`Woodland multiplayer listening on ${port}${serveStatic ? ' (game + multiplayer)' : ''}`)

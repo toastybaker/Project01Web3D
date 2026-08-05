@@ -21,11 +21,11 @@ const expectedNames: Record<MerchantItemId, string> = {
   'fortune-boost': 'Luck Tonic',
   'cook-timer': 'Cook Timer',
   'rain-bottle': 'Rain Bottle',
-  'upgrade-coupon': 'Forge Coupon',
-  'cookbook-box': 'Cookbook Box',
-  'upgrade-guard-4': '+4 Ward',
-  'upgrade-guard-5': '+5 Ward',
-  'upgrade-guard-6': '+6 Ward',
+  'upgrade-coupon': '30% Upgrade Discount',
+  'cookbook-box': 'Recipe Box',
+  'upgrade-guard-4': '+4 Protection',
+  'upgrade-guard-5': '+5 Protection',
+  'upgrade-guard-6': '+6 Protection',
 }
 
 assert.deepEqual(new Set(MERCHANT_ITEM_IDS), new Set(Object.keys(expectedNames)), 'merchant item IDs drifted')

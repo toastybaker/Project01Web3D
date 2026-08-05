@@ -42,7 +42,20 @@ try {
   const firstClient = new Client(endpoint)
   const first = await firstClient.joinOrCreate('woodland')
   rooms.push(first)
-  for (let index = 1; index < 6; index += 1) rooms.push(await new Client(endpoint).joinById(first.roomId))
+  for (let index = 1; index < 4; index += 1) rooms.push(await new Client(endpoint).joinById(first.roomId))
+  const fourPlayerStatePromise = once<{ playerCount: number; maxGlobalExpansionDeeds: number }>(first, 'lobby:state')
+  first.send('lobby:ready', {})
+  const fourPlayerState = await fourPlayerStatePromise
+  assert(fourPlayerState.playerCount === 4 && fourPlayerState.maxGlobalExpansionDeeds === 4, 'Four-player lobby did not allow four extra farms')
+  const fourPlayerUpdates = rooms.map((room) => once<{ globalExpansionDeeds: number; maxGlobalExpansionDeeds: number }>(room, 'lobby:state'))
+  first.send('lobby:update', { globalExpansionDeeds: 4 })
+  const fourPlayerSetting = await Promise.all(fourPlayerUpdates)
+  assert(fourPlayerSetting.every((entry) => entry.globalExpansionDeeds === 4 && entry.maxGlobalExpansionDeeds === 4), 'Four-player extra-farm setting did not synchronize')
+  for (let index = 4; index < 6; index += 1) rooms.push(await new Client(endpoint).joinById(first.roomId))
+  const sixPlayerStatePromise = once<{ playerCount: number; globalExpansionDeeds: number; maxGlobalExpansionDeeds: number }>(first, 'lobby:state')
+  first.send('lobby:ready', {})
+  const sixPlayerState = await sixPlayerStatePromise
+  assert(sixPlayerState.playerCount === 6 && sixPlayerState.maxGlobalExpansionDeeds === 2 && sixPlayerState.globalExpansionDeeds === 2, 'Six-player lobby did not clamp the total farm count to eight')
   assert(new Set(rooms.map((room) => room.roomId)).size === 1, 'Six players were not placed in one lobby')
 
   const reassigned = once<{ isHost: boolean; playerCount: number }>(rooms[1], 'lobby:state')
@@ -68,12 +81,27 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 250))
   assert(prematureStarts === 0, 'A non-host started the match')
 
+  const lobbyUpdates = rooms.map((room) => once<{ durationSeconds: number; globalExpansionDeeds: number }>(room, 'lobby:state'))
+  rooms[0].send('lobby:update', { durationSeconds: 45 * 60, globalExpansionDeeds: 1 })
+  const updatedLobby = await Promise.all(lobbyUpdates)
+  assert(updatedLobby.every((entry) => entry.durationSeconds === 45 * 60), 'Host duration choice did not synchronize')
+  assert(updatedLobby.every((entry) => entry.globalExpansionDeeds === 1), 'Host extra-farm choice did not synchronize')
+
   const syncs = rooms.map((room) => once<{ seed: number; startedAt: number; durationSeconds: number }>(room, 'match:sync'))
   rooms[0].send('lobby:start', {})
   const match = await Promise.all(syncs)
   assert(new Set(match.map((entry) => entry.seed)).size === 1, 'Players received different match seeds')
   assert(new Set(match.map((entry) => entry.startedAt)).size === 1, 'Players received different match start times')
-  assert(match.every((entry) => entry.durationSeconds === 60 * 60), 'Players received different match durations')
+  assert(match.every((entry) => entry.durationSeconds === 45 * 60), 'Players received different match durations')
+
+  const personalResultPromise = once<{ personalCount: number; globalCount: number; globalRemaining: number }>(rooms[0], 'deed:result')
+  rooms[0].send('deed:purchase', { requestId: 'lobby-personal', kind: 'personal', quantity: 1 })
+  const personalResult = await personalResultPromise
+  assert(personalResult.personalCount === 1 && personalResult.globalCount === 0 && personalResult.globalRemaining === 1, 'Personal deed did not stay separate from configured shared stock')
+  const sharedResultPromise = once<{ personalCount: number; globalCount: number; globalRemaining: number }>(rooms[0], 'deed:result')
+  rooms[0].send('deed:purchase', { requestId: 'lobby-shared', kind: 'global', quantity: 2 })
+  const sharedResult = await sharedResultPromise
+  assert(sharedResult.personalCount === 0 && sharedResult.globalCount === 1 && sharedResult.globalRemaining === 0, 'Configured shared deed stock was not enforced')
 
   const reassignedDuringMatch = once<{ isHost: boolean; playerCount: number }>(rooms[1], 'lobby:state')
   await rooms[0].leave()
@@ -88,7 +116,7 @@ try {
   const restartedState = await restartedStatePromise
   assert(!restartedState.started, 'New Run did not reset the room to the lobby')
 
-  console.log(JSON.stringify({ status: 'pass', lobbyPlayers: 6, seventhRejected, hostReassigned: true, inMatchHostReassigned: true, nonHostStartBlocked: true, synchronizedMatch: true, synchronizedNewRun: true }, null, 2))
+  console.log(JSON.stringify({ status: 'pass', lobbyPlayers: 6, fourPlayerExtraFarmCap: 4, sixPlayerExtraFarmCap: 2, totalFarmCap: 8, seventhRejected, hostReassigned: true, inMatchHostReassigned: true, nonHostStartBlocked: true, synchronizedSettings: true, extraFarms: 1, personalDeedProtected: true, sharedDeedLimitEnforced: true, synchronizedMatch: true, synchronizedNewRun: true }, null, 2))
 } finally {
   await Promise.allSettled(rooms.map((room) => room.leave()))
   server.kill('SIGTERM')

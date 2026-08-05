@@ -1,4 +1,4 @@
-import { COMMODITY_MARKET_CONFIG, MATCH_CONFIG, type CommodityId } from './config'
+import { COMMODITY_MARKET_CONFIG, CROP_CONFIG, MATCH_CONFIG, type CommodityId } from './config'
 import type { StockDefinition } from './items'
 
 export type CommodityMarket = Record<CommodityId, number>
@@ -38,7 +38,9 @@ export function commodityMultiplier(id: CommodityId, stock: number) {
 }
 
 export function commodityPrice(id: CommodityId, baseValue: number, stock: number) {
-  return Math.max(1, Math.round(baseValue * commodityMultiplier(id, stock)))
+  const crop = id in CROP_CONFIG ? CROP_CONFIG[id as keyof typeof CROP_CONFIG] : null
+  const cropFloor = crop ? Math.ceil(crop.seedPrice / crop.yield) : 1
+  return Math.max(cropFloor, Math.round(baseValue * commodityMultiplier(id, stock)))
 }
 
 export function marginalSale(id: CommodityId, baseValue: number, stock: number, quantity: number) {

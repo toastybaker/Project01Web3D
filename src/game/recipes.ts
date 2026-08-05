@@ -18,6 +18,11 @@ export type RecipeDefinition = {
   cookSeconds: number
 }
 
+// Common prepared-food premium. Recipe multipliers still distinguish dish
+// complexity; this pays back the deed, furnace, and recipe setup within a
+// one-hour cash-at-the-bell match.
+export const PREPARED_FOOD_MARKUP = 4
+
 export const RECIPES: Record<RecipeId, RecipeDefinition> = {
   'berry-jam': { id: 'berry-jam', food: 'food-berry-jam', name: 'Orchard Jam', group: 'early', ingredients: { apple: 3, orange: 2 }, multiplier: 1.18, cookSeconds: 30 },
   'apple-bread': { id: 'apple-bread', food: 'food-apple-bread', name: 'Apple Bread', group: 'early', ingredients: { apple: 2, wheat: 2 }, multiplier: 1.2, cookSeconds: 30 },

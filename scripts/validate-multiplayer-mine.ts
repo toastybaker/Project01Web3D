@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { Client, type Room } from 'colyseus.js'
 import { MINE_NODE_SITES } from '../shared/mine-nodes.js'
+import { oreKindAtDepth } from '../src/game/ore'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -114,6 +115,25 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 350))
   assert(raceAwards === 1, `Simultaneous mining produced ${raceAwards} awards instead of one`)
 
+  const deepSite = [...MINE_NODE_SITES].sort((left, right) => left.z - right.z)[0]
+  minerA.send('move', { ...movement, position: [deepSite.x, 0.86, deepSite.z] })
+  await new Promise((resolve) => setTimeout(resolve, 180))
+  const deepAward = messageWhere<{ id: string; ore: string; quantity: number }>(minerA, 'mine:award', (payload) => payload.id === deepSite.id)
+  minerA.send('mine:request', { id: deepSite.id, tool: 'crystal-pickaxe' })
+  const deepResult = await deepAward
+  assert(deepResult.quantity >= 1, 'Deepest authored mine node did not award ore')
+
+  const ironSite = [...MINE_NODE_SITES]
+    .sort((left, right) => left.z - right.z)
+    .find((candidate) => candidate.id !== deepSite.id && oreKindAtDepth(candidate.id, candidate.z, 0, initialA.seed) === 'iron-ore')
+  assert(ironSite, 'Deterministic mine seed did not provide an iron node for validation')
+  minerA.send('move', { ...movement, position: [ironSite.x, 0.86, ironSite.z] })
+  await new Promise((resolve) => setTimeout(resolve, 180))
+  const ironAward = messageWhere<{ id: string; ore: string; quantity: number }>(minerA, 'mine:award', (payload) => payload.id === ironSite.id)
+  minerA.send('mine:request', { id: ironSite.id, tool: 'worn-pickaxe' })
+  const ironResult = await ironAward
+  assert(ironResult.ore === 'iron-ore' && ironResult.quantity >= 1, 'Starter Pickaxe could not mine a deterministic iron node')
+
   const respawnA = messageWhere<{ id: string; generation: number; readyAt: number }>(minerA, 'mine:node', (node) => node.id === site.id && node.readyAt === 0, 37_000)
   const respawnB = messageWhere<{ id: string; generation: number; readyAt: number }>(minerB, 'mine:node', (node) => node.id === site.id && node.readyAt === 0, 37_000)
   const [activeA, activeB] = await Promise.all([respawnA, respawnB])
@@ -129,6 +149,8 @@ try {
     respawnSeconds: Math.round(remaining / 100) / 10,
     duplicateAward,
     simultaneousAwards: raceAwards,
+    deepestNode: `${deepSite.id}@${deepSite.z.toFixed(1)}:${deepResult.ore}`,
+    ironNode: `${ironSite.id}@${ironSite.z.toFixed(1)}:${ironResult.quantity}`,
     lateJoinGeneration: joined.nodes[site.id].generation,
     sharedRespawn: activeA.readyAt === 0 && activeB.readyAt === 0,
   }, null, 2))

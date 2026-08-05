@@ -6,21 +6,23 @@ import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.j
 import { Client as ColyseusClient } from 'colyseus.js'
 import { economyProgressValue, secretSiteForRound, secretZoneForRound, useGameStore, type AnchorMap, type WorldCollider, type ZoneId } from './store'
 import { ORE_COLORS, oreKindAtDepth } from './ore'
-import { emitMultiplayer, setMultiplayerSender } from './multiplayer'
+import { emitMultiplayer, setMultiplayerSender, stableProfileId } from './multiplayer'
 import { activeRareForageIds, forageSiteAvailability, fruitTreeCapacity } from './config'
 import { miningRushOre, type MinigameKind } from './minigame'
 import { playGameSfx } from './sfx'
+import { uiText } from './i18n'
 
 const SCENES: Record<ZoneId, string> = {
   hub: '/assets/3d/scenes/hub.glb?v=16',
   forage: '/assets/3d/scenes/forage.glb?v=23',
   farm: '/assets/3d/scenes/farm.glb?v=18',
-  mine: '/assets/3d/scenes/mine.glb?v=24',
+  mine: '/assets/3d/scenes/mine.glb?v=32',
 }
-const MINING_RUSH_SCENE = '/assets/3d/scenes/mining-rush.glb?v=10'
+const MINING_RUSH_SCENE = '/assets/3d/scenes/mining-rush.glb?v=13'
 const FARM_RUSH_SCENE = '/assets/3d/scenes/farm-rush.glb?v=13'
-const FORAGE_RUSH_SCENE = '/assets/3d/scenes/forage-rush.glb?v=8'
+const FORAGE_RUSH_SCENE = '/assets/3d/scenes/forage-rush.glb?v=9'
 const MINIGAME_SCENES: Record<MinigameKind, string> = { mining: MINING_RUSH_SCENE, farm: FARM_RUSH_SCENE, forage: FORAGE_RUSH_SCENE }
+const EMPTY_RESOURCE_IDS = new Set<string>()
 
 const visualGateMode = new URLSearchParams(window.location.search).get('gate')
 const resourceVisualTarget = new URLSearchParams(window.location.search).get('target')
@@ -50,8 +52,8 @@ const MINING_RUSH_BAY_CENTERS: Array<[number, number]> = [
 ]
 
 const mineFootprint: Array<[number, number]> = [
-  [-10,24],[-18,12],[-40,8],[-57,-1],[-64,-18],[-62,-36],[-48,-51],[-61,-64],[-67,-82],[-61,-96],[-43,-108],[-54,-120],[-53,-139],[-45,-158],[-53,-176],[-43,-191],[-20,-199],
-  [20,-199],[43,-191],[53,-176],[45,-158],[53,-139],[54,-120],[42,-108],[59,-98],[67,-83],[63,-63],[49,-50],[62,-36],[64,-17],[57,-1],[40,8],[18,12],[10,24],
+  [-10,24],[-18,12],[-40,8],[-57,-1],[-64,-18],[-62,-36],[-48,-51],[-61,-64],[-67,-82],[-61,-96],[-43,-108],[-54,-120],[-53,-139],[-45,-158],[-53,-176],[-43,-191],[-35,-211],[-46,-229],[-31,-246],[-9,-253],
+  [10,-253],[31,-246],[46,-229],[35,-211],[43,-191],[53,-176],[45,-158],[53,-139],[54,-120],[42,-108],[59,-98],[67,-83],[63,-63],[49,-50],[62,-36],[64,-17],[57,-1],[40,8],[18,12],[10,24],
 ]
 
 function pointInMine(x: number, z: number) {
@@ -63,6 +65,24 @@ function pointInMine(x: number, z: number) {
     if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside
   }
   return inside
+}
+
+function cameraObstructionMeshes(environment: THREE.Object3D | undefined) {
+  if (!environment) return []
+  const meshes: THREE.Object3D[] = []
+  environment.updateMatrixWorld(true)
+  environment.traverse((object) => {
+    if (!(object instanceof THREE.Mesh) || !object.visible) return
+    let parent: THREE.Object3D | null = object
+    while (parent && parent !== environment) {
+      if (parent.name.startsWith('Resource_') || parent.name.startsWith('Anchor_')) return
+      parent = parent.parent
+    }
+    if (!object.geometry.boundingSphere) object.geometry.computeBoundingSphere()
+    const radius = (object.geometry.boundingSphere?.radius ?? 0) * object.getWorldScale(new THREE.Vector3()).length() / Math.sqrt(3)
+    if (radius >= 0.62) meshes.push(object)
+  })
+  return meshes
 }
 
 const forageTrail: Array<[number, number]> = [[0, 22], [1, 12], [-2, 0], [-8, -16], [-3, -34], [9, -52], [4, -72], [-12, -91], [-5, -112], [8, -132], [-2, -154], [10, -177], [2, -203]]
@@ -147,7 +167,7 @@ function mineGroundHeight(x: number, z: number) {
           : z >= -98 ? ramp(-84, -98, -8, -15)
             : z >= -132 ? -15
               : z >= -146 ? ramp(-132, -146, -15, -22)
-                : -22
+                : -22 - smoothstep(0, 1, THREE.MathUtils.clamp((-146 - z) / 56, 0, 1)) * 4.8
   const shelf = (cx: number, cz: number, radiusX: number, radiusZ: number, height: number) => {
     const distance = Math.hypot((x - cx) / radiusX, (z - cz) / radiusZ)
     return (1 - smoothstep(0.48, 1, distance)) * height
@@ -161,6 +181,14 @@ function mineGroundHeight(x: number, z: number) {
   level -= Math.exp(-((x - 41) ** 2 + (z + 67) ** 2) / 360) * 1.2
   level += Math.exp(-((x - 34) ** 2 + (z + 113) ** 2) / 330) * 0.9
   level -= Math.exp(-((x + 24) ** 2 + (z + 118) ** 2) / 330) * 1.05
+  if (z < -150) {
+    const deep = smoothstep(150, 198, -z)
+    const bank = smoothstep(18, 42, Math.abs(x)) * (1.4 + deep * 3.4)
+    const terraces = smoothstep(160, 168, -z) * 0.9
+      + smoothstep(174, 183, -z) * 1.05
+      + smoothstep(188, 198, -z) * 1.2
+    level += bank - terraces
+  }
   return level
 }
 
@@ -188,6 +216,7 @@ function SceneLighting() {
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
   const weather = useGameStore((state) => state.weather)
+  const graphicsMode = useGameStore((state) => state.graphicsMode)
   const eventMining = minigameOpen && minigameKind === 'mining'
   const mineLike = zone === 'mine' || (minigameOpen && minigameKind === 'mining')
   useEffect(() => {
@@ -198,13 +227,13 @@ function SceneLighting() {
   }, [eventMining, mineLike, scene, weather, zone])
   return (
     <>
-      <hemisphereLight color={mineLike ? '#e7dfd2' : '#fff0cc'} groundColor={mineLike ? '#52483e' : '#263b29'} intensity={eventMining ? 1.7 : mineLike ? 1.02 : 1.12} />
+      <hemisphereLight color={mineLike ? '#efe7dc' : '#fff0cc'} groundColor={mineLike ? '#5b5046' : '#263b29'} intensity={eventMining ? 1.7 : mineLike ? 1.32 : 1.12} />
       <directionalLight
-        castShadow
+        castShadow={!mineLike && graphicsMode !== 'low'}
         color={mineLike ? '#a8babd' : '#ffdca0'}
-        intensity={eventMining ? 2.35 : mineLike ? 1.65 : 2.05}
+        intensity={eventMining ? 2.35 : mineLike ? 2.05 : 2.05}
         position={[-12, 19, 10]}
-        shadow-mapSize={[2048, 2048]}
+        shadow-mapSize={graphicsMode === 'high' ? [2048, 2048] : [1024, 1024]}
         shadow-camera-left={-30}
         shadow-camera-right={30}
         shadow-camera-top={30}
@@ -212,8 +241,8 @@ function SceneLighting() {
         shadow-bias={-0.0004}
       />
       {zone === 'hub' && <pointLight color="#efb25d" intensity={4.2} distance={10} decay={2} position={[2.6, 2.5, 1.8]} />}
-      {mineLike && <><pointLight color="#efbd79" intensity={eventMining ? 12 : 7.2} distance={40} decay={2} position={[0, 4.6, 18]} /><pointLight color="#d99a5c" intensity={eventMining ? 9.5 : 6.4} distance={42} decay={2} position={[-14, 3.2, -2]} /><pointLight color="#9cbcc0" intensity={eventMining ? 9.5 : 6.2} distance={42} decay={2} position={[14, 3.2, -4]} /></>}
-      {zone === 'mine' && !minigameOpen && <><pointLight color="#d99a62" intensity={6.2} distance={42} decay={2} position={[-41, -5, -75]} /><pointLight color="#94b9c3" intensity={6.6} distance={42} decay={2} position={[42, -6, -78]} /><pointLight color="#d8a66b" intensity={6.4} distance={43} decay={2} position={[-31, -13, -124]} /><pointLight color="#8fb5c1" intensity={6.4} distance={42} decay={2} position={[32, -13, -126]} /></>}
+      {mineLike && <><pointLight color="#efbd79" intensity={eventMining ? 12 : 10.2} distance={48} decay={2} position={[0, 4.6, 18]} /><pointLight color="#d99a5c" intensity={eventMining ? 9.5 : 8.8} distance={48} decay={2} position={[-14, 3.2, -2]} /><pointLight color="#9cbcc0" intensity={eventMining ? 9.5 : 8.4} distance={48} decay={2} position={[14, 3.2, -4]} /></>}
+      {zone === 'mine' && !minigameOpen && <><pointLight color="#e5aa68" intensity={8.8} distance={50} decay={2} position={[-41, -5, -75]} /><pointLight color="#9dc7d0" intensity={9.2} distance={50} decay={2} position={[42, -6, -78]} /><pointLight color="#e0ad70" intensity={9} distance={52} decay={2} position={[-31, -13, -124]} /><pointLight color="#98c2cd" intensity={9} distance={50} decay={2} position={[32, -13, -126]} /><pointLight color="#dba266" intensity={8.6} distance={54} decay={2} position={[0, -25, -206]} /></>}
     </>
   )
 }
@@ -253,17 +282,69 @@ function WeatherEffect() {
   if (minigameOpen || (weather !== 'rain' && weather !== 'mist') || zone === 'mine') return null
   return (
     <points ref={points} geometry={geometry} frustumCulled={false}>
-      <pointsMaterial color={weather === 'rain' ? '#cfdfda' : '#e7eadc'} size={weather === 'rain' ? 0.055 : 0.32} transparent opacity={weather === 'rain' ? 0.62 : 0.16} depthWrite={false} sizeAttenuation />
+      <pointsMaterial color={weather === 'rain' ? '#cfdfda' : '#e7eadc'} size={weather === 'rain' ? 1.35 : 3.2} transparent opacity={weather === 'rain' ? 0.62 : 0.16} depthWrite={false} sizeAttenuation={false} />
     </points>
   )
+}
+
+function AdaptiveRenderScale({ rendererLow }: { rendererLow: boolean }) {
+  const setDpr = useThree((state) => state.setDpr)
+  const graphicsMode = useGameStore((state) => state.graphicsMode)
+  const deviceDpr = useMemo(() => window.devicePixelRatio || 1, [])
+  const autoDpr = Math.min(deviceDpr, 1.25)
+  const presetDpr = graphicsMode === 'low' || (graphicsMode === 'auto' && rendererLow)
+    ? Math.min(deviceDpr, .85)
+    : graphicsMode === 'medium'
+      ? Math.min(deviceDpr, 1)
+      : graphicsMode === 'high'
+        ? Math.min(deviceDpr, 1.5)
+        : autoDpr
+  const sample = useRef({ startedAt: performance.now(), frames: 0, currentDpr: presetDpr, recoveryWindows: 0, grace: true })
+
+  useEffect(() => {
+    const dpr = presetDpr
+    sample.current = { startedAt: performance.now(), frames: 0, currentDpr: dpr, recoveryWindows: 0, grace: true }
+    setDpr(dpr)
+  }, [graphicsMode, presetDpr, rendererLow, setDpr])
+
+  useFrame(() => {
+    if (graphicsMode !== 'auto') return
+    const now = performance.now()
+    const state = sample.current
+    state.frames += 1
+    const elapsed = now - state.startedAt
+    if (elapsed < (state.grace ? 8000 : 4000)) return
+
+    const fps = state.frames * 1000 / elapsed
+    state.startedAt = now
+    state.frames = 0
+    state.grace = false
+    // Keep the full render scale when the browser is close to the 120 Hz target.
+    // The fallback never renders below one physical pixel per CSS pixel.
+    if (fps < 90 && state.currentDpr > Math.min(deviceDpr, .85)) {
+      state.currentDpr = state.currentDpr > 1 ? Math.min(deviceDpr, 1) : Math.min(deviceDpr, .85)
+      state.recoveryWindows = 0
+      setDpr(state.currentDpr)
+      return
+    }
+    if (fps > 112 && state.currentDpr < autoDpr) {
+      state.recoveryWindows += 1
+      if (state.recoveryWindows >= 3) {
+        state.currentDpr = state.currentDpr < 1 ? Math.min(deviceDpr, 1) : autoDpr
+        state.recoveryWindows = 0
+        setDpr(state.currentDpr)
+      }
+    } else state.recoveryWindows = 0
+  })
+  return null
 }
 
 function applyOreAppearance(object: THREE.Object3D, id: string, readyAt: number, forcedKind?: keyof typeof ORE_COLORS) {
   if (!id.startsWith('MineOre') && !id.startsWith('RushOre')) return
   const kind = forcedKind ?? oreKindAtDepth(id, object.position.z)
-  if (object.userData.oreKind === kind && object.userData.oreAppearanceVersion === 3) return
+  if (object.userData.oreKind === kind && object.userData.oreAppearanceVersion === 4) return
   object.userData.oreKind = kind
-  object.userData.oreAppearanceVersion = 3
+  object.userData.oreAppearanceVersion = 4
   object.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return
     const oreMeshName = child.name.replaceAll('_', ' ')
@@ -277,19 +358,19 @@ function applyOreAppearance(object: THREE.Object3D, id: string, readyAt: number,
     materials.forEach((material) => {
       if ('color' in material && material.color instanceof THREE.Color) {
         if (oreMeshName.startsWith('Ore Vein') || oreMeshName.startsWith('Ore Fleck') || oreMeshName.startsWith('Ore Shard')) material.color.set(ORE_COLORS[kind])
-        else if (oreMeshName.startsWith('Ore Boulder')) material.color.set(id.startsWith('RushOre') ? '#625e57' : '#786f63').lerp(new THREE.Color(ORE_COLORS[kind]), id.startsWith('RushOre') ? .34 : .18)
-        else if (oreMeshName.startsWith('Embedded Ore')) material.color.set(id.startsWith('RushOre') ? '#56524c' : '#625e57').lerp(new THREE.Color(ORE_COLORS[kind]), id.startsWith('RushOre') ? .08 : .04)
+        else if (oreMeshName.startsWith('Ore Boulder')) material.color.set(id.startsWith('RushOre') ? '#625e57' : '#69645d').lerp(new THREE.Color(ORE_COLORS[kind]), id.startsWith('RushOre') ? .34 : .30)
+        else if (oreMeshName.startsWith('Embedded Ore')) material.color.set(id.startsWith('RushOre') ? '#56524c' : '#5d5953').lerp(new THREE.Color(ORE_COLORS[kind]), id.startsWith('RushOre') ? .08 : .07)
       }
       if ('emissive' in material && material.emissive instanceof THREE.Color) {
         if (oreMeshName.startsWith('Ore Vein') || oreMeshName.startsWith('Ore Fleck') || oreMeshName.startsWith('Ore Shard')) {
           material.emissive.set(ORE_COLORS[kind])
-          material.emissiveIntensity = id.startsWith('RushOre') ? 0.38 : 0.22
+          material.emissiveIntensity = id.startsWith('RushOre') ? 0.38 : 0.32
         } else if (oreMeshName.startsWith('Ore Boulder')) {
           material.emissive.set(ORE_COLORS[kind])
-          material.emissiveIntensity = id.startsWith('RushOre') ? 0.05 : 0.018
+          material.emissiveIntensity = id.startsWith('RushOre') ? 0.05 : 0.04
         } else if (oreMeshName.startsWith('Embedded Ore')) {
           material.emissive.set(ORE_COLORS[kind])
-          material.emissiveIntensity = id.startsWith('RushOre') ? 0.01 : 0.004
+          material.emissiveIntensity = id.startsWith('RushOre') ? 0.01 : 0.008
         }
       }
       if ('roughness' in material) material.roughness = kind === 'gold-ore' || kind === 'ancient-ore' ? 0.42 : 0.58
@@ -301,6 +382,9 @@ function applyFruitAppearance(object: THREE.Object3D, id: string, available: num
   const mainId = id.replace('ForageRush', 'Forage')
   if (!mainId.startsWith('ForageApple') && !mainId.startsWith('ForageOrange')) return
   const capacity = fruitTreeCapacity(mainId)
+  object.userData.fruitAvailable = available
+  object.userData.fruitCapacity = capacity
+  if (object.userData.fruitBatched) return
   object.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return
     const fruitMeshName = child.name.replaceAll('_', ' ')
@@ -314,6 +398,72 @@ function applyFruitAppearance(object: THREE.Object3D, id: string, available: num
     const drawCount = Math.floor((fullDrawCount * available / capacity) / 3) * 3
     child.geometry.setDrawRange(0, drawCount)
   })
+}
+
+type FruitBatch = {
+  levels: THREE.InstancedMesh[]
+  entries: Array<{ resource: THREE.Object3D; matrix: THREE.Matrix4; capacity: number }>
+}
+
+function buildFruitBatches(scene: THREE.Object3D, resources: THREE.Object3D[]) {
+  scene.updateMatrixWorld(true)
+  const batches: FruitBatch[] = []
+  for (const kind of ['Apple', 'Orange'] as const) {
+    const entries: FruitBatch['entries'] = []
+    let source: THREE.Mesh | null = null
+    for (const resource of resources) {
+      const id = resource.name.slice(9)
+      if (!id.includes(kind)) continue
+      const fruitMeshes: THREE.Mesh[] = []
+      resource.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.name.replaceAll('_', ' ').includes(`Woodland ${kind === 'Apple' ? 'Apples' : 'Oranges'}`)) fruitMeshes.push(child)
+      })
+      const fruitMesh = fruitMeshes[0]
+      if (!fruitMesh) continue
+      source ??= fruitMesh
+      fruitMesh.visible = false
+      resource.userData.fruitBatched = true
+      const capacity = fruitTreeCapacity(id.replace('ForageRush', 'Forage'))
+      resource.userData.fruitAvailable = capacity
+      resource.userData.fruitCapacity = capacity
+      entries.push({ resource, matrix: fruitMesh.matrixWorld.clone(), capacity })
+    }
+    const sourceMesh = source as THREE.Mesh | null
+    if (!sourceMesh || !entries.length) continue
+    const fullDrawCount = sourceMesh.geometry.index?.count ?? sourceMesh.geometry.getAttribute('position').count
+    const levels = Array.from({ length: 5 }, (_, index) => {
+      const geometry = sourceMesh.geometry.clone()
+      geometry.setDrawRange(0, Math.floor((fullDrawCount * (index + 1) / 5) / 3) * 3)
+      const instance = new THREE.InstancedMesh(geometry, sourceMesh.material, entries.length)
+      instance.name = `Batched Woodland ${kind} ${index + 1}`
+      instance.count = 0
+      instance.castShadow = true
+      instance.receiveShadow = false
+      instance.frustumCulled = false
+      scene.add(instance)
+      return instance
+    })
+    batches.push({ levels, entries })
+  }
+  return batches
+}
+
+function syncFruitBatches(batches: FruitBatch[]) {
+  for (const batch of batches) {
+    batch.levels.forEach((level) => { level.count = 0 })
+    for (const entry of batch.entries) {
+      if (!entry.resource.visible) continue
+      const available = Math.max(0, Math.min(entry.capacity, Number(entry.resource.userData.fruitAvailable) || 0))
+      if (!available) continue
+      const levelIndex = Math.max(0, Math.min(4, Math.ceil(available / entry.capacity * 5) - 1))
+      const level = batch.levels[levelIndex]
+      level.setMatrixAt(level.count, entry.matrix)
+      level.count += 1
+    }
+    batch.levels.forEach((level) => {
+      level.instanceMatrix.needsUpdate = true
+    })
+  }
 }
 
 function EnvironmentScene() {
@@ -339,7 +489,7 @@ function EnvironmentScene() {
   const farmOwners = useGameStore((state) => state.farmOwners)
   const localFarmCells = useGameStore((state) => state.farmCells)
   const sharedFarmCells = useGameStore((state) => state.sharedFarmCells)
-  const farmCells = sharedFarmOnline ? sharedFarmCells : localFarmCells
+  const farmCells = farmCellVisualGate ? localFarmCells : sharedFarmOnline ? sharedFarmCells : localFarmCells
   const farmRushCells = useGameStore((state) => state.farmRushCells)
   const weather = useGameStore((state) => state.weather)
   const ownedFarms = useMemo(() => sharedFarmOnline ? Object.keys(farmOwners).map(Number).filter((farm) => farmOwners[farm] === sharedFarmSelfId) : claimedFarms, [claimedFarms, farmOwners, sharedFarmOnline, sharedFarmSelfId])
@@ -360,7 +510,17 @@ function EnvironmentScene() {
     scene.traverse((object) => { if (object.name.startsWith('Resource_')) resources.push(object) })
     return resources
   }, [scene])
+  const resourcesById = useMemo(() => new Map(resourceObjects.map((object) => [object.name.slice(9), object])), [resourceObjects])
+  const fruitBatches = useMemo(() => buildFruitBatches(scene, resourceObjects), [resourceObjects, scene])
+  useEffect(() => () => {
+    fruitBatches.forEach((batch) => batch.levels.forEach((level) => {
+      scene.remove(level)
+      level.geometry.dispose()
+    }))
+  }, [fruitBatches, scene])
   const rareResourceIds = useMemo(() => resourceObjects.map((object) => object.name.slice(9)).filter((id) => id.startsWith('ForageTruffle') || id.startsWith('ForageDiscovery') || id.startsWith('ForageRushTruffle') || id.startsWith('ForageRushDiscovery')), [resourceObjects])
+  const nextResourceRefresh = useRef(0)
+  const scaledOre = useRef<THREE.Object3D | null>(null)
   const furnaceBodies = useMemo(() => {
     const bodies: THREE.Object3D[] = []
     scene.traverse((object) => { if (typeof object.userData.furnaceIndex === 'number' || typeof object.userData.rushCooker === 'number') bodies.push(object) })
@@ -395,7 +555,8 @@ function EnvironmentScene() {
   const assignedPlotBeaconY = useMemo(() => assignedPlotBeacon?.position.y ?? 0, [assignedPlotBeacon])
 
   useFrame((state, delta) => {
-    const activeRares = activeRareForageIds(rareResourceIds, minigameOpen && minigameKind === 'forage', sessionSeed, matchStartedAt)
+    const now = Date.now()
+    const live = useGameStore.getState()
     if (animatedStock) {
       animatedStock.rotation.z += delta * 0.34
       animatedStock.position.y = stockBaseY + Math.sin(state.clock.elapsedTime * 1.4) * 0.08
@@ -404,36 +565,45 @@ function EnvironmentScene() {
       assignedPlotBeacon.rotation.y += delta * 0.65
       assignedPlotBeacon.position.y = assignedPlotBeaconY + Math.sin(state.clock.elapsedTime * 1.8) * 0.12
     }
-    for (const object of resourceObjects) {
-      const id = object.name.slice(9)
-      if (id.startsWith('ForageRush')) {
-        const ready = (forageRushCollected[id] ?? 0) <= Date.now()
-        if (id.startsWith('ForageRushApple') || id.startsWith('ForageRushOrange')) {
-          object.visible = true
-          applyFruitAppearance(object, id, ready ? fruitTreeCapacity(id.replace('ForageRush', 'Forage')) : 0)
-        } else object.visible = ready && activeRares.has(id)
-        continue
-      }
-      const rushNode = rushNodes[id] ?? { generation: 0, readyAt: 0 }
-      const readyAt = id.startsWith('RushOre') ? rushNode.readyAt : minedNodes[id] ?? 0
-      const forageAvailable = id.startsWith('Forage') ? forageSiteAvailability(id, collectedForage[id] ?? 0) : 0
-      const rareActive = !id.startsWith('ForageTruffle') && !id.startsWith('ForageDiscovery') || activeRares.has(id)
-      object.visible = id.startsWith('Forage') ? forageAvailable > 0 && rareActive : readyAt <= Date.now()
-      if (object.visible) {
-        if (id.startsWith('Forage')) applyFruitAppearance(object, id, forageAvailable)
-        const oreKind = id.startsWith('RushOre')
-          ? miningRushOre(minigameMilestone, id, rushNode.generation)
-          : id.startsWith('MineOre')
-            ? oreKindAtDepth(id, object.position.z, mineGenerations[id] ?? 0, sessionSeed)
-            : undefined
-        applyOreAppearance(object, id, readyAt, oreKind)
-        if (id.startsWith('MineOre') || id.startsWith('RushOre')) {
-          if (!object.userData.restScale) object.userData.restScale = object.scale.clone()
-          const live = useGameStore.getState()
-          const damage = live.prompt?.id === id ? live.interactionProgress : 0
-          object.scale.copy(object.userData.restScale).multiplyScalar(1 - damage * 0.24)
+    if (state.clock.elapsedTime >= nextResourceRefresh.current) {
+      nextResourceRefresh.current = state.clock.elapsedTime + .2
+      const activeRares = rareResourceIds.length
+        ? activeRareForageIds(rareResourceIds, minigameOpen && minigameKind === 'forage', sessionSeed, matchStartedAt, now)
+        : EMPTY_RESOURCE_IDS
+      for (const object of resourceObjects) {
+        const id = object.name.slice(9)
+        if (id.startsWith('ForageRush')) {
+          const ready = (forageRushCollected[id] ?? 0) <= now
+          if (id.startsWith('ForageRushApple') || id.startsWith('ForageRushOrange')) {
+            object.visible = true
+            applyFruitAppearance(object, id, ready ? fruitTreeCapacity(id.replace('ForageRush', 'Forage')) : 0)
+          } else object.visible = ready && activeRares.has(id)
+          continue
+        }
+        const rushNode = rushNodes[id] ?? { generation: 0, readyAt: 0 }
+        const readyAt = id.startsWith('RushOre') ? rushNode.readyAt : minedNodes[id] ?? 0
+        const forageAvailable = id.startsWith('Forage') ? forageSiteAvailability(id, collectedForage[id] ?? 0, now) : 0
+        const rareActive = !id.startsWith('ForageTruffle') && !id.startsWith('ForageDiscovery') || activeRares.has(id)
+        object.visible = id.startsWith('Forage') ? forageAvailable > 0 && rareActive : readyAt <= now
+        if (object.visible) {
+          if (id.startsWith('Forage')) applyFruitAppearance(object, id, forageAvailable)
+          const oreKind = id.startsWith('RushOre')
+            ? miningRushOre(minigameMilestone, id, rushNode.generation)
+            : id.startsWith('MineOre')
+              ? oreKindAtDepth(id, object.position.z, mineGenerations[id] ?? 0, sessionSeed)
+              : undefined
+          applyOreAppearance(object, id, readyAt, oreKind)
         }
       }
+      syncFruitBatches(fruitBatches)
+    }
+    const promptId = live.prompt?.id
+    const focusedOre = promptId?.startsWith('MineOre') || promptId?.startsWith('RushOre') ? resourcesById.get(promptId) ?? null : null
+    if (scaledOre.current && scaledOre.current !== focusedOre && scaledOre.current.userData.restScale) scaledOre.current.scale.copy(scaledOre.current.userData.restScale)
+    scaledOre.current = focusedOre
+    if (focusedOre?.visible) {
+      if (!focusedOre.userData.restScale) focusedOre.userData.restScale = focusedOre.scale.clone()
+      focusedOre.scale.copy(focusedOre.userData.restScale).multiplyScalar(1 - live.interactionProgress * .24)
     }
     const activeFurnaces = (furnaceVisualGate || resourceVisualGate) && zone === 'farm' ? [0] : furnaceCount > 0 ? ownedFarms.slice(0, 1) : []
     furnaceBodies.forEach((body) => {
@@ -555,7 +725,7 @@ function NormalizedModel({ src, height, position = [0, 0, 0], rotation = [0, 0, 
   )
 }
 
-function AnimatedCharacter({ src, height, position, rotation, animation }: NormalizedModelProps & { animation: string }) {
+function AnimatedCharacter({ src, height, position, rotation, animation, castShadow = true }: NormalizedModelProps & { animation: string; castShadow?: boolean }) {
   const group = useRef<THREE.Group>(null)
   const source = useGLTF(src).scene
   const animationSource = useGLTF('/assets/3d/animations/standard.glb')
@@ -571,12 +741,12 @@ function AnimatedCharacter({ src, height, position, rotation, animation }: Norma
     object.position.set(-center.x * scale, -bounds.min.y * scale, -center.z * scale)
     object.traverse((child) => {
       if (child instanceof THREE.Mesh) {
-        child.castShadow = true
+        child.castShadow = castShadow
         child.receiveShadow = true
       }
     })
     return object
-  }, [height, source])
+  }, [castShadow, height, source])
   useEffect(() => {
     const action = actions[animation]
     action?.reset().fadeIn(0.2).play()
@@ -585,7 +755,91 @@ function AnimatedCharacter({ src, height, position, rotation, animation }: Norma
   return <group ref={group} position={position} rotation={rotation}><primitive object={normalized} /></group>
 }
 
-type PeerPresence = { id: string; nickname: string; zone: ZoneId; position: [number, number, number]; cash: number; progressValue?: number; stats: { foraged: number; mined: number; harvested: number; sold: number }; seenAt: number; minigameOpen?: boolean; minigameKind?: MinigameKind; minigameMilestone?: number; minigameScore?: number; eventBay?: number }
+type PeerPresence = { id: string; nickname: string; zone: ZoneId; position: [number, number, number]; yaw?: number; animation?: string; cash: number; progressValue?: number; stats: { foraged: number; mined: number; harvested: number; sold: number }; seenAt: number; minigameOpen?: boolean; minigameKind?: MinigameKind; minigameMilestone?: number; minigameScore?: number; eventBay?: number }
+
+const PEER_IDLE = 'Armature|Idle_Loop'
+const PEER_ANIMATIONS = new Set([
+  PEER_IDLE,
+  'Armature|Walk_Loop',
+  'Armature|Sprint_Loop',
+  'Armature|Jump_Loop',
+  'Armature|Interact',
+])
+
+type PeerSnapshot = {
+  position: THREE.Vector3
+  yaw: number
+  animation: string
+  receivedAt: number
+}
+
+function shortestAngle(from: number, to: number) {
+  return Math.atan2(Math.sin(to - from), Math.cos(to - from))
+}
+
+function RemotePlayer({ peer }: { peer: PeerPresence }) {
+  const root = useRef<THREE.Group>(null)
+  const rendered = useRef(new THREE.Vector3(peer.position[0], peer.position[1], peer.position[2]))
+  const renderedYaw = useRef(Number.isFinite(peer.yaw) ? Number(peer.yaw) : 0)
+  const snapshots = useRef<PeerSnapshot[]>([{
+    position: rendered.current.clone(),
+    yaw: renderedYaw.current,
+    animation: PEER_ANIMATIONS.has(peer.animation ?? '') ? peer.animation! : PEER_IDLE,
+    receivedAt: performance.now(),
+  }])
+  const animationRef = useRef(snapshots.current[0].animation)
+  const [animation, setAnimation] = useState(animationRef.current)
+  const scratch = useRef(new THREE.Vector3())
+
+  useEffect(() => {
+    const now = performance.now()
+    const next = new THREE.Vector3(peer.position[0], peer.position[1], peer.position[2])
+    const last = snapshots.current.at(-1)
+    const nextYaw = Number.isFinite(peer.yaw) ? Number(peer.yaw) : last?.yaw ?? renderedYaw.current
+    const nextAnimation = PEER_ANIMATIONS.has(peer.animation ?? '') ? peer.animation! : PEER_IDLE
+    if (last && last.position.distanceToSquared(next) > 144) {
+      rendered.current.copy(next)
+      renderedYaw.current = nextYaw
+      root.current?.position.copy(next)
+      if (root.current) root.current.rotation.y = nextYaw
+      snapshots.current = [{ position: next, yaw: nextYaw, animation: nextAnimation, receivedAt: now }]
+      return
+    }
+    snapshots.current = [...snapshots.current, { position: next, yaw: nextYaw, animation: nextAnimation, receivedAt: now }].slice(-3)
+  }, [peer.animation, peer.position, peer.yaw])
+
+  useFrame(() => {
+    const renderAt = performance.now() - 120
+    const buffer = snapshots.current
+    let from = buffer[0]
+    let to = buffer[0]
+    for (let index = 1; index < buffer.length; index += 1) {
+      to = buffer[index]
+      if (to.receivedAt >= renderAt) break
+      from = to
+    }
+    const span = Math.max(1, to.receivedAt - from.receivedAt)
+    const alpha = from === to ? 1 : THREE.MathUtils.clamp((renderAt - from.receivedAt) / span, 0, 1)
+    rendered.current.copy(from.position).lerp(to.position, alpha)
+    renderedYaw.current = from.yaw + shortestAngle(from.yaw, to.yaw) * alpha
+    const nextAnimation = alpha < .5 ? from.animation : to.animation
+    if (nextAnimation !== animationRef.current) {
+      animationRef.current = nextAnimation
+      setAnimation(nextAnimation)
+    }
+    if (root.current) {
+      root.current.position.copy(rendered.current)
+      root.current.rotation.y = renderedYaw.current
+    }
+  })
+
+  return <group ref={root}>
+    <AnimatedCharacter src="/assets/3d/characters/ranger.glb" height={1.75} position={[0, -.86, 0]} rotation={[0, Math.PI, 0]} animation={animation} castShadow={false} />
+    <Html position={[0, 1.18, 0]} center zIndexRange={[1, 0]} style={{ pointerEvents: 'none' }}>
+      <span className="world-label" data-no-localize>{peer.nickname || 'PLAYER'}</span>
+    </Html>
+  </group>
+}
 
 function liveMinigameScore(state: ReturnType<typeof useGameStore.getState>) {
   if (!state.minigameOpen) return 0
@@ -620,26 +874,28 @@ function MultiplayerPresence() {
     })
     const startLocalFallback = () => {
       if (!('BroadcastChannel' in window) || disposed) return () => undefined
-      setLobbyState(false, false, false, 60 * 60)
+      setLobbyState(false, false, false, 60 * 60, 2, 1, 7)
       const channel = new BroadcastChannel('project01-presence-v1')
       channel.onmessage = (event: MessageEvent<PeerPresence & { leave?: boolean }>) => event.data.leave ? removePeer(event.data.id) : mergePeer(event.data)
       const publish = () => {
         const state = useGameStore.getState()
-        channel.postMessage({ id: peerId.current, nickname: state.nickname, zone: state.zone, position: state.playerPosition, cash: state.cash, progressValue: economyProgressValue(state), stats: state.stats, minigameOpen: state.minigameOpen, minigameKind: state.minigameKind, minigameMilestone: state.minigameMilestone, minigameScore: liveMinigameScore(state), eventBay: state.eventBay, seenAt: Date.now() })
+        channel.postMessage({ id: peerId.current, nickname: state.nickname, zone: state.zone, position: state.playerPosition, yaw: state.playerYaw, animation: state.playerAnimation, cash: state.cash, progressValue: economyProgressValue(state), stats: state.stats, minigameOpen: state.minigameOpen, minigameKind: state.minigameKind, minigameMilestone: state.minigameMilestone, minigameScore: liveMinigameScore(state), eventBay: state.eventBay, seenAt: Date.now() })
       }
       publish()
-      const timer = window.setInterval(publish, 250)
+      const timer = window.setInterval(publish, 100)
       return () => { window.clearInterval(timer); channel.postMessage({ id: peerId.current, leave: true }); channel.close() }
     }
     const connect = async () => {
       try {
         const configured = (import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_MULTIPLAYER_URL
-        const endpoint = configured || `${window.location.protocol}//${window.location.hostname}:2567`
-        const room = await new ColyseusClient(endpoint).joinOrCreate('woodland', { bypassLobby: bypassLobbyClient })
+        const endpoint = configured || ((import.meta as ImportMeta & { env?: Record<string, string | boolean> }).env?.DEV
+          ? `${window.location.protocol}//${window.location.hostname}:2567`
+          : window.location.origin)
+        const room = await new ColyseusClient(endpoint).joinOrCreate('woodland', { bypassLobby: bypassLobbyClient, profileId: stableProfileId() })
         if (disposed) { void room.leave(); return }
         peerId.current = room.sessionId
         room.onMessage('presence:snapshot', (snapshot: PeerPresence[]) => setPeers(Object.fromEntries(snapshot.filter((peer) => peer.id !== room.sessionId).map((peer) => [peer.id, peer]))))
-        room.onMessage('lobby:state', (message: { isHost?: boolean; started?: boolean; durationSeconds?: number }) => setLobbyState(true, Boolean(message.isHost), Boolean(message.started), Number(message.durationSeconds)))
+        room.onMessage('lobby:state', (message: { isHost?: boolean; started?: boolean; durationSeconds?: number; globalExpansionDeeds?: number; playerCount?: number; maxGlobalExpansionDeeds?: number }) => setLobbyState(true, Boolean(message.isHost), Boolean(message.started), Number(message.durationSeconds), Number(message.globalExpansionDeeds), Number(message.playerCount), Number(message.maxGlobalExpansionDeeds)))
         room.onMessage('lobby:reset', () => {
           const nickname = useGameStore.getState().nickname
           localStorage.removeItem('project01-save-v12')
@@ -651,15 +907,16 @@ function MultiplayerPresence() {
         room.onMessage('minigame:bay', (message: { bay?: number }) => { if (Number.isFinite(message.bay)) setEventBay(Number(message.bay)) })
         room.onMessage('presence:move', (message: PeerPresence) => mergePeer(message))
         room.onMessage('presence:leave', (id: string) => removePeer(id))
-        for (const type of ['trade:request', 'trade:opened', 'trade:update', 'trade:cancel', 'trade:commit', 'minigame:ready-state', 'minigame:start', 'minigame:result', 'minigame:forage', 'mine:snapshot', 'mine:node', 'mine:award', 'mine:denied', 'farm:snapshot', 'farm:update', 'farm:result', 'deed:snapshot', 'deed:stock', 'deed:result', 'merchant:snapshot', 'merchant:result']) room.onMessage(type, (payload: unknown) => emitMultiplayer(type, payload))
+        for (const type of ['trade:request', 'trade:opened', 'trade:update', 'trade:cancel', 'trade:commit', 'minigame:ready-state', 'minigame:start', 'minigame:result', 'minigame:forage', 'mine:snapshot', 'mine:node', 'mine:award', 'mine:denied', 'forage:snapshot', 'forage:node', 'forage:award', 'forage:denied', 'farm:snapshot', 'farm:update', 'farm:result', 'deed:snapshot', 'deed:stock', 'deed:result', 'merchant:snapshot', 'merchant:result']) room.onMessage(type, (payload: unknown) => emitMultiplayer(type, payload))
         setMultiplayerSender((type, payload) => room.send(type, payload))
         room.send('lobby:ready', {})
+        room.send('minigame:result:request', {})
         const publish = () => {
           const state = useGameStore.getState()
-          room.send('move', { zone: state.zone, position: state.playerPosition, nickname: state.nickname, cash: state.cash, progressValue: economyProgressValue(state), stats: state.stats, minigameOpen: state.minigameOpen, minigameKind: state.minigameKind, minigameMilestone: state.minigameMilestone, minigameScore: liveMinigameScore(state), eventBay: state.eventBay })
+          room.send('move', { zone: state.zone, position: state.playerPosition, yaw: state.playerYaw, animation: state.playerAnimation, nickname: state.nickname, cash: state.cash, progressValue: economyProgressValue(state), stats: state.stats, minigameOpen: state.minigameOpen, minigameKind: state.minigameKind, minigameMilestone: state.minigameMilestone, minigameScore: liveMinigameScore(state), eventBay: state.eventBay })
         }
         publish()
-        const timer = window.setInterval(publish, 125)
+        const timer = window.setInterval(publish, 100)
         stopPresence = () => { window.clearInterval(timer); setMultiplayerSender(null); void room.leave() }
       } catch {
         stopPresence = startLocalFallback()
@@ -673,20 +930,7 @@ function MultiplayerPresence() {
   const visiblePeers = Object.values(peers).filter((peer) => minigameOpen
     ? peer.minigameOpen && peer.minigameKind === minigameKind && peer.minigameMilestone === minigameMilestone
     : !peer.minigameOpen && peer.zone === zone)
-  return <>{visiblePeers.map((peer) => (
-    <group key={peer.id}>
-      <AnimatedCharacter
-        src="/assets/3d/characters/ranger.glb"
-        height={1.75}
-        position={[peer.position[0], peer.position[1] - 0.86, peer.position[2]]}
-        rotation={[0, Math.PI, 0]}
-        animation="Armature|Idle_Loop"
-      />
-      <Html position={[peer.position[0], peer.position[1] + 1.18, peer.position[2]]} center zIndexRange={[1, 0]} style={{ pointerEvents: 'none' }}>
-        <span className="world-label">{peer.nickname || 'PLAYER'}</span>
-      </Html>
-    </group>
-  ))}</>
+  return <>{visiblePeers.map((peer) => <RemotePlayer key={peer.id} peer={peer} />)}</>
 }
 
 function Player() {
@@ -703,6 +947,10 @@ function Player() {
   const cameraPosition = useRef(new THREE.Vector3(0, 4.2, 20.2))
   const cameraTarget = useRef(new THREE.Vector3(0, 1.68, 14))
   const cameraRaycaster = useRef(new THREE.Raycaster())
+  const obstructionRoot = useRef<THREE.Object3D | null>(null)
+  const obstructionTargets = useRef<THREE.Object3D[]>([])
+  const lastObstructionCheck = useRef(-1)
+  const obstructionDistance = useRef<number | null>(null)
   const lastStoreUpdate = useRef(0)
   const portalReadyAt = useRef(0)
   const footstepPhase = useRef(0)
@@ -794,15 +1042,12 @@ function Player() {
         ? [resource[0], resource[1], resource[2] + 2.35] as [number, number, number]
         : [resource[0], resource[1], resource[2] + 2.45] as [number, number, number]
       : null
-    const farmCellSpawn = farmCell ? [farmCell[0], farmCell[1], farmCell[2] + 2.45] as [number, number, number] : null
+    const farmCellSpawn = farmCell ? [farmCell[0] + 2.15, farmCell[1], farmCell[2] + 3.15] as [number, number, number] : null
     const spawn = (minigameOpen ? resourceSpawn : null) ?? (farmCellVisualGate ? farmCellSpawn : null) ?? ((resourceVisualGate || furnaceVisualGate) ? resourceSpawn : null) ?? (deepVisualGate ? anchors.GateDeep : null) ?? anchors.Spawn ?? FALLBACK_SPAWNS[zone]
     spawnedZone.current = spawnKey
-    yaw.current = 0
-    pitch.current = deepVisualGate ? 0.28 : 0.08
-    distance.current = deepVisualGate ? 8.4 : 6.2
-    if (deepVisualGate) {
-      pitch.current = 0.28
-    }
+    yaw.current = farmCellVisualGate ? -0.42 : 0
+    pitch.current = deepVisualGate ? 0.12 : 0.08
+    distance.current = deepVisualGate ? 6.8 : 6.2
     position.current.set(spawn[0], (minigameOpen ? minigameGroundHeight(minigameKind, spawn[0], spawn[2]) : groundHeight(zone, spawn[0], spawn[2])) + 0.86, spawn[2])
     horizontalVelocity.current.set(0, 0, 0)
     verticalVelocity.current = 0
@@ -816,12 +1061,14 @@ function Player() {
     ))
     const environment = worldScene.children.find((child) => child.userData.environment)
     if (environment) {
+      obstructionRoot.current = environment
+      obstructionTargets.current = cameraObstructionMeshes(environment)
       const cameraDirection = desired.clone().sub(target)
       const desiredDistance = cameraDirection.length()
       cameraDirection.normalize()
       cameraRaycaster.current.set(target, cameraDirection)
       cameraRaycaster.current.far = desiredDistance
-      const obstruction = cameraRaycaster.current.intersectObject(environment, true).find((hit) => hit.distance > 0.42)
+      const obstruction = cameraRaycaster.current.intersectObjects(obstructionTargets.current, false).find((hit) => hit.distance > 0.42)
       if (obstruction) desired.copy(target).addScaledVector(cameraDirection, Math.max(0.72, obstruction.distance - 0.28))
     }
     cameraTarget.current.copy(target)
@@ -956,7 +1203,7 @@ function Player() {
       if (next.z !== forageNextZ) horizontalVelocity.current.z = 0
     } else if (zone === 'mine') {
       next.x = THREE.MathUtils.clamp(next.x, -68, 68)
-      next.z = THREE.MathUtils.clamp(next.z, -199, 77)
+      next.z = THREE.MathUtils.clamp(next.z, -253, 77)
       if (!pointInMine(next.x, next.z)) {
         next.copy(position.current)
         horizontalVelocity.current.set(0, 0, 0)
@@ -1009,17 +1256,17 @@ function Player() {
       : !grounded.current && moving
         ? sprinting ? 'Armature|Sprint_Loop' : 'Armature|Walk_Loop'
         : !grounded.current
-          ? 'Armature|Jump_Loop'
+          ? 'Armature|Walk_Loop'
           : sprinting && locomotionSpeed > 4.6
             ? 'Armature|Sprint_Loop'
             : moving ? 'Armature|Walk_Loop' : 'Armature|Idle_Loop'
     if (requestedAnimation !== activeAnimation.current || !actions[requestedAnimation]?.isRunning()) {
-      const jumpTransition = requestedAnimation === 'Armature|Jump_Loop' || activeAnimation.current === 'Armature|Jump_Loop'
-      actions[activeAnimation.current]?.fadeOut(jumpTransition ? 0.1 : 0.18)
+      const airborneTransition = !grounded.current || !wasGrounded
+      actions[activeAnimation.current]?.fadeOut(airborneTransition ? 0.1 : 0.18)
       const nextAction = actions[requestedAnimation]
       if (nextAction) {
-        nextAction.timeScale = 1
-        nextAction.reset().fadeIn(jumpTransition ? 0.1 : 0.18).play()
+        nextAction.timeScale = !grounded.current && !moving ? 0.62 : 1
+        nextAction.reset().fadeIn(airborneTransition ? 0.1 : 0.18).play()
       }
       activeAnimation.current = requestedAnimation
     }
@@ -1050,6 +1297,7 @@ function Player() {
     }
     if (visual.current) {
       visual.current.position.y = moving && grounded.current ? Math.sin(state.clock.elapsedTime * (sprinting ? 13 : 8)) * 0.025 : 0
+      visual.current.rotation.x = THREE.MathUtils.lerp(visual.current.rotation.x, !grounded.current ? (moving ? -0.055 : -0.025) : 0, 0.14)
       visual.current.rotation.z = THREE.MathUtils.lerp(visual.current.rotation.z, moving ? -inputX * 0.035 : 0, 0.12)
     }
     const current = position.current
@@ -1076,13 +1324,23 @@ function Player() {
     ))
     const liveEnvironment = worldScene.children.find((child) => child.userData.environment)
     if (liveEnvironment) {
+      if (obstructionRoot.current !== liveEnvironment) {
+        obstructionRoot.current = liveEnvironment
+        obstructionTargets.current = cameraObstructionMeshes(liveEnvironment)
+        lastObstructionCheck.current = -1
+        obstructionDistance.current = null
+      }
       const cameraDirection = desired.clone().sub(target)
       const desiredDistance = cameraDirection.length()
       cameraDirection.normalize()
-      cameraRaycaster.current.set(target, cameraDirection)
-      cameraRaycaster.current.far = desiredDistance
-      const obstruction = cameraRaycaster.current.intersectObject(liveEnvironment, true).find((hit) => hit.distance > 0.42)
-      if (obstruction) desired.copy(target).addScaledVector(cameraDirection, Math.max(0.72, obstruction.distance - 0.28))
+      if (state.clock.elapsedTime - lastObstructionCheck.current >= 1 / 30) {
+        cameraRaycaster.current.set(target, cameraDirection)
+        cameraRaycaster.current.far = desiredDistance
+        const obstruction = cameraRaycaster.current.intersectObjects(obstructionTargets.current, false).find((hit) => hit.distance > 0.42)
+        obstructionDistance.current = obstruction ? Math.max(0.72, obstruction.distance - 0.28) : null
+        lastObstructionCheck.current = state.clock.elapsedTime
+      }
+      if (obstructionDistance.current !== null && obstructionDistance.current < desiredDistance) desired.copy(target).addScaledVector(cameraDirection, obstructionDistance.current)
     }
     const cameraBlend = 1 - Math.exp(-20 * delta)
     cameraPosition.current.lerp(desired, cameraBlend)
@@ -1097,7 +1355,7 @@ function Player() {
       pitch: pitch.current,
     }
     if (state.clock.elapsedTime - lastStoreUpdate.current > 0.08) {
-      setPlayerPosition([current.x, current.y, current.z])
+      setPlayerPosition([current.x, current.y, current.z], playerRoot.current?.rotation.y ?? yaw.current, requestedAnimation)
       lastStoreUpdate.current = state.clock.elapsedTime
     }
   })
@@ -1119,9 +1377,10 @@ function InteractiveWorldObjects() {
   const localFarmCells = useGameStore((state) => state.farmCells)
   const sharedFarmCells = useGameStore((state) => state.sharedFarmCells)
   const sharedFarmOnline = useGameStore((state) => state.sharedFarmOnline)
-  const farmCells = sharedFarmOnline ? sharedFarmCells : localFarmCells
+  const farmCells = farmCellVisualGate ? localFarmCells : sharedFarmOnline ? sharedFarmCells : localFarmCells
   const farmRushCells = useGameStore((state) => state.farmRushCells)
   const forageRushDelivered = useGameStore((state) => state.forageRushDelivered)
+  const language = useGameStore((state) => state.language)
   const roundNumber = useGameStore((state) => state.roundNumber)
   const sessionSeed = useGameStore((state) => state.sessionSeed)
   const secretPoint = zone === 'hub' ? null : anchors[`SecretSite${secretSiteForRound(zone, roundNumber, sessionSeed)}`]
@@ -1134,6 +1393,7 @@ function InteractiveWorldObjects() {
       {zone === 'forage' && anchors.NpcForageBuyer && <AnimatedCharacter src="/assets/3d/characters/shopkeeper.glb" height={1.68} position={[anchors.NpcForageBuyer[0], anchors.NpcForageBuyer[1] + 0.02, anchors.NpcForageBuyer[2]]} rotation={[0, 2.85, 0]} animation="Armature|Idle_Talking_Loop" />}
       {zone === 'farm' && anchors.NpcFarmShop && <AnimatedCharacter src="/assets/3d/characters/shopkeeper.glb" height={1.68} position={[anchors.NpcFarmShop[0], anchors.NpcFarmShop[1] + 0.02, anchors.NpcFarmShop[2]]} rotation={[0, -2.85, 0]} animation="Armature|Idle_Talking_Loop" />}
       {zone === 'farm' && anchors.NpcProduceBuyer && <AnimatedCharacter src="/assets/3d/characters/shopkeeper.glb" height={1.68} position={[anchors.NpcProduceBuyer[0], anchors.NpcProduceBuyer[1] + 0.02, anchors.NpcProduceBuyer[2]]} rotation={[0, 2.85, 0]} animation="Armature|Idle_Talking_Loop" />}
+      {zone === 'farm' && anchors.NpcFoodBuyer && <AnimatedCharacter src="/assets/3d/characters/shopkeeper.glb" height={1.68} position={[anchors.NpcFoodBuyer[0], anchors.NpcFoodBuyer[1] + 0.02, anchors.NpcFoodBuyer[2]]} rotation={[0, 2.85, 0]} animation="Armature|Idle_Talking_Loop" />}
       {zone === 'mine' && anchors.NpcMineShop && <AnimatedCharacter src="/assets/3d/characters/shopkeeper.glb" height={1.68} position={[anchors.NpcMineShop[0], anchors.NpcMineShop[1] + 0.02, anchors.NpcMineShop[2]]} rotation={[0, -2.85, 0]} animation="Armature|Idle_Talking_Loop" />}
       {zone === 'mine' && anchors.NpcOreBuyer && <AnimatedCharacter src="/assets/3d/characters/shopkeeper.glb" height={1.68} position={[anchors.NpcOreBuyer[0], anchors.NpcOreBuyer[1] + 0.02, anchors.NpcOreBuyer[2]]} rotation={[0, 2.85, 0]} animation="Armature|Idle_Talking_Loop" />}
       {secretActive && <AnimatedCharacter src="/assets/3d/characters/shopkeeper.glb" height={1.82} position={[secretPoint[0], secretPoint[1] + 0.02, secretPoint[2]]} rotation={[0, Math.PI * 0.72, 0]} animation="Armature|Idle_Talking_Loop" />}
@@ -1141,7 +1401,7 @@ function InteractiveWorldObjects() {
         const point = anchors[`NpcForageRush${label}`]
         if (!point) return null
         const kind = label.toLowerCase() as keyof typeof forageRushDelivered
-        return <group key={label}><AnimatedCharacter src="/assets/3d/characters/shopkeeper.glb" height={1.68} position={[point[0], point[1] + .02, point[2]]} rotation={[0, Math.PI, 0]} animation="Armature|Idle_Talking_Loop" /><Html position={[point[0], point[1] + 2.25, point[2]]} center style={{ pointerEvents: 'none' }}><span className={`world-label ${forageRushDelivered[kind] ? 'complete' : ''}`}>{forageRushDelivered[kind] ? 'DONE' : label.toUpperCase()}</span></Html></group>
+        return <group key={label}><AnimatedCharacter src="/assets/3d/characters/shopkeeper.glb" height={1.68} position={[point[0], point[1] + .02, point[2]]} rotation={[0, Math.PI, 0]} animation="Armature|Idle_Talking_Loop" /><Html position={[point[0], point[1] + 2.25, point[2]]} center style={{ pointerEvents: 'none' }}><span className={`world-label ${forageRushDelivered[kind] ? 'complete' : ''}`}>{uiText(language, forageRushDelivered[kind] ? 'DONE' : label.toUpperCase())}</span></Html></group>
       })}
       {zone === 'farm' && Object.entries(farmCells).map(([key, cell]) => {
         if (cell.stage === 'empty') return null
@@ -1157,7 +1417,7 @@ function InteractiveWorldObjects() {
               ? ['/assets/3d/crops/wheat_crop.glb', '/assets/3d/crops/wheat_crop.glb', '/assets/3d/crops/wheat_crop.glb']
               : cell.crop === 'lettuce'
                 ? ['/assets/3d/crops/lettuce_crop.glb', '/assets/3d/crops/lettuce_crop.glb', '/assets/3d/crops/lettuce_crop.glb']
-                : ['/assets/3d/crops/tomato_1.glb', '/assets/3d/crops/tomato_3.glb', '/assets/3d/crops/tomato_crop.glb']
+                : ['/assets/3d/crops/tomato_1.glb?v=2', '/assets/3d/crops/tomato_3.glb?v=2', '/assets/3d/crops/tomato_crop.glb?v=2']
         const cropSource = cropSources[cell.stage === 'planted' ? 0 : cell.stage === 'watered' ? 1 : 2]
         return <NormalizedModel key={key} src={cropSource} height={cropHeight} position={[point[0], point[1], point[2]]} rotation={[0, cellIndex * 0.73, 0]} />
       })}
@@ -1175,7 +1435,7 @@ function InteractiveWorldObjects() {
               ? ['/assets/3d/crops/wheat_crop.glb', '/assets/3d/crops/wheat_crop.glb', '/assets/3d/crops/wheat_crop.glb']
               : cell.crop === 'lettuce'
                 ? ['/assets/3d/crops/lettuce_crop.glb', '/assets/3d/crops/lettuce_crop.glb', '/assets/3d/crops/lettuce_crop.glb']
-              : ['/assets/3d/crops/tomato_1.glb', '/assets/3d/crops/tomato_3.glb', '/assets/3d/crops/tomato_crop.glb']
+              : ['/assets/3d/crops/tomato_1.glb?v=2', '/assets/3d/crops/tomato_3.glb?v=2', '/assets/3d/crops/tomato_crop.glb?v=2']
         return <NormalizedModel key={key} src={cropSources[stage === 'planted' ? 0 : stage === 'watered' ? 1 : 2]} height={cropHeight} position={point} rotation={[0, Number(key.slice(-2)) * .73, 0]} />
       })}
     </>
@@ -1198,14 +1458,15 @@ function candidateForAnchor(anchor: string, claimedFarms: number[], furnaceCount
   if (anchor.startsWith('ForageRushTruffle')) return { id: anchor, label: 'Truffle', anchor, reach: 3.1, lift: .18 }
   if (anchor.startsWith('ForageRushDiscovery')) return { id: anchor, label: 'Discovery', anchor, reach: 3.1, lift: .25 }
   if (anchor.startsWith('SecretSite')) return { id: 'secret-npc', label: 'Trade', anchor, reach: 3.1 }
-  if (anchor === 'Shop') return { id: 'shop', label: 'Common Shop', anchor, reach: 3 }
-  if (anchor === 'Stocks') return { id: 'stocks', label: 'Stock Exchange', anchor, reach: 3 }
+  if (anchor === 'Shop') return { id: 'shop', label: 'General Shop', anchor, reach: 3 }
+  if (anchor === 'Stocks') return { id: 'stocks', label: 'Stocks', anchor, reach: 3 }
   if (anchor === 'Enhance') return { id: 'enhance', label: 'Enhance', anchor, reach: 3 }
   if (anchor === 'FarmShop') return { id: 'farm-shop', label: 'Farm Shop', anchor, reach: 3 }
-  if (anchor === 'ProduceBuyer') return { id: 'produce-shop', label: 'Produce Stand', anchor, reach: 3 }
+  if (anchor === 'ProduceBuyer') return { id: 'produce-shop', label: 'Crop Market', anchor, reach: 3 }
+  if (anchor === 'FoodBuyer') return { id: 'food-shop', label: 'Food Market', anchor, reach: 3 }
   if (anchor === 'MineShop') return { id: 'mine-shop', label: 'Mining Shop', anchor, reach: 3 }
-  if (anchor === 'OreBuyer') return { id: 'ore-shop', label: 'Ore Stand', anchor, reach: 3 }
-  if (anchor === 'ForageShop') return { id: 'forage-shop', label: 'Foraging Shop', anchor, reach: 3 }
+  if (anchor === 'OreBuyer') return { id: 'ore-shop', label: 'Ore Market', anchor, reach: 3 }
+  if (anchor === 'ForageShop') return { id: 'forage-shop', label: 'Forage Shop', anchor, reach: 3 }
   if (anchor === 'ForageBuyer') return { id: 'forage-sell', label: 'Forage Market', anchor, reach: 3 }
   const furnace = /^FurnacePad(\d+)$/.exec(anchor)
   if (furnace && furnaceCount > 0 && claimedFarms.slice(0, 1).includes(Number(furnace[1]))) return { id: `furnace:${furnace[1]}`, label: 'Cook', anchor, reach: 3.2, lift: 1 }
@@ -1223,8 +1484,8 @@ function candidateForAnchor(anchor: string, claimedFarms: number[], furnaceCount
     const farm = Number(claim[1])
     return { id: `farm-claim:${claim[1]}`, label: claimedFarms.includes(farm) ? 'Your Farm' : farmOwners[farm] ? 'Claimed' : 'Claim Farm', anchor, reach: 3.2, lift: 1 }
   }
-  if (anchor.startsWith('Mine')) return { id: anchor, label: 'Mine Ore', anchor, reach: 3.25, lift: 0.55 }
-  if (anchor.startsWith('RushOre')) return { id: anchor, label: 'Mine Ore', anchor, reach: 3.4, lift: 0.55 }
+  if (anchor.startsWith('Mine')) return { id: anchor, label: 'Mine Ore', anchor, reach: 3.6, lift: 0.55 }
+  if (anchor.startsWith('RushOre')) return { id: anchor, label: 'Mine Ore', anchor, reach: 3.65, lift: 0.55 }
   return null
 }
 
@@ -1249,6 +1510,7 @@ function InteractionTargeter() {
   const shiftLocked = useGameStore((state) => state.shiftLocked)
   const zone = useGameStore((state) => state.zone)
   const roundNumber = useGameStore((state) => state.roundNumber)
+  const interactionProgress = useGameStore((state) => state.interactionProgress)
   const setPrompt = useGameStore((state) => state.setPrompt)
   const { camera, scene } = useThree()
   const lastCheck = useRef(0)
@@ -1261,12 +1523,14 @@ function InteractionTargeter() {
     let best: { candidate: InteractionCandidate; score: number } | null = null
     const anchorIds = Object.keys(anchors)
     const activeRares = activeRareForageIds(anchorIds, minigameOpen && minigameKind === 'forage', sessionSeed, matchStartedAt)
+    const heldMiningTarget = interactionProgress > 0 && (previous.current?.startsWith('MineOre') || previous.current?.startsWith('RushOre'))
     for (const anchor of anchorIds) {
       if (minigameOpen && !anchor.startsWith('RushOre') && !anchor.startsWith('FarmRush') && !anchor.startsWith('ForageRush')) continue
       if (minigameOpen && eventBayForAnchor(anchor) !== null && eventBayForAnchor(anchor) !== eventBay) continue
       if (anchor.startsWith('SecretSite') && (zone === 'hub' || secretZoneForRound(roundNumber) !== zone || anchor !== `SecretSite${secretSiteForRound(zone, roundNumber, sessionSeed)}`)) continue
       const candidate = candidateForAnchor(anchor, activeClaimedFarms, furnaceCount, sharedFarmOnline ? farmOwners : {})
       if (!candidate) continue
+      if (heldMiningTarget && candidate.id !== previous.current) continue
       if ((anchor.startsWith('ForageTruffle') || anchor.startsWith('ForageDiscovery') || anchor.startsWith('ForageRushTruffle') || anchor.startsWith('ForageRushDiscovery')) && !activeRares.has(anchor)) continue
       if (candidate.id.startsWith('forage:') && forageSiteAvailability(anchor, collectedForage[anchor] ?? 0) <= 0) continue
       if (candidate.id.startsWith('Mine') && (minedNodes[candidate.id] ?? 0) > Date.now()) continue
@@ -1274,15 +1538,24 @@ function InteractionTargeter() {
       if (candidate.id.startsWith('ForageRush') && !candidate.id.startsWith('ForageRushDeliver') && (forageRushCollected[candidate.id] ?? 0) > Date.now()) continue
       const point = anchors[anchor]
       const distance = Math.hypot(player[0] - point[0], player[2] - point[2])
-      if (distance > candidate.reach) continue
+      const miningTarget = candidate.id.startsWith('Mine') || candidate.id.startsWith('RushOre')
+      const retainingHeldTarget = Boolean(heldMiningTarget && candidate.id === previous.current)
+      const allowedReach = retainingHeldTarget ? candidate.reach + .8 : candidate.reach
+      if (distance > allowedReach) continue
       let score = distance
       const eventTarget = candidate.id.startsWith('FarmRush') || candidate.id.startsWith('ForageRush')
       if (shiftLocked || eventTarget || candidate.id.startsWith('Mine') || candidate.id.startsWith('RushOre')) {
         const projected = new THREE.Vector3(point[0], point[1] + (candidate.lift ?? 0.45), point[2]).project(camera)
-        if (projected.z < -1 || projected.z > 1) continue
+        const intersectingOre = miningTarget && distance <= 1.05
+        if (!intersectingOre && (projected.z < -1 || projected.z > 1)) continue
         const centerDistance = Math.hypot(projected.x, projected.y)
-      if (centerDistance > (candidate.id.startsWith('Mine') || candidate.id.startsWith('RushOre') ? 0.2 : candidate.id.startsWith('FarmRushCell') ? .4 : candidate.id.startsWith('ForageRush') ? .85 : eventTarget ? .38 : 0.34)) continue
-        if (candidate.id.startsWith('Mine') || candidate.id.startsWith('RushOre')) {
+        const centerLimit = miningTarget
+          ? retainingHeldTarget ? .52 : intersectingOre ? .58 : .29
+          : candidate.id.startsWith('FarmRushCell') ? .4
+            : candidate.id.startsWith('ForageRush') ? .85
+              : eventTarget ? .38 : .34
+        if (!intersectingOre && centerDistance > centerLimit) continue
+        if (miningTarget && !retainingHeldTarget && !intersectingOre) {
           const target = new THREE.Vector3(point[0], point[1] + (candidate.lift ?? 0.45), point[2])
           const direction = target.clone().sub(camera.position)
           const targetDistance = direction.length()
@@ -1296,9 +1569,9 @@ function InteractionTargeter() {
             if (hit && owner?.name !== `Resource_${candidate.id}` && hit.distance < targetDistance - 0.6) continue
           }
         }
-        score = centerDistance * 18 + distance * 0.08
+        score = (intersectingOre ? distance * .16 : centerDistance * 18 + distance * .08)
       }
-      if (candidate.id === previous.current) score -= 0.06
+      if (candidate.id === previous.current) score -= retainingHeldTarget ? 100 : .12
       if (!best || score < best.score) best = { candidate, score }
     }
     const next = best?.candidate ?? null
@@ -1327,7 +1600,7 @@ function InteractionFocus() {
       ? `FarmCell${cell[1]}_${String(Number(cell[2])).padStart(2, '0')}`
       : claim
         ? `FarmClaim${claim[1]}`
-        : ({ shop: 'NpcShop', stocks: 'NpcStocks', enhance: 'Enhance', 'forage-shop': 'NpcForageShop', 'forage-sell': 'NpcForageBuyer', 'farm-shop': 'NpcFarmShop', 'produce-shop': 'NpcProduceBuyer', 'mine-shop': 'NpcMineShop', 'ore-shop': 'NpcOreBuyer', 'secret-npc': zone === 'hub' ? '' : `SecretSite${secretSiteForRound(zone, roundNumber, sessionSeed)}` } as Record<string, string>)[prompt.id] ?? prompt.id
+        : ({ shop: 'NpcShop', stocks: 'NpcStocks', enhance: 'Enhance', 'forage-shop': 'NpcForageShop', 'forage-sell': 'NpcForageBuyer', 'farm-shop': 'NpcFarmShop', 'produce-shop': 'NpcProduceBuyer', 'food-shop': 'NpcFoodBuyer', 'mine-shop': 'NpcMineShop', 'ore-shop': 'NpcOreBuyer', 'secret-npc': zone === 'hub' ? '' : `SecretSite${secretSiteForRound(zone, roundNumber, sessionSeed)}` } as Record<string, string>)[prompt.id] ?? prompt.id
   const furnace = /^furnace:(\d+)$/.exec(prompt.id)
   const point = anchors[furnace ? `FurnacePad${furnace[1]}` : anchorId]
   if (!point) return null
@@ -1349,6 +1622,7 @@ function clampedLabelPosition(element: THREE.Object3D, camera: THREE.Camera, siz
   const projected = new THREE.Vector3()
   element.getWorldPosition(projected)
   projected.project(camera)
+  if (projected.z < -1 || projected.z > 1 || Math.abs(projected.x) > .96 || Math.abs(projected.y) > .9) return [-10000, -10000] as [number, number]
   const x = (projected.x * .5 + .5) * size.width
   const y = (projected.y * -.5 + .5) * size.height
   return [THREE.MathUtils.clamp(x, 84, size.width - 84), THREE.MathUtils.clamp(y, 24, size.height - 24)] as [number, number]
@@ -1356,6 +1630,7 @@ function clampedLabelPosition(element: THREE.Object3D, camera: THREE.Camera, siz
 
 function WorldLabels() {
   const zone = useGameStore((state) => state.zone)
+  const language = useGameStore((state) => state.language)
   const anchors = useGameStore((state) => state.anchors)
   const claimedFarms = useGameStore((state) => state.claimedFarms)
   const sharedFarmOnline = useGameStore((state) => state.sharedFarmOnline)
@@ -1374,32 +1649,34 @@ function WorldLabels() {
         { key: 'forage', text: 'FORAGE', point: anchors.PortalForage, lift: 5.75 },
         { key: 'farm', text: 'FARM', point: anchors.PortalFarm, lift: 5.75 },
         { key: 'mine', text: 'MINE', point: anchors.PortalMine, lift: 5.75 },
-        { key: 'shop', text: 'COMMON SHOP', point: anchors.Shop, lift: 3.2 },
-        { key: 'stocks', text: 'STOCK EXCHANGE', point: anchors.Stocks, lift: 3.2 },
+        { key: 'shop', text: 'GENERAL SHOP', point: anchors.Shop, lift: 3.2 },
+        { key: 'stocks', text: 'STOCKS', point: anchors.Stocks, lift: 3.2 },
         { key: 'enhance', text: 'UPGRADE', point: anchors.LabelEnhance, lift: 2.45 },
       ] : zone === 'farm' ? [
         { key: 'home', text: 'HOME', point: anchors.Home, lift: 5.75 },
         ...ownedFarms.map((farm) => ({ key: `owned-farm-${farm}`, text: 'YOUR FARM', point: anchors[`FarmPlot${farm}`] ?? anchors.FarmPlot, lift: 2.2 })),
         { key: 'farm-shop', text: 'FARM SHOP', point: anchors.FarmShop, lift: 3.2 },
-        { key: 'produce', text: 'PRODUCE STAND', point: anchors.ProduceBuyer, lift: 3.2 },
+        { key: 'produce', text: 'CROP MARKET', point: anchors.ProduceBuyer, lift: 3.2 },
+        { key: 'food', text: 'FOOD MARKET', point: anchors.FoodBuyer, lift: 3.2 },
       ] : zone === 'mine' ? [
         { key: 'home', text: 'HOME', point: anchors.Home, lift: 5.75 },
         { key: 'mine-shop', text: 'MINING SHOP', point: anchors.MineShop, lift: 3.2 },
-        { key: 'ore', text: 'ORE STAND', point: anchors.OreBuyer, lift: 3.2 },
+        { key: 'ore', text: 'ORE MARKET', point: anchors.OreBuyer, lift: 3.2 },
       ] : [
         { key: 'home', text: 'HOME', point: anchors.Home, lift: 5.75 },
-        { key: 'forage-shop', text: 'FORAGING SHOP', point: anchors.ForageShop, lift: 3.2 },
+        { key: 'forage-shop', text: 'FORAGE SHOP', point: anchors.ForageShop, lift: 3.2 },
         { key: 'forage-market', text: 'FORAGE MARKET', point: anchors.ForageBuyer, lift: 3.2 },
       ]
   return <>{labels.map(({ key, text, point, lift }) => point && (
     <Html key={key} position={[point[0], point[1] + lift, point[2]]} center calculatePosition={clampedLabelPosition} zIndexRange={key === 'assigned-plot' || key === 'assigned-bay' ? [24, 24] : [1, 0]} style={{ pointerEvents: 'none' }}>
-      <span className={`world-label ${key}`}>{text}</span>
+      <span className={`world-label ${key}`}>{uiText(language, text)}</span>
     </Html>
   ))}</>
 }
 
 function LoadingMark() {
   const setSceneReady = useGameStore((state) => state.setSceneReady)
+  const language = useGameStore((state) => state.language)
   useEffect(() => { setSceneReady(false) }, [setSceneReady])
   return (
     <group position={[0, .35, 0]}>
@@ -1412,14 +1689,21 @@ function LoadingMark() {
         <meshBasicMaterial color="#ead18d" transparent opacity={.72} />
       </mesh>
       <pointLight color="#efbd79" intensity={4} distance={8} />
-      <Html center position={[0, -1.28, 0]} style={{ pointerEvents: 'none' }}><span className="loading-label">LOADING</span></Html>
+      <Html center position={[0, -1.28, 0]} style={{ pointerEvents: 'none' }}><span className="loading-label">{uiText(language, 'LOADING')}</span></Html>
     </group>
   )
 }
 
 export function GameWorld() {
+  const graphicsMode = useGameStore((state) => state.graphicsMode)
+  // Auto quality changes render scale in-place through AdaptiveRenderScale.
+  // Do not replace the WebGL canvas when an FPS sample crosses a threshold:
+  // destroying and recreating the context caused a visible green/loading flash
+  // and could oscillate on browsers whose RAF cadence sits near the boundary.
+  const low = graphicsMode === 'low'
   return (
-    <Canvas shadows="basic" dpr={[1, 1.5]} camera={{ fov: 48, near: 0.1, far: 300, position: [0, 4.2, 20.2] }} gl={{ antialias: true, powerPreference: 'high-performance' }}>
+    <Canvas key={low ? 'low-renderer' : 'full-renderer'} shadows={low ? false : 'basic'} dpr={[1, 1.25]} camera={{ fov: 48, near: 0.1, far: 300, position: [0, 4.2, 20.2] }} gl={{ antialias: !low, powerPreference: 'high-performance' }}>
+      <AdaptiveRenderScale rendererLow={low} />
       <SceneLighting />
       <WeatherEffect />
       <Suspense fallback={<LoadingMark />}>

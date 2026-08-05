@@ -1,5 +1,5 @@
 import type { OreItem } from './ore'
-import type { FoodItemId, RecipeId } from './recipes'
+import { RECIPES, RECIPE_IDS, type FoodItemId, type RecipeId } from './recipes'
 
 export type MinigameKind = 'mining' | 'farm' | 'forage'
 
@@ -126,7 +126,7 @@ export function minigameCashReward(economyReference: number, placement: number, 
 }
 
 /**
- * Compatibility shape for existing gameplay consumers. Cookbook Boxes are now part
+ * Compatibility shape for existing gameplay consumers. Recipe Boxes are now part
  * of deterministic item rolls, so this cash-only legacy view always reports zero boxes.
  */
 export function minigameRewardPackage(economyReference: number, placement: number, playerProgress?: number, leaderProgress?: number) {
@@ -289,39 +289,54 @@ export const MINING_RUSH_RESPAWN_MS = 2_600
 
 export const FARM_RUSH_CROPS = ['wheat', 'tomato', 'lettuce', 'pumpkin', 'watermelon'] as const
 export type FarmRushCrop = typeof FARM_RUSH_CROPS[number]
+export const FARM_RUSH_PANTRY = ['apple', 'orange', 'truffle'] as const
+export type FarmRushIngredient = FarmRushCrop | typeof FARM_RUSH_PANTRY[number]
 export type FarmRushTool = FarmRushCrop | 'water'
 export type FarmRushCell = { crop: FarmRushCrop | null; stage: 'empty' | 'planted' | 'watered' | 'ready'; readyAt: number }
-export type FarmRushOrder = { recipe: RecipeId; name: string; food: FoodItemId; ingredients: Partial<Record<FarmRushCrop, number>>; cookSeconds: number; points: number }
+export type FarmRushOrder = { recipe: RecipeId; name: string; food: FoodItemId; ingredients: Partial<Record<FarmRushIngredient, number>>; cookSeconds: number; points: number }
 
-const FARM_INGREDIENT_POINTS: Record<FarmRushCrop, number> = { wheat: 1, tomato: 2, lettuce: 3, pumpkin: 5, watermelon: 8 }
-const FARM_ORDER_BLUEPRINTS: Array<Omit<FarmRushOrder, 'points'>> = [
-  { recipe: 'mushroom-skewer', name: 'Farm Skewer', food: 'food-mushroom-skewer', ingredients: { tomato: 2, lettuce: 1 }, cookSeconds: 4 },
-  { recipe: 'garden-salad', name: 'Garden Salad', food: 'food-garden-salad', ingredients: { tomato: 2, lettuce: 2 }, cookSeconds: 4 },
-  { recipe: 'meadow-stew', name: 'Meadow Stew', food: 'food-meadow-stew', ingredients: { lettuce: 2, tomato: 1, wheat: 1 }, cookSeconds: 5 },
-  { recipe: 'pumpkin-bread', name: 'Pumpkin Bread', food: 'food-pumpkin-bread', ingredients: { pumpkin: 1, wheat: 2 }, cookSeconds: 6 },
-  { recipe: 'farmhouse-plate', name: 'Farmhouse Plate', food: 'food-farmhouse-plate', ingredients: { wheat: 2, tomato: 1, lettuce: 1 }, cookSeconds: 6 },
-  { recipe: 'melon-preserve', name: 'Melon Preserve', food: 'food-melon-preserve', ingredients: { watermelon: 1, wheat: 1 }, cookSeconds: 7 },
-  { recipe: 'harvest-feast', name: 'Harvest Feast', food: 'food-harvest-feast', ingredients: { pumpkin: 1, lettuce: 1, tomato: 1, wheat: 2 }, cookSeconds: 7 },
-]
+const FARM_INGREDIENT_POINTS: Record<FarmRushIngredient, number> = {
+  wheat: 1, tomato: 2, lettuce: 3, pumpkin: 5, watermelon: 8,
+  apple: 2, orange: 3, truffle: 10,
+}
+const FARM_ORDER_BLUEPRINTS: Array<Omit<FarmRushOrder, 'points'>> = RECIPE_IDS.map((id) => {
+  const recipe = RECIPES[id]
+  return {
+    recipe: id,
+    name: recipe.name,
+    food: recipe.food,
+    ingredients: { ...recipe.ingredients } as Partial<Record<FarmRushIngredient, number>>,
+    cookSeconds: recipe.group === 'early' ? 4 : recipe.group === 'middle' ? 6 : 7,
+  }
+})
 
-export const FARM_RUSH_RECIPE_IDS = FARM_ORDER_BLUEPRINTS.map((order) => order.recipe)
+export const FARM_RUSH_RECIPE_IDS = [...RECIPE_IDS]
 
-export function farmRushOrderPoints(ingredients: Partial<Record<FarmRushCrop, number>>): number {
-  const entries = Object.entries(ingredients).filter(([, quantity]) => Boolean(quantity)) as Array<[FarmRushCrop, number]>
+export function farmRushRecipe(id: RecipeId): FarmRushOrder {
+  const blueprint = FARM_ORDER_BLUEPRINTS.find((entry) => entry.recipe === id)
+  if (!blueprint) throw new Error(`Unknown Farm Rush recipe: ${id}`)
+  return { ...blueprint, ingredients: { ...blueprint.ingredients }, points: farmRushOrderPoints(blueprint.ingredients) }
+}
+
+export function farmRushOrderPoints(ingredients: Partial<Record<FarmRushIngredient, number>>): number {
+  const entries = Object.entries(ingredients).filter(([, quantity]) => Boolean(quantity)) as Array<[FarmRushIngredient, number]>
   const base = entries.reduce((sum, [crop, quantity]) => sum + FARM_INGREDIENT_POINTS[crop] * quantity, 0)
   const total = entries.reduce((sum, [, quantity]) => sum + quantity, 0)
   const complexity = 1 + Math.max(0, entries.length - 1) * .45 + Math.max(0, total - 1) * .12
   return Math.round(base * complexity)
 }
 
-export function farmRushOrders(milestone: number, count = 18): FarmRushOrder[] {
+export const FARM_RUSH_ORDER_SEQUENCE_LENGTH = 120
+
+export function farmRushOrders(milestone: number, count = FARM_RUSH_ORDER_SEQUENCE_LENGTH): FarmRushOrder[] {
   return Array.from({ length: count }, (_, index) => {
-    let value = Math.imul(milestone + index * 104729, 48271) >>> 0
+    let value = Math.imul(milestone, 48271) >>> 0
     value ^= value >>> 16
+    const offset = value % FARM_ORDER_BLUEPRINTS.length
     const blueprint = index === 0
       ? FARM_ORDER_BLUEPRINTS[0]
-      : FARM_ORDER_BLUEPRINTS[(value >>> 0) % FARM_ORDER_BLUEPRINTS.length]
-    return { ...blueprint, ingredients: { ...blueprint.ingredients }, points: farmRushOrderPoints(blueprint.ingredients) }
+      : FARM_ORDER_BLUEPRINTS[(offset + (index - 1) * 5) % FARM_ORDER_BLUEPRINTS.length]
+    return farmRushRecipe(blueprint.recipe)
   })
 }
 

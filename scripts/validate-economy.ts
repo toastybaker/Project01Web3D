@@ -1,7 +1,7 @@
 import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, FORAGE_CONFIG, MATCH_CONFIG, ORE_CONFIG, PICKAXE_CONFIG, forageSiteAvailability, fruitTreeCapacity } from '../src/game/config'
-import { advanceCommodityCycle, initialCommodityMarket, lotteryJackpot, lotteryPrice, lotteryTwoMatch, marginalSale, nextStockPrice, stockWaveQuantity } from '../src/game/economy'
+import { advanceCommodityCycle, commodityPrice, initialCommodityMarket, lotteryJackpot, lotteryPrice, lotteryTwoMatch, marginalSale, nextStockPrice, stockWaveQuantity } from '../src/game/economy'
 import { STOCKS, type StockId } from '../src/game/items'
-import { RECIPES } from '../src/game/recipes'
+import { PREPARED_FOOD_MARKUP, RECIPES } from '../src/game/recipes'
 import { oreKindAtDepth, oreRespawnMs, oreWeightsAtDepth } from '../src/game/ore'
 
 function assert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message) }
@@ -10,12 +10,17 @@ assert(MATCH_CONFIG.startingCash === 100_000, 'Starting cash drifted')
 assert(PICKAXE_CONFIG['iron-pickaxe'].price === 750_000, 'Iron pickaxe price drifted')
 assert(PICKAXE_CONFIG['steel-pickaxe'].price === 4_000_000, 'Steel pickaxe price drifted')
 assert(PICKAXE_CONFIG['crystal-pickaxe'].price === 18_000_000, 'Crystal pickaxe price drifted')
-assert(ORE_CONFIG['copper-ore'].value === 8_000 && ORE_CONFIG['ancient-ore'].value === 1_500_000, 'Ore endpoints drifted')
+assert(ORE_CONFIG['copper-ore'].value === 6_800 && ORE_CONFIG['ancient-ore'].value === 1_275_000, 'Ore endpoints drifted')
 assert(CROP_CONFIG.wheat.seedPrice === 10_000 && CROP_CONFIG.watermelon.seedPrice === 750_000, 'Crop prices drifted')
+for (const [id, crop] of Object.entries(CROP_CONFIG)) {
+  const floor = commodityPrice(id as keyof typeof CROP_CONFIG, crop.value, crop.seedPrice * 100)
+  assert(floor * crop.yield >= crop.seedPrice, `${id} can sell below its seed break-even floor`)
+}
 assert(COMMODITY_MARKET_CONFIG.watermelon.neutral >= 100 && COMMODITY_MARKET_CONFIG.watermelon.demand[0] >= 15, 'Watermelon market cannot absorb a normal harvest')
 assert(FORAGE_CONFIG.apple.value === 4_000 && FORAGE_CONFIG.orange.value === 6_000, 'Orchard fruit values drifted')
 assert(BASKET_CONFIG.hand.capacity === 24 && BASKET_CONFIG.basket.capacity === 80 && BASKET_CONFIG['reinforced-basket'].capacity === 180 && BASKET_CONFIG['master-basket'].capacity === 360, 'Fruit storage progression drifted')
 assert(Object.values(RECIPES).every((recipe) => Object.keys(recipe.ingredients).length <= 4 && recipe.multiplier <= 1.65 && recipe.cookSeconds >= 30 && recipe.cookSeconds <= 60), 'Recipe bounds failed')
+assert(PREPARED_FOOD_MARKUP === 4, 'Prepared-food progression premium drifted')
 const obtainableCookingItems = new Set(['apple', 'orange', 'truffle', 'wheat', 'tomato', 'lettuce', 'pumpkin', 'watermelon'])
 assert(Object.values(RECIPES).every((recipe) => Object.keys(recipe.ingredients).every((item) => obtainableCookingItems.has(item))), 'Recipe requires an unavailable ingredient')
 
@@ -70,9 +75,10 @@ const commodityRows = []
 for (const id of Object.keys(COMMODITY_MARKET_CONFIG) as Array<keyof typeof COMMODITY_MARKET_CONFIG>) {
   const config = COMMODITY_MARKET_CONFIG[id]
   const neutral = initialCommodityMarket()[id]
-  const one = marginalSale(id, 100_000, neutral, 1)
+  const baseValue = id in CROP_CONFIG ? CROP_CONFIG[id as keyof typeof CROP_CONFIG].value : 100_000
+  const one = marginalSale(id, baseValue, neutral, 1)
   const floodQuantity = Math.max(10, Math.ceil(config.neutral * 0.8))
-  const flood = marginalSale(id, 100_000, neutral, floodQuantity)
+  const flood = marginalSale(id, baseValue, neutral, floodQuantity)
   assert(one.proceeds > 0 && flood.proceeds > one.proceeds, `${id} bulk sale failed`)
   assert(flood.proceeds / floodQuantity < one.proceeds, `${id} is not marginally priced`)
   commodityRows.push({ item: id, neutral, firstUnit: one.proceeds, floodedAverage: Math.round(flood.proceeds / floodQuantity) })

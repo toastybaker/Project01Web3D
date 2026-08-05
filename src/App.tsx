@@ -1,18 +1,30 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { GameWorld } from './game/World'
 import { ITEMS, SHOPS, STOCKS, itemTooltip, type ItemId, type ShopKind, type StockId } from './game/items'
 import { commodityPrice, formatCoins, lotteryJackpot, lotteryPrice, lotteryTwoMatch, sessionSecondsRemaining } from './game/economy'
 import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, MATCH_CONFIG, PICKAXE_CONFIG, type CommodityId } from './game/config'
 import { canMineOre, miningDuration, oreKindAtDepth, requiredPickaxe } from './game/ore'
 import { onMultiplayer, sendMultiplayer } from './game/multiplayer'
-import { economyProgressValue, inventoryLayout, lotteryDraw, preparedFoodValue, secretStockOffer, useGameStore, type MerchantPurchaseResult, type MineNodeState, type SharedDeedResult, type SharedDeedSnapshot, type SharedFarmResult, type SharedFarmSnapshot, type SharedFarmUpdate } from './game/store'
+import { economyProgressValue, inventoryLayout, lotteryDraw, preparedFoodValue, secretStockOffer, useGameStore, type MerchantPurchaseResult, type MineNodeState, type SharedDeedResult, type SharedDeedSnapshot, type SharedFarmResult, type SharedFarmSnapshot, type SharedFarmUpdate, type SharedForageAward, type SharedForageNode, type SharedForageSnapshot } from './game/store'
 import { RECIPES, RECIPE_IDS, type RecipeId } from './game/recipes'
-import { FARM_RUSH_CROPS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, FORAGE_RUSH_REQUIREMENTS, MINIGAME_DURATION, MINING_RUSH_POINTS, farmRushOrders, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCrop, type FarmRushTool, type ForageRushKind, type MinigameItemRewardRoll, type MinigameRewardItemId, type MiningRushOre } from './game/minigame'
-import { playGameSfx, type GameSfx } from './game/sfx'
+import { FARM_RUSH_CROPS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, FORAGE_RUSH_REQUIREMENTS, MINIGAME_DURATION, MINING_RUSH_POINTS, farmRushOrders, farmRushRecipe, minigameItemRewards, minigameMilestones, minigameRewardPackage, miningRushOre, scheduledMinigame, type FarmRushCrop, type FarmRushIngredient, type FarmRushTool, type ForageRushKind, type MinigameItemRewardRoll, type MinigameRewardItemId, type MiningRushOre } from './game/minigame'
+import { collectionSfx, playGameSfx, type GameSfx } from './game/sfx'
+import { ambienceVolume, MUSIC_TRACKS, musicTrackFor, musicVolume } from './game/audio'
 import { ENHANCEABLE_ITEMS, ENHANCEMENT_VOUCHER, canUseEnhancementVoucher, enhancedBasketCapacity, enhancementChance, enhancementLevel, enhancementName, enhancementRequirements, enhancementWardForTarget, fortuneFor, isEnhanceableItem, miningSpeedBonus, type EnhanceableItem, type EnhancementWardId } from './game/enhancement'
 import type { MerchantCycle, MerchantItemId } from './game/merchant'
+import { itemName, localizeDom, shopName, toastText, uiText, zoneName } from './game/i18n'
 
 const NON_TRADABLE_ITEMS = new Set<ItemId>(['upgrade-coupon', 'upgrade-guard-4', 'upgrade-guard-5', 'upgrade-guard-6'])
+
+function useLocale() {
+  const language = useGameStore((state) => state.language)
+  return {
+    language,
+    t: (value: string) => uiText(language, value),
+    item: (id: ItemId) => itemName(language, id, ITEMS[id].name),
+  }
+}
 
 function forageItem(anchorId: string): ItemId | null {
   if (anchorId.startsWith('ForageApple')) return 'apple'
@@ -38,7 +50,7 @@ function activatePrompt(id: string) {
     if (readyAt) sendMultiplayer('minigame:forage', { id, readyAt })
     return
   }
-  const shops: Record<string, ShopKind> = { shop: 'common', 'forage-shop': 'forage', 'forage-sell': 'forage-sell', 'farm-shop': 'farm', 'produce-shop': 'produce', 'mine-shop': 'mine', 'ore-shop': 'ore' }
+  const shops: Record<string, ShopKind> = { shop: 'common', 'forage-shop': 'forage', 'forage-sell': 'forage-sell', 'farm-shop': 'farm', 'produce-shop': 'produce', 'food-shop': 'food', 'mine-shop': 'mine', 'ore-shop': 'ore' }
   if (shops[id]) return state.setShopOpen(true, shops[id])
   if (id === 'stocks') return state.setStockOpen(true)
   if (id === 'enhance') return state.setEnhancementOpen(true)
@@ -85,7 +97,28 @@ function MineSync() {
       if (message.id && message.ore?.endsWith('-ore') && Number.isFinite(message.generation) && Number.isFinite(message.readyAt)) awardNode(message.id, message.ore as Parameters<typeof awardNode>[1], Number(message.quantity), { generation: Number(message.generation), readyAt: Number(message.readyAt) })
     })
     const offDenied = onMultiplayer('mine:denied', (raw) => {
-      if ((raw as { reason?: string })?.reason === 'tier') setToast('Pickaxe tier too low')
+      const reason = (raw as { reason?: string })?.reason
+      if (reason === 'tier') setToast('Pickaxe tier too low')
+      else if (reason === 'too-far') setToast('Move closer')
+    })
+    return () => { offSnapshot(); offNode(); offAward(); offDenied() }
+  }, [awardNode, setToast, syncNode, syncSnapshot])
+  return null
+}
+
+function ForageSync() {
+  const syncSnapshot = useGameStore((state) => state.syncForageSnapshot)
+  const syncNode = useGameStore((state) => state.syncForageNode)
+  const awardNode = useGameStore((state) => state.awardForageNode)
+  const setToast = useGameStore((state) => state.setToast)
+  useEffect(() => {
+    const offSnapshot = onMultiplayer('forage:snapshot', (raw) => syncSnapshot(raw as SharedForageSnapshot))
+    const offNode = onMultiplayer('forage:node', (raw) => syncNode(raw as SharedForageNode))
+    const offAward = onMultiplayer('forage:award', (raw) => awardNode(raw as SharedForageAward))
+    const offDenied = onMultiplayer('forage:denied', (raw) => {
+      const reason = (raw as { reason?: string })?.reason
+      if (reason === 'too-far') setToast('Move closer')
+      else if (reason === 'no-capacity') setToast('Fruit storage full')
     })
     return () => { offSnapshot(); offNode(); offAward(); offDenied() }
   }, [awardNode, setToast, syncNode, syncSnapshot])
@@ -140,21 +173,25 @@ function MerchantSync() {
 }
 
 function AudioBed() {
+  const sessionStarted = useGameStore((state) => state.sessionStarted)
   const zone = useGameStore((state) => state.zone)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
+  const sessionComplete = useGameStore((state) => state.sessionComplete)
   const volumes = useGameStore((state) => state.audioVolumes)
   const musicRef = useRef<HTMLAudioElement | null>(null)
   const ambienceRef = useRef<HTMLAudioElement | null>(null)
+  const trackRef = useRef(MUSIC_TRACKS.hub)
   const unlocked = useRef(false)
-  const playlistIndex = useRef(0)
   useEffect(() => {
-    const music = new Audio('/assets/audio/Faure_Sicilienne_Orchestra_DuPage.ogg')
+    const music = new Audio(MUSIC_TRACKS.hub.src)
     const ambience = new Audio('/assets/audio/Forest_Ambience_PD.ogg')
     musicRef.current = music
     ambienceRef.current = ambience
     music.loop = true
     ambience.loop = true
+    music.preload = 'auto'
+    ambience.preload = 'auto'
     const start = () => {
       unlocked.current = true
       void music.play().catch(() => undefined)
@@ -174,47 +211,38 @@ function AudioBed() {
     }
   }, [])
   useEffect(() => {
-    if (musicRef.current) musicRef.current.volume = volumes.master * volumes.music * 0.38
-    if (ambienceRef.current) ambienceRef.current.volume = volumes.master * volumes.ambience * 0.38
-  }, [volumes])
+    if (musicRef.current) musicRef.current.volume = musicVolume(volumes.master, volumes.music, trackRef.current)
+    if (ambienceRef.current) {
+      const cave = sessionStarted && (zone === 'mine' || (minigameOpen && minigameKind === 'mining'))
+      ambienceRef.current.volume = ambienceVolume(volumes.master, volumes.ambience, cave)
+    }
+  }, [minigameKind, minigameOpen, sessionStarted, volumes, zone])
   useEffect(() => {
     const music = musicRef.current
     const ambience = ambienceRef.current
     if (!music || !ambience) return
-    const playlists = {
-      hub: ['/assets/audio/Faure_Sicilienne_Orchestra_DuPage.ogg'],
-      forage: ['/assets/audio/Faure_Sicilienne_Orchestra_DuPage.ogg', '/assets/audio/Faure_Elegie_CelloPiano.ogg'],
-      farm: ['/assets/audio/Faure_Fantasie_FlutePiano.ogg', '/assets/audio/Faure_Sicilienne_Orchestra_DuPage.ogg'],
-      mine: ['/assets/audio/Faure_Elegie_CelloPiano.ogg', '/assets/audio/Faure_Sicilienne_Orchestra_DuPage.ogg'],
-    } as const
-    const audioZone = minigameOpen ? (minigameKind === 'mining' ? 'mine' : minigameKind) : zone
-    const tracks = playlists[audioZone]
-    playlistIndex.current = 0
-    music.loop = false
-    const playTrack = () => {
-      music.src = tracks[playlistIndex.current]
-      if (unlocked.current) void music.play().catch(() => undefined)
-    }
-    const nextTrack = () => {
-      playlistIndex.current = (playlistIndex.current + 1) % tracks.length
-      playTrack()
-    }
+    // The lobby is always the Plaza. A saved zone, unfinished event, or old
+    // results state must never leak a different track into the next lobby.
+    const track = musicTrackFor(zone, minigameOpen, minigameKind, sessionComplete, sessionStarted)
+    trackRef.current = track
+    music.loop = true
+    if (!music.src.endsWith(track.src)) music.src = track.src
+    music.volume = musicVolume(volumes.master, volumes.music, track)
+    const audioZone = !sessionStarted ? 'hub' : minigameOpen ? (minigameKind === 'mining' ? 'mine' : minigameKind) : zone
     const ambienceSource = audioZone === 'mine' ? '/assets/audio/Cave_Water_Drips_CC-BY-SA.ogg' : '/assets/audio/Forest_Ambience_PD.ogg'
-    music.addEventListener('ended', nextTrack)
-    playTrack()
     if (!ambience.src.endsWith(ambienceSource)) ambience.src = ambienceSource
+    ambience.volume = ambienceVolume(volumes.master, volumes.ambience, audioZone === 'mine')
     if (unlocked.current) {
       void music.play().catch(() => undefined)
       void ambience.play().catch(() => undefined)
     }
-    return () => music.removeEventListener('ended', nextTrack)
-  }, [minigameKind, minigameOpen, zone])
+  }, [minigameKind, minigameOpen, sessionComplete, sessionStarted, volumes.master, volumes.music, zone])
   return null
 }
 
 type BurstKind = 'stone' | 'leaf' | 'water' | 'gold' | 'spark'
 
-function feedbackFor(toast: string, zone: ReturnType<typeof useGameStore.getState>['zone'], cashDelta: number, minigameKind: ReturnType<typeof useGameStore.getState>['minigameKind']): { sound: GameSfx; burst?: BurstKind } | null {
+function feedbackFor(toast: string, zone: ReturnType<typeof useGameStore.getState>['zone'], cashDelta: number, minigameOpen: boolean, minigameKind: ReturnType<typeof useGameStore.getState>['minigameKind']): { sound: GameSfx; burst?: BurstKind } | null {
   if (toast.startsWith('Upgraded') || toast.startsWith('Upgrade failed')) return null
   if (/^(Need|Not enough|Sold out|None owned|Select|Missing|Gone|Own a farm|Not your|Pickaxe tier|Fruit storage|Recipe not|Furnace queue)/.test(toast)) return { sound: 'error' }
   if (toast.startsWith('Unlocked')) return { sound: 'unlock', burst: 'spark' }
@@ -224,9 +252,8 @@ function feedbackFor(toast: string, zone: ReturnType<typeof useGameStore.getStat
   if (cashDelta > 0) return { sound: 'coin', burst: 'gold' }
   if (cashDelta < 0) return { sound: 'buy', burst: 'gold' }
   if (toast.startsWith('+')) {
-    if (zone === 'mine' || minigameKind === 'mining') return { sound: 'mine-complete', burst: 'stone' }
-    if (zone === 'forage' || minigameKind === 'forage') return { sound: 'forage', burst: 'leaf' }
-    return { sound: 'forage', burst: 'leaf' }
+    const sound = collectionSfx(zone, minigameOpen, minigameKind)
+    return { sound, burst: sound === 'mine-complete' ? 'stone' : 'leaf' }
   }
   if (toast === 'Returned home') return { sound: 'teleport', burst: 'spark' }
   return null
@@ -236,6 +263,7 @@ function FeedbackBed() {
   const toast = useGameStore((state) => state.toast)
   const cash = useGameStore((state) => state.cash)
   const zone = useGameStore((state) => state.zone)
+  const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
   const volumes = useGameStore((state) => state.audioVolumes)
   const cookQueue = useGameStore((state) => state.cookQueue)
@@ -246,7 +274,7 @@ function FeedbackBed() {
     const delta = cash - previousCash.current
     previousCash.current = cash
     if (!toast) return
-    const feedback = feedbackFor(toast, zone, delta, minigameKind)
+    const feedback = feedbackFor(toast, zone, delta, minigameOpen, minigameKind)
     if (!feedback) return
     const liveVolumes = useGameStore.getState().audioVolumes
     playGameSfx(feedback.sound, liveVolumes.master * liveVolumes.effects)
@@ -255,7 +283,7 @@ function FeedbackBed() {
     setBurst(next)
     const timer = window.setTimeout(() => setBurst((current) => current?.id === next.id ? null : current), 720)
     return () => window.clearTimeout(timer)
-  }, [cash, minigameKind, toast, zone])
+  }, [cash, minigameKind, minigameOpen, toast, zone])
 
   useEffect(() => {
     const now = Date.now()
@@ -280,6 +308,7 @@ function Icon({ name }: { name: 'clock' | 'refresh' | 'coin' | 'menu' | 'close' 
 }
 
 function HUD() {
+  const { language, t } = useLocale()
   const zone = useGameStore((state) => state.zone)
   const cash = useGameStore((state) => state.cash)
   const restock = useGameStore((state) => state.restockSeconds)
@@ -303,7 +332,6 @@ function HUD() {
   const remaining = sessionSecondsRemaining(roundNumber, round, sessionDuration)
   const roundMinutes = Math.floor(remaining / 60).toString().padStart(2, '0')
   const roundSeconds = (remaining % 60).toString().padStart(2, '0')
-  const locations = { hub: 'LANTERN HOLLOW', forage: 'MOSSWOOD', farm: 'SUNMEADOW', mine: 'STONEWAKE' }
   const elapsed = (roundNumber - 1) * MATCH_CONFIG.worldCycleSeconds + (MATCH_CONFIG.worldCycleSeconds - round)
   const nextEventAt = minigameMilestones(sessionDuration).find((milestone) => milestone > elapsed)
   const eventIn = nextEventAt === undefined ? null : nextEventAt - elapsed
@@ -311,28 +339,31 @@ function HUD() {
   const eventIcon: ItemId | null = upcomingEvent === 'mining' ? 'crystal-pickaxe' : upcomingEvent === 'farm' ? 'wheat-seeds' : upcomingEvent === 'forage' ? 'apple' : null
   return (
     <>
-      <div className="location-chip"><span className="location-dot" />{locations[zone]}</div>
+      <div className="location-chip"><span className="location-dot" />{zoneName(language, zone)}</div>
       <div className="hud-modules">
-        {marketCorrectionName && marketCorrectionSeconds > 0 && <div className="market-news"><span>MARKET NEWS</span><strong>{marketCorrectionName}</strong></div>}
-        {weather !== 'clear' && zone !== 'mine' && <div className="hud-chip weather"><span className={`weather-mark ${weather}`} /><span>{weather.toUpperCase()}</span><HoverTip lines={weather === 'rain' ? ['Crops water automatically.', `${weatherSeconds}s remaining`] : weather === 'sunny' ? ['Crops and fruit grow 15% faster.', `${weatherSeconds}s remaining`] : weather === 'breeze' ? ['Cooking finishes 10% faster.', `${weatherSeconds}s remaining`] : ['Soft visibility change.', `${weatherSeconds}s remaining`]} /></div>}
-        {eventIn !== null && eventIn <= 60 && eventIcon && <div className="hud-chip upcoming-event" title={`${upcomingEvent} event`}><img src={ITEMS[eventIcon].icon} alt="" /><span>0:{String(eventIn).padStart(2, '0')}</span></div>}
-        <div className="hud-chip" title="Match time"><Icon name="clock" /><span>{roundMinutes}:{roundSeconds}</span></div>
+        {marketCorrectionName && marketCorrectionSeconds > 0 && <div className="market-news"><span>{t('MARKET NEWS')}</span><strong>{t(marketCorrectionName)}</strong></div>}
+        {weather !== 'clear' && zone !== 'mine' && <div className="hud-chip weather"><span className={`weather-mark ${weather}`} /><span>{t(weather.toUpperCase())}</span><HoverTip lines={language === 'ko' ? weather === 'rain' ? ['농작물에 자동으로 물을 줍니다.', `${weatherSeconds}초 남음`] : weather === 'sunny' ? ['농작물과 과일이 15% 빨리 자랍니다.', `${weatherSeconds}초 남음`] : weather === 'breeze' ? ['요리가 10% 빨리 끝납니다.', `${weatherSeconds}초 남음`] : ['시야에 옅은 안개가 낍니다.', `${weatherSeconds}초 남음`] : weather === 'rain' ? ['Crops water automatically.', `${weatherSeconds}s remaining`] : weather === 'sunny' ? ['Crops and fruit grow 15% faster.', `${weatherSeconds}s remaining`] : weather === 'breeze' ? ['Cooking finishes 10% faster.', `${weatherSeconds}s remaining`] : ['Soft visibility change.', `${weatherSeconds}s remaining`]} /></div>}
+        {eventIn !== null && eventIn <= 60 && eventIcon && <div className="hud-chip upcoming-event" title={t(upcomingEvent === 'mining' ? 'MINING CONTEST' : upcomingEvent === 'farm' ? 'COOKING CONTEST' : 'GATHERING RACE')}><img src={ITEMS[eventIcon].icon} alt="" /><span>0:{String(eventIn).padStart(2, '0')}</span></div>}
+        <div className="hud-chip" title={t('Match time')}><Icon name="clock" /><span>{roundMinutes}:{roundSeconds}</span></div>
         <div className="hud-chip restock"><Icon name="refresh" /><span>{minutes}:{seconds}</span></div>
         <div className="hud-chip" title={formatCoins(cash)}><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div>
-        <button className="hud-chip icon-button" onClick={() => setPlayerPanelOpen(true)} aria-label="Players"><Icon name="users" /></button>
-        <button className="hud-chip icon-button" onClick={() => setMenuOpen(true)} aria-label="Menu"><Icon name="menu" /></button>
+        <button className="hud-chip icon-button" onClick={() => setPlayerPanelOpen(true)} aria-label={t('Players')}><Icon name="users" /></button>
+        <button className="hud-chip icon-button" onClick={() => setMenuOpen(true)} aria-label={t('Menu')}><Icon name="menu" /></button>
       </div>
     </>
   )
 }
 
 function LobbyPanel() {
+  const { t } = useLocale()
   const started = useGameStore((state) => state.sessionStarted)
   const connected = useGameStore((state) => state.lobbyConnected)
   const isHost = useGameStore((state) => state.isHost)
   const duration = useGameStore((state) => state.sessionDurationSeconds)
+  const globalExpansionDeeds = useGameStore((state) => state.lobbyGlobalExpansionDeeds)
+  const playerCount = useGameStore((state) => state.lobbyPlayerCount)
+  const maxGlobalExpansionDeeds = useGameStore((state) => state.lobbyMaxGlobalExpansionDeeds)
   const nickname = useGameStore((state) => state.nickname)
-  const players = useGameStore((state) => state.onlinePlayers)
   const setNickname = useGameStore((state) => state.setNickname)
   const [draftName, setDraftName] = useState(nickname)
   if (started) return null
@@ -340,27 +371,33 @@ function LobbyPanel() {
     if (!isHost) return
     sendMultiplayer('lobby:update', { durationSeconds: seconds })
   }
+  const chooseGlobalExpansionDeeds = (quantity: number) => {
+    if (!isHost) return
+    sendMultiplayer('lobby:update', { globalExpansionDeeds: quantity })
+  }
   const start = () => {
     if (!isHost) return
     sendMultiplayer('lobby:start', {})
   }
   return <div className="modal-scrim lobby-scrim"><section className="panel lobby-panel">
-    <header><div className="panel-title"><span className="lobby-mark">P1</span><span>WOODLAND RUN</span></div><b>{players.length + 1}/6</b></header>
-    <label className="lobby-name"><span>NAME</span><input aria-label="Nickname" value={draftName} maxLength={18} onChange={(event) => setDraftName(event.target.value)} onBlur={() => setNickname(draftName)} onKeyDown={(event) => { if (event.key === 'Enter') { setNickname(draftName); event.currentTarget.blur() } }} /></label>
-    <div className="lobby-duration"><span>TIME</span><div>{MATCH_CONFIG.selectableDurationsSeconds.map((seconds) => <button className={duration === seconds ? 'active' : ''} disabled={!isHost} key={seconds} onClick={() => chooseDuration(seconds)}>{seconds / 60}</button>)}</div></div>
-    {isHost ? <button className="lobby-start" disabled={!connected} onClick={start}>{connected ? 'START GAME' : 'CONNECTING'}</button> : <div className="lobby-wait">{connected ? 'WAITING FOR HOST' : 'CONNECTING'}</div>}
+    <header><div className="panel-title"><span className="lobby-mark">P1</span><span>WOODLAND RUN</span></div><b>{playerCount}/6</b></header>
+    <label className="lobby-name"><span>{t('NAME')}</span><input aria-label="Nickname" value={draftName} maxLength={18} onChange={(event) => setDraftName(event.target.value)} onBlur={() => setNickname(draftName)} onKeyDown={(event) => { if (event.key === 'Enter') { setNickname(draftName); event.currentTarget.blur() } }} /></label>
+    <div className="lobby-duration"><span>{t('TIME')}</span><div>{MATCH_CONFIG.selectableDurationsSeconds.map((seconds) => <button className={duration === seconds ? 'active' : ''} disabled={!isHost} key={seconds} onClick={() => chooseDuration(seconds)}>{seconds / 60}</button>)}</div></div>
+    <div className="lobby-duration lobby-extra"><span>{t('EXTRA FARMS')}</span><div style={{ '--farm-options': maxGlobalExpansionDeeds + 1 } as CSSProperties}>{Array.from({ length: maxGlobalExpansionDeeds + 1 }, (_, quantity) => <button className={globalExpansionDeeds === quantity ? 'active' : ''} disabled={!isHost} key={quantity} onClick={() => chooseGlobalExpansionDeeds(quantity)}>{quantity}</button>)}</div></div>
+    {isHost ? <button className="lobby-start" disabled={!connected} onClick={start}>{connected ? t('START GAME') : t('CONNECTING')}</button> : <div className="lobby-wait">{connected ? t('WAITING FOR HOST') : t('CONNECTING')}</div>}
   </section></div>
 }
 
 function Hotbar() {
+  const { item: localizedItem } = useLocale()
   const realHotbar = useGameStore((state) => state.hotbar)
   const realInventory = useGameStore((state) => state.inventory)
   const enhancements = useGameStore((state) => state.enhancements)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
+  const rushInventory = useGameStore((state) => state.rushInventory)
   const farmRushInventory = useGameStore((state) => state.farmRushInventory)
   const farmRushCooking = useGameStore((state) => state.farmRushCooking)
-  const minigameMilestone = useGameStore((state) => state.minigameMilestone)
   const forageRushInventory = useGameStore((state) => state.forageRushInventory)
   const selectedHotbar = useGameStore((state) => state.selectedHotbar)
   const farmRushTool = useGameStore((state) => state.farmRushTool)
@@ -372,14 +409,16 @@ function Hotbar() {
   const inspectNotes = useGameStore((state) => state.setNoteInspectOpen)
   const setTravelOpen = useGameStore((state) => state.setTravelOpen)
   const useCookbookBox = useGameStore((state) => state.useCookbookBox)
-  const eventView = minigameOpen ? eventInventoryView(minigameKind, farmRushInventory, forageRushInventory, farmRushCooking, minigameMilestone) : null
+  const eventView = minigameOpen ? eventInventoryView(minigameKind, rushInventory, farmRushInventory, forageRushInventory, farmRushCooking) : null
   const hotbar = eventView?.hotbar ?? realHotbar
   const inventory = eventView?.inventory ?? realInventory
   const selected = minigameOpen && minigameKind === 'farm' ? FARM_RUSH_TOOLS.indexOf(farmRushTool) : minigameOpen ? 0 : selectedHotbar
   return (
     <div className="hotbar" aria-label="Hotbar">
       {hotbar.map((storedItem, index) => {
-        const item = storedItem && (inventory[storedItem] ?? 0) > 0 ? storedItem : null
+        const quantity = storedItem ? inventory[storedItem] ?? 0 : 0
+        const miningCounter = minigameOpen && minigameKind === 'mining' && index > 0 && index <= Object.keys(MINING_RUSH_POINTS).length
+        const item = storedItem && (quantity > 0 || miningCounter) ? storedItem : null
         const itemEnhancement = !minigameOpen && isEnhanceableItem(item) ? enhancementLevel(enhancements, item) : 0
         return <button
           className={`hotbar-slot ${index === selected ? 'selected' : ''}`}
@@ -408,10 +447,10 @@ function Hotbar() {
           }}
           draggable={!minigameOpen && Boolean(item)}
           onDragStart={(event) => { if (!minigameOpen) event.dataTransfer.setData('hotbar-slot', String(index)) }}
-          aria-label={item ? `${index + 1}: ${isEnhanceableItem(item) ? enhancementName(item, itemEnhancement) : ITEMS[item].name}` : `Slot ${index + 1}`}
+          aria-label={item ? `${index + 1}: ${localizedItem(item)}${itemEnhancement ? ` +${itemEnhancement}` : ''}` : `Slot ${index + 1}`}
         >
-          {item && <img src={ITEMS[item].icon} alt={ITEMS[item].name} />}
-          {item && minigameOpen && minigameKind === 'farm' && index < FARM_RUSH_TOOLS.length - 1 ? <span className="quantity">∞</span> : item && (inventory[item] ?? 0) > 1 && <span className="quantity">{inventory[item]}</span>}
+          {item && <img src={ITEMS[item].icon} alt={localizedItem(item)} />}
+          {item && minigameOpen && minigameKind === 'farm' && index < FARM_RUSH_TOOLS.length - 1 ? <span className="quantity">∞</span> : item && miningCounter ? <span className="quantity">{quantity}</span> : item && quantity > 1 && <span className="quantity">{quantity}</span>}
           {item && <HoverTip lines={itemTooltip(item, itemEnhancement)} />}
         </button>
       })}
@@ -421,24 +460,29 @@ function Hotbar() {
 
 const FARM_RUSH_TOOLS: FarmRushTool[] = [...FARM_RUSH_CROPS, 'water']
 
-function eventInventoryView(kind: 'mining' | 'farm' | 'forage', farmInventory: Record<string, number>, forageInventory: Record<string, number>, cooking: Array<{ orderIndex: number; readyAt: number }>, milestone: number) {
+function eventInventoryView(kind: 'mining' | 'farm' | 'forage', rushInventory: Record<MiningRushOre, number>, farmInventory: Record<string, number>, forageInventory: Record<string, number>, cooking: Array<{ orderIndex: number; recipe: RecipeId; readyAt: number }>) {
   const hotbar: Array<ItemId | null> = Array(9).fill(null)
   const inventory: Partial<Record<ItemId, number>> = {}
   if (kind === 'mining') {
     hotbar[0] = 'crystal-pickaxe'
     inventory['crystal-pickaxe'] = 1
+    ;(Object.keys(MINING_RUSH_POINTS) as MiningRushOre[]).forEach((id, index) => {
+      hotbar[index + 1] = id
+      inventory[id] = rushInventory[id] ?? 0
+    })
   } else if (kind === 'farm') {
     FARM_RUSH_TOOLS.forEach((tool, index) => {
       hotbar[index] = tool === 'water' ? 'water-can' : `${tool}-seeds` as ItemId
       inventory[hotbar[index]!] = 1
     })
     FARM_RUSH_CROPS.forEach((id) => { inventory[id as ItemId] = farmInventory[id] ?? 0 })
-    const orders = farmRushOrders(milestone)
     cooking.filter((job) => job.readyAt <= Date.now()).forEach((job) => {
-      const food = orders[job.orderIndex % orders.length].food
+      const food = RECIPES[job.recipe].food
       inventory[food] = (inventory[food] ?? 0) + 1
     })
-    const collected = FARM_RUSH_CROPS.filter((id) => (farmInventory[id] ?? 0) > 0)
+    ;(Object.entries(farmInventory) as Array<[FarmRushIngredient, number]>).forEach(([id, quantity]) => { inventory[id as ItemId] = quantity })
+    const readyFoods = cooking.filter((job) => job.readyAt <= Date.now()).map((job) => RECIPES[job.recipe].food)
+    const collected = [...new Set([...readyFoods, ...FARM_RUSH_CROPS.filter((id) => (farmInventory[id] ?? 0) > 0)])]
     collected.slice(0, 3).forEach((id, offset) => { hotbar[6 + offset] = id as ItemId })
   } else {
     const forageItems: Array<[ItemId, string]> = [['apple', 'apple'], ['orange', 'orange'], ['truffle', 'truffle'], ['natural-discovery', 'discovery']]
@@ -449,6 +493,7 @@ function eventInventoryView(kind: 'mining' | 'farm' | 'forage', farmInventory: R
 }
 
 function InteractionPrompt() {
+  const { language, t, item: localizedItem } = useLocale()
   const prompt = useGameStore((state) => state.prompt)
   const progress = useGameStore((state) => state.interactionProgress)
   const anchors = useGameStore((state) => state.anchors)
@@ -476,31 +521,68 @@ function InteractionPrompt() {
     const required = requiredPickaxe(ore)
     return <div className={`interaction mine-interaction ${duration ? '' : 'locked'}`}>
       <i className="interaction-fill" style={{ width: `${progress * 100}%` }} />
-      <kbd>LMB</kbd><span>{ITEMS[ore].name}</span>
-      <small>{duration ? `${(remaining / 1000).toFixed(1)}s` : `Equip ${PICKAXE_CONFIG[required].name}`}</small>
+      <kbd>LMB</kbd><span>{localizedItem(ore)}</span>
+      <small>{duration ? `${(remaining / 1000).toFixed(1)}s` : language === 'ko' ? `${localizedItem(required)} 장착` : `Equip ${PICKAXE_CONFIG[required].name}`}</small>
     </div>
   }
   if (prompt.id.startsWith('FarmRushCell')) {
     const cell = farmRushCells[prompt.id] ?? { crop: null, stage: 'empty', readyAt: 0 }
     const ready = cell.stage === 'watered' && cell.readyAt <= Date.now()
     const label = ready ? 'Harvest' : cell.stage === 'empty' ? `Plant ${farmRushTool === 'water' ? '' : farmRushTool}` : cell.stage === 'planted' ? 'Water' : `${Math.max(1, Math.ceil((cell.readyAt - Date.now()) / 1000))}s`
-    return <div className="interaction"><kbd>LMB</kbd><span>{label}</span></div>
+    return <div className="interaction"><kbd>LMB</kbd><span>{t(label)}</span></div>
   }
-  if (prompt.id.startsWith('FarmRushCooker')) return <div className="interaction"><kbd>F</kbd><span>{farmRushCooking.length ? `${farmRushCooking.length}/3 cooking` : 'Cook'}</span></div>
-  if (prompt.id.startsWith('ForageRush')) return <div className="interaction"><kbd>F</kbd><span>{prompt.label}</span></div>
-  return <div className="interaction"><kbd>F</kbd><span>{prompt.label}</span></div>
+  if (prompt.id.startsWith('FarmRushCooker')) return <div className="interaction"><kbd>F</kbd><span>{farmRushCooking.length ? `${farmRushCooking.length}/3 ${t('Cooking')}` : t('Cook')}</span></div>
+  if (prompt.id.startsWith('ForageRush')) return <div className="interaction"><kbd>F</kbd><span>{t(prompt.label)}</span></div>
+  return <div className="interaction"><kbd>F</kbd><span>{t(prompt.label)}</span></div>
 }
 
 function CloseButton({ onClick }: { onClick: () => void }) {
-  return <button className="close-button" onClick={onClick} aria-label="Close"><Icon name="close" /></button>
+  const { t } = useLocale()
+  return <button className="close-button" onClick={onClick} aria-label={t('Close')}><Icon name="close" /></button>
 }
 
 function HoverTip({ lines }: { lines: string[] | null }) {
+  const { t } = useLocale()
+  const anchor = useRef<HTMLSpanElement>(null)
+  const active = useRef(false)
+  const [position, setPosition] = useState<{ left: number; top: number; below: boolean } | null>(null)
+  useEffect(() => {
+    const parent = anchor.current?.parentElement
+    if (!parent || !lines?.length) return
+    const update = () => {
+      const rect = parent.getBoundingClientRect()
+      const halfWidth = Math.min(115, Math.max(70, (window.innerWidth - 16) / 2))
+      setPosition({
+        left: Math.max(halfWidth + 8, Math.min(window.innerWidth - halfWidth - 8, rect.left + rect.width / 2)),
+        top: rect.top < 118 ? rect.bottom + 8 : rect.top - 8,
+        below: rect.top < 118,
+      })
+    }
+    const show = () => { active.current = true; update() }
+    const hide = () => { active.current = false; setPosition(null) }
+    const reposition = () => { if (active.current) update() }
+    parent.addEventListener('mouseenter', show)
+    parent.addEventListener('mouseleave', hide)
+    parent.addEventListener('focusin', show)
+    parent.addEventListener('focusout', hide)
+    window.addEventListener('resize', reposition)
+    window.addEventListener('scroll', reposition, true)
+    return () => {
+      active.current = false
+      parent.removeEventListener('mouseenter', show)
+      parent.removeEventListener('mouseleave', hide)
+      parent.removeEventListener('focusin', show)
+      parent.removeEventListener('focusout', hide)
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
+    }
+  }, [lines])
   if (!lines?.length) return null
-  return <span className="hover-tip">{lines.map((line) => <small key={line}>{line}</small>)}</span>
+  return <><span ref={anchor} className="hover-tip-anchor" aria-hidden="true" />{position && createPortal(<span className={`hover-tip floating ${position.below ? 'below' : ''}`} style={{ left: position.left, top: position.top }}>{lines.map((line) => <small key={line}>{t(line)}</small>)}</span>, document.body)}</>
 }
 
 function InventoryPanel() {
+  const { t, item: localizedItem } = useLocale()
   const open = useGameStore((state) => state.inventoryOpen)
   const toggle = useGameStore((state) => state.toggleInventory)
   const realInventory = useGameStore((state) => state.inventory)
@@ -509,9 +591,9 @@ function InventoryPanel() {
   const enhancements = useGameStore((state) => state.enhancements)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
+  const rushInventory = useGameStore((state) => state.rushInventory)
   const farmRushInventory = useGameStore((state) => state.farmRushInventory)
   const farmRushCooking = useGameStore((state) => state.farmRushCooking)
-  const minigameMilestone = useGameStore((state) => state.minigameMilestone)
   const forageRushInventory = useGameStore((state) => state.forageRushInventory)
   const moveInventorySlot = useGameStore((state) => state.moveInventorySlot)
   const equipItem = useGameStore((state) => state.equipItem)
@@ -523,7 +605,7 @@ function InventoryPanel() {
   const useCookTimer = useGameStore((state) => state.useCookTimer)
   const setItemUseOpen = useGameStore((state) => state.setItemUseOpen)
   const dragging = useRef<number | null>(null)
-  const eventView = minigameOpen ? eventInventoryView(minigameKind, farmRushInventory, forageRushInventory, farmRushCooking, minigameMilestone) : null
+  const eventView = minigameOpen ? eventInventoryView(minigameKind, rushInventory, farmRushInventory, forageRushInventory, farmRushCooking) : null
   const inventory = eventView?.inventory ?? realInventory
   const inventoryOrder = eventView?.inventoryOrder ?? inventoryLayout({ hotbar: realHotbar, inventoryOrder: realInventoryOrder, inventory: realInventory })
   const hotbar = eventView?.hotbar ?? realHotbar
@@ -541,7 +623,7 @@ function InventoryPanel() {
   return (
     <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && toggle()}>
       <section className="panel inventory-panel">
-        <header><div className="panel-title"><Icon name="pack" /><span>PACK</span></div><CloseButton onClick={toggle} /></header>
+        <header><div className="panel-title"><Icon name="pack" /><span>{t('PACK')}</span></div><CloseButton onClick={toggle} /></header>
         <div className="inventory-grid">
           {Array.from({ length: 36 }, (_, index) => {
             const ordered = inventoryOrder[index]
@@ -552,7 +634,7 @@ function InventoryPanel() {
               key={index}
               onDragOver={(event) => { if (!minigameOpen) event.preventDefault() }}
               onDrop={() => { if (!minigameOpen && dragging.current !== null) moveInventorySlot(dragging.current, index); dragging.current = null }}
-            >{id && quantity > 0 && <><img draggable={!minigameOpen} src={ITEMS[id].icon} alt={isEnhanceableItem(id) && !minigameOpen ? enhancementName(id, enhancementLevel(enhancements, id)) : ITEMS[id].name} onClick={() => { if (!minigameOpen) useItem(id) }} onContextMenu={(event) => { event.preventDefault(); if (!minigameOpen) useItem(id) }} onDragStart={(event) => { if (!minigameOpen) { dragging.current = index; event.dataTransfer.setData('item-id', id) } }} onDragEnd={() => { dragging.current = null }} /><span>{minigameOpen && minigameKind === 'farm' && index < FARM_RUSH_TOOLS.length - 1 ? '∞' : quantity}</span><HoverTip lines={itemTooltip(id, !minigameOpen && isEnhanceableItem(id) ? enhancementLevel(enhancements, id) : 0)} /></>}</div>
+            >{id && quantity > 0 && <><img draggable={!minigameOpen} src={ITEMS[id].icon} alt={localizedItem(id)} onClick={() => { if (!minigameOpen) useItem(id) }} onContextMenu={(event) => { event.preventDefault(); if (!minigameOpen) useItem(id) }} onDragStart={(event) => { if (!minigameOpen) { dragging.current = index; event.dataTransfer.setData('item-id', id) } }} onDragEnd={() => { dragging.current = null }} /><span>{minigameOpen && minigameKind === 'farm' && index < FARM_RUSH_TOOLS.length - 1 ? '∞' : quantity}</span><HoverTip lines={itemTooltip(id, !minigameOpen && isEnhanceableItem(id) ? enhancementLevel(enhancements, id) : 0)} /></>}</div>
           })}
         </div>
       </section>
@@ -561,6 +643,7 @@ function InventoryPanel() {
 }
 
 function ItemUsePanel() {
+  const { language, t, item: localizedItem } = useLocale()
   const item = useGameStore((state) => state.itemUseOpen)
   const close = useGameStore((state) => state.setItemUseOpen)
   const inventory = useGameStore((state) => state.inventory)
@@ -572,16 +655,17 @@ function ItemUsePanel() {
   const useAndClose = (action: () => void) => { action(); close(null) }
   const gear = ENHANCEABLE_ITEMS.filter((id) => (inventory[id] ?? 0) > 0)
   return <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(null)}><section className="panel item-use-panel">
-    <header><div className="panel-title"><img src={ITEMS[item].icon} alt="" /><span>{ITEMS[item].name}</span></div><CloseButton onClick={() => close(null)} /></header>
+    <header><div className="panel-title"><img src={ITEMS[item].icon} alt="" /><span>{localizedItem(item)}</span></div><CloseButton onClick={() => close(null)} /></header>
     <div className="item-use-options">{item === 'fortune-boost'
-      ? gear.map((id) => <button disabled={(charges[id] ?? 0) > 0} key={id} onClick={() => useAndClose(() => useFortune(id))}><img src={ITEMS[id].icon} alt="" /><span><strong>{ITEMS[id].name}</strong><small>{(charges[id] ?? 0) > 0 ? `${charges[id]} LEFT` : id.endsWith('pickaxe') ? '20 USES' : id === 'harvest-charm' ? '32 USES' : '30 USES'}</small></span></button>)
-      : farms.map((farm) => <button key={farm} onClick={() => useAndClose(() => useRain(farm))}><span className="farm-choice">{farm + 1}</span><span><strong>FARM {farm + 1}</strong><small>WATER ALL</small></span></button>)}
-      {(item === 'fortune-boost' ? gear : farms).length === 0 && <div className="empty-ticket">NONE AVAILABLE</div>}
+      ? gear.map((id) => <button disabled={(charges[id] ?? 0) > 0} key={id} onClick={() => useAndClose(() => useFortune(id))}><img src={ITEMS[id].icon} alt="" /><span><strong>{localizedItem(id)}</strong><small>{(charges[id] ?? 0) > 0 ? `${charges[id]}${language === 'ko' ? '회 남음' : ' LEFT'}` : `${id.endsWith('pickaxe') ? 20 : id === 'harvest-charm' ? 32 : 30}${language === 'ko' ? '회' : ' USES'}`}</small></span></button>)
+      : farms.map((farm) => <button key={farm} onClick={() => useAndClose(() => useRain(farm))}><span className="farm-choice">{farm + 1}</span><span><strong>{t('FARM')} {farm + 1}</strong><small>{language === 'ko' ? '전체 물주기' : 'WATER ALL'}</small></span></button>)}
+      {(item === 'fortune-boost' ? gear : farms).length === 0 && <div className="empty-ticket">{language === 'ko' ? '사용할 대상 없음' : 'NONE AVAILABLE'}</div>}
     </div>
   </section></div>
 }
 
 function ShopPanel() {
+  const { language, t, item: localizedItem } = useLocale()
   const open = useGameStore((state) => state.shopOpen)
   const close = useGameStore((state) => state.setShopOpen)
   const kind = useGameStore((state) => state.shopKind)
@@ -589,32 +673,42 @@ function ShopPanel() {
   const inventory = useGameStore((state) => state.inventory)
   const trade = useGameStore((state) => state.trade)
   const commodityMarket = useGameStore((state) => state.commodityMarket)
+  const commodityPriceHistory = useGameStore((state) => state.commodityPriceHistory)
+  const foodMarket = useGameStore((state) => state.foodMarket)
+  const foodPriceHistory = useGameStore((state) => state.foodPriceHistory)
+  const knownRecipes = useGameStore((state) => state.knownRecipes)
   const round = useGameStore((state) => state.roundNumber)
   const shopStock = useGameStore((state) => state.shopStock)
   const enhancements = useGameStore((state) => state.enhancements)
-  const sharedDeedOnline = useGameStore((state) => state.sharedDeedOnline)
   const personalDeedAvailable = useGameStore((state) => state.personalDeedAvailable)
   const globalDeedsRemaining = useGameStore((state) => state.globalDeedsRemaining)
   const openLottery = useGameStore((state) => state.setLotteryOpen)
   if (!open) return null
   const shop = SHOPS[kind]
+  const visibleItems = kind === 'food'
+    ? shop.items.filter((id) => knownRecipes.some((recipe) => RECIPES[recipe].food === id))
+    : shop.items
   return (
     <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}>
-      <section className="panel shop-panel">
-        <header><div className="panel-title"><span className="shop-mark">{shop.title[0]}</span><span>{shop.title}</span></div><div className="shop-balance" title={formatCoins(cash)}><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div><CloseButton onClick={() => close(false)} /></header>
+      <section className={`panel shop-panel ${kind === 'food' ? 'food-market-panel' : ''}`}>
+        <header><div className="panel-title"><span className="shop-mark">{shop.title[0]}</span><span>{shopName(language, kind, shop.title)}</span></div><div className="shop-balance" title={formatCoins(cash)}><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div><CloseButton onClick={() => close(false)} /></header>
         <div className="shop-grid">
-          {shop.items.map((id) => {
+          {visibleItems.map((id) => {
             const item = ITEMS[id]
             const commodity = id in COMMODITY_MARKET_CONFIG ? id as CommodityId : null
-            const price = id === 'lottery-ticket' ? lotteryPrice(round) : shop.action === 'sell' && commodity ? commodityPrice(commodity, item.sellPrice ?? 0, commodityMarket[commodity]) : shop.action === 'sell' ? item.sellPrice : item.buyPrice
-            const owned = inventory[id] ?? 0
+            const recipe = id.startsWith('food-') ? id.slice(5) as RecipeId : null
+            const price = recipe ? preparedFoodValue(recipe, commodityMarket, foodMarket[recipe]) : id === 'lottery-ticket' ? lotteryPrice(round) : shop.action === 'sell' && commodity ? commodityPrice(commodity, item.sellPrice ?? 0, commodityMarket[commodity]) : shop.action === 'sell' ? item.sellPrice : item.buyPrice
+            const owned = id === 'shared-farm-deed' ? inventory['farm-deed'] ?? 0 : inventory[id] ?? 0
             const level = isEnhanceableItem(id) ? enhancementLevel(enhancements, id) : 0
-            const displayName = isEnhanceableItem(id) ? enhancementName(id, level) : item.name
-            const sharedDeed = id === 'farm-deed' && sharedDeedOnline
-            const available = sharedDeed ? (personalDeedAvailable ? 1 : 0) + globalDeedsRemaining : item.limited ? shopStock[id] ?? 0 : null
-            const stockLabel = isEnhanceableItem(id) && owned > 0 ? 'OWNED' : sharedDeed ? (personalDeedAvailable ? 'PERSONAL' : `${globalDeedsRemaining} SHARED`) : available !== null ? `${available} LEFT` : null
+            const displayName = `${localizedItem(id)}${level ? ` +${level}` : ''}`
+            const deedTile = id === 'farm-deed' || id === 'shared-farm-deed'
+            const personalDeed = id === 'farm-deed'
+            const deedLocked = deedTile && !personalDeed && personalDeedAvailable
+            const available = deedTile ? (personalDeed ? (personalDeedAvailable ? 1 : 0) : globalDeedsRemaining) : item.limited ? shopStock[id] ?? 0 : null
+            const stockLabel = isEnhanceableItem(id) && owned > 0 ? t('OWNED') : deedTile ? personalDeed ? (personalDeedAvailable ? t('AVAILABLE') : t('OWNED')) : `${globalDeedsRemaining} ${t('LEFT')}` : available !== null ? `${available} ${t('LEFT')}` : null
+            const history = recipe ? foodPriceHistory[recipe] ?? [] : commodity ? commodityPriceHistory[commodity] ?? [] : []
             return <button
-              className="shop-tile"
+              className={`shop-tile ${history.length ? 'has-history' : ''} ${deedLocked ? 'deed-locked' : ''}`}
               key={id}
               onMouseDown={(event) => {
                 event.preventDefault()
@@ -624,15 +718,18 @@ function ShopPanel() {
                 if (event.button === 2 && shop.action !== 'buy') trade(id, -amount)
               }}
               onContextMenu={(event) => event.preventDefault()}
-            ><img src={item.icon} alt={displayName} /><span className="shop-item-name">{displayName}</span><span className="shop-owned"><b>×{owned}</b>{stockLabel && <em>{stockLabel}</em>}</span><span className="shop-price" title={price ? formatCoins(price) : undefined}><Icon name="coin" />{price ? formatCoins(price, true) : '—'}</span><HoverTip lines={itemTooltip(id, level)} /></button>
+            ><img src={item.icon} alt={displayName} /><span className="shop-item-name">{displayName}</span><span className="shop-owned"><b>×{owned}</b>{stockLabel && <em>{stockLabel}</em>}</span><span className="shop-price" title={price ? formatCoins(price) : undefined}><Icon name="coin" />{price ? formatCoins(price, true) : '—'}</span>{history.length > 0 && <span className="commodity-history">{history.slice(-5).map((value, index, recent) => <small className={index === 0 || value >= recent[index - 1] ? 'up' : 'down'} key={`${value}-${index}`}>{formatCoins(value)}</small>)}</span>}<HoverTip lines={deedLocked ? [t('BUY PERSONAL DEED FIRST')] : itemTooltip(id, level)} /></button>
           })}
+          {kind === 'food' && visibleItems.length === 0 && <div className="shop-empty">{t('NO DISHES YET')}</div>}
         </div>
+        <div className="shop-controls">{shop.action === 'buy' ? t('BUY: LMB') : t('SELL: RMB')}<span />{t('×10: SHIFT')}</div>
       </section>
     </div>
   )
 }
 
 function LotteryPanel() {
+  const { t, language } = useLocale()
   const open = useGameStore((state) => state.lotteryOpen)
   const close = useGameStore((state) => state.setLotteryOpen)
   const draft = useGameStore((state) => state.lotteryDraft)
@@ -648,18 +745,19 @@ function LotteryPanel() {
   return (
     <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}>
       <section className="panel lottery-panel">
-        <header><div className="panel-title"><span className="ticket-mark">✦</span><span>LOTTERY</span></div><div className="shop-balance" title={formatCoins(cash)}><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div><CloseButton onClick={() => close(false)} /></header>
-        <div className="lottery-tiers">{([1,5,25] as const).map((value) => <button className={tier === value ? 'active' : ''} key={value} onClick={() => setTier(value)}>{value === 1 ? 'STANDARD' : value === 5 ? 'GOLD' : 'GRAND'}</button>)}</div>
+        <header><div className="panel-title"><span className="ticket-mark">✦</span><span>{t('LOTTERY')}</span></div><div className="shop-balance" title={formatCoins(cash)}><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div><CloseButton onClick={() => close(false)} /></header>
+        <div className="lottery-tiers">{([1,5,25] as const).map((value) => <button className={tier === value ? 'active' : ''} key={value} onClick={() => setTier(value)}>{t(value === 1 ? 'STANDARD' : value === 5 ? 'GOLD' : 'GRAND')}</button>)}</div>
         <div className="number-grid">
           {Array.from({ length: 12 }, (_, index) => index + 1).map((number) => <button key={number} className={draft.includes(number) ? 'selected' : ''} onClick={() => toggle(number)}>{number}</button>)}
         </div>
-        <footer className="lottery-footer"><span>{draft.length}/3</span><button disabled={draft.length !== 3 || cash < price} onClick={() => buy(tier)}><Icon name="coin" />{formatCoins(price, true)}</button><small>2 · {formatCoins(twoMatch, true)} &nbsp; 3 · {formatCoins(jackpot, true)}</small><em>DRAW R{round}</em></footer>
+        <footer className="lottery-footer"><span>{draft.length}/3</span><button disabled={draft.length !== 3 || cash < price} onClick={() => buy(tier)}><Icon name="coin" />{formatCoins(price, true)}</button><small>2 · {formatCoins(twoMatch, true)} &nbsp; 3 · {formatCoins(jackpot, true)}</small><em>{language === 'ko' ? `${round}라운드 추첨` : `DRAW R${round}`}</em></footer>
       </section>
     </div>
   )
 }
 
 function TicketInspectPanel() {
+  const { t, language } = useLocale()
   const open = useGameStore((state) => state.ticketInspectOpen)
   const close = useGameStore((state) => state.setTicketInspectOpen)
   const tickets = useGameStore((state) => state.lotteryTickets)
@@ -668,14 +766,14 @@ function TicketInspectPanel() {
   return (
     <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}>
       <section className="panel ticket-inspect-panel">
-        <header><div className="panel-title"><span className="ticket-mark">✦</span><span>LOTTERY</span></div><CloseButton onClick={() => close(false)} /></header>
+        <header><div className="panel-title"><span className="ticket-mark">✦</span><span>{t('LOTTERY')}</span></div><CloseButton onClick={() => close(false)} /></header>
         <div className="ticket-stack">
           {[...tickets].reverse().map((ticket) => <div className={ticket.draw ? 'ticket-card drawn' : 'ticket-card'} key={ticket.id}>
-            <span className="ticket-round">R{ticket.drawRound} · {ticket.tier === 25 ? 'GRAND' : ticket.tier === 5 ? 'GOLD' : 'STANDARD'}</span>
+            <span className="ticket-round">R{ticket.drawRound} · {t(ticket.tier === 25 ? 'GRAND' : ticket.tier === 5 ? 'GOLD' : 'STANDARD')}</span>
             <strong>{ticket.numbers.map((number) => <i key={number}>{number}</i>)}</strong>
-            <small>{ticket.draw ? `${ticket.matches ?? 0} match${ticket.matches === 1 ? '' : 'es'}${ticket.payout ? ` · +${formatCoins(ticket.payout, true)}` : ''}` : round === ticket.drawRound ? 'NEXT DRAW' : `DRAW ${lotteryDraw(ticket.drawRound).join(' · ')}`}</small>
+            <small>{ticket.draw ? (language === 'ko' ? `${ticket.matches ?? 0}개 일치${ticket.payout ? ` · +${formatCoins(ticket.payout, true)}` : ''}` : `${ticket.matches ?? 0} match${ticket.matches === 1 ? '' : 'es'}${ticket.payout ? ` · +${formatCoins(ticket.payout, true)}` : ''}`) : round === ticket.drawRound ? t('NEXT DRAW') : `${language === 'ko' ? '추첨' : 'DRAW'} ${lotteryDraw(ticket.drawRound).join(' · ')}`}</small>
           </div>)}
-          {tickets.length === 0 && <div className="empty-ticket">NO TICKETS</div>}
+          {tickets.length === 0 && <div className="empty-ticket">{t('NO TICKETS')}</div>}
         </div>
       </section>
     </div>
@@ -683,6 +781,7 @@ function TicketInspectPanel() {
 }
 
 function SecretDealPanel() {
+  const { t, item: localizedItem } = useLocale()
   const open = useGameStore((state) => state.secretOpen)
   const close = useGameStore((state) => state.setSecretOpen)
   const buy = useGameStore((state) => state.buySecretInfo)
@@ -702,14 +801,14 @@ function SecretDealPanel() {
   return (
     <div className="modal-scrim secret-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}>
       <section className="panel secret-panel">
-        <header><div className="panel-title"><span className="secret-mark">?</span><span>WANDERING MERCHANT</span></div><CloseButton onClick={() => close(false)} /></header>
+        <header><div className="panel-title"><span className="secret-mark">?</span><span>{t('WANDERING MERCHANT')}</span></div><CloseButton onClick={() => close(false)} /></header>
         <div className="merchant-offers">{merchantCycle?.inventory.map((offer) => {
           const item = ITEMS[offer.id]
-          return <article className={offer.stock < 1 ? 'sold' : ''} key={offer.id}><img src={item.icon} alt="" /><span><strong>{item.name}</strong><small>{offer.stock}/{offer.maxStock}</small></span><button disabled={merchantPending || offer.stock < 1 || cash < offer.price} onClick={() => buyItem(offer.id)}>{offer.stock < 1 ? 'SOLD' : formatCoins(offer.price, true)}</button></article>
+          return <article className={offer.stock < 1 ? 'sold' : ''} key={offer.id}><img src={item.icon} alt="" /><span><strong>{localizedItem(offer.id)}</strong><small>{offer.stock}/{offer.maxStock}</small></span><button disabled={merchantPending || offer.stock < 1 || cash < offer.price} onClick={() => buyItem(offer.id)}>{offer.stock < 1 ? t('SOLD OUT') : formatCoins(offer.price, true)}</button></article>
         })}</div>
         <div className="broker-info">{offers.map((offer, slot) => {
           const bought = purchases.includes(`${round}:${slot}`)
-          return <article key={slot}><span><strong>{`INFO ${slot + 1}`}</strong></span><button disabled={bought || cash < offer.cost} onClick={() => buy(slot)}>{bought ? 'SOLD' : formatCoins(offer.cost, true)}</button></article>
+          return <article key={slot}><span><strong>{t(`INFO ${slot + 1}`)}</strong></span><button disabled={bought || cash < offer.cost} onClick={() => buy(slot)}>{bought ? t('SOLD OUT') : formatCoins(offer.cost, true)}</button></article>
         })}</div>
       </section>
     </div>
@@ -717,14 +816,16 @@ function SecretDealPanel() {
 }
 
 function NoteInspectPanel() {
+  const { t } = useLocale()
   const open = useGameStore((state) => state.noteInspectOpen)
   const close = useGameStore((state) => state.setNoteInspectOpen)
   const notes = useGameStore((state) => state.brokerNotes)
   if (!open) return null
-  return <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}><section className="panel note-panel"><header><div className="panel-title"><img className="cookbook-mark" src="/assets/ui/cooking/cookbook.png" alt="" /><span>INFORMATION</span></div><CloseButton onClick={() => close(false)} /></header><div className="note-list">{[...notes].reverse().map((note) => <article key={note.id}><small>R{note.round}</small><strong>{note.title}</strong><p>{note.text}</p></article>)}{notes.length === 0 && <div className="empty-ticket">NO INFORMATION</div>}</div></section></div>
+  return <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}><section className="panel note-panel"><header><div className="panel-title"><img className="cookbook-mark" src="/assets/ui/cooking/cookbook.png" alt="" /><span>{t('INFORMATION')}</span></div><CloseButton onClick={() => close(false)} /></header><div className="note-list">{[...notes].reverse().map((note) => <article key={note.id}><small>R{note.round}</small><strong>{t(note.title)}</strong><p>{t(note.text)}</p></article>)}{notes.length === 0 && <div className="empty-ticket">{t('NO INFORMATION')}</div>}</div></section></div>
 }
 
 function StocksPanel() {
+  const { t } = useLocale()
   const open = useGameStore((state) => state.stockOpen)
   const close = useGameStore((state) => state.setStockOpen)
   const prices = useGameStore((state) => state.stockPrices)
@@ -739,7 +840,7 @@ function StocksPanel() {
   return (
     <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}>
       <section className="panel stocks-panel">
-        <header><div className="panel-title"><span className="shop-mark">↗</span><span>STOCK EXCHANGE</span></div><div className="shop-balance" title={formatCoins(cash)}><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div><CloseButton onClick={() => close(false)} /></header>
+        <header><div className="panel-title"><span className="shop-mark">↗</span><span>{t('STOCKS')}</span></div><div className="shop-balance" title={formatCoins(cash)}><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div><CloseButton onClick={() => close(false)} /></header>
         <div className="stock-grid">
           {(Object.keys(STOCKS) as StockId[]).map((id) => {
             const stock = STOCKS[id]
@@ -754,17 +855,18 @@ function StocksPanel() {
               if (event.button === 0) trade(id, amount)
               if (event.button === 2) trade(id, -amount)
             }} onContextMenu={(event) => event.preventDefault()}>
-              <span className="stock-logo"><img src={stock.logo} alt={stock.name} /></span>
-              <span className="stock-name">{stock.name}<small>{stock.ticker}</small></span>
+              <span className="stock-logo" data-no-localize><img src={stock.logo} alt={stock.name} /></span>
+              <span className="stock-name" data-no-localize>{stock.name}<small>{stock.ticker}</small></span>
               {unlocked ? <>
                 <span className={`stock-direction ${rising ? 'up' : 'down'}`}>{rising ? '↑' : '↓'}</span>
                 <span className="stock-price" title={formatCoins(prices[id])}><Icon name="coin" />{formatCoins(prices[id], true)}</span>
-                <span className="stock-count"><b>{portfolio[id] ?? 0}</b> OWN <i /> <b>{supply[id]}</b> LEFT</span>
+                <span className="stock-count"><b>{portfolio[id] ?? 0}</b> {t('OWN')} <i /> <b>{supply[id]}</b> {t('LEFT')}</span>
                 <span className="stock-history">{values.slice(-5).map((value, index, recent) => <small className={index === 0 || value >= recent[index - 1] ? 'up' : 'down'} key={`${value}-${index}`}>{formatCoins(value)}</small>)}</span>
               </> : <span className="stock-lock">{stock.releaseMinute}m</span>}
             </button>
           })}
         </div>
+        <div className="shop-controls">{t('BUY: LMB')}<span />{t('SELL: RMB')}<span />{t('×10: SHIFT')}</div>
       </section>
     </div>
   )
@@ -773,6 +875,7 @@ function StocksPanel() {
 type PlayerTradeOffer = { cash: number; items: Record<string, number> }
 
 function PlayerTradePanel() {
+  const { language, t } = useLocale()
   const open = useGameStore((state) => state.playerPanelOpen)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const setOpen = useGameStore((state) => state.setPlayerPanelOpen)
@@ -849,15 +952,15 @@ function PlayerTradePanel() {
   return (
     <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && closePanel()}>
       <section className="panel player-panel">
-        <header><div className="panel-title"><Icon name="users" /><span>{tradeId ? `TRADE · ${partner?.nickname ?? ''}` : 'PLAYERS'}</span></div><CloseButton onClick={closePanel} /></header>
+        <header><div className="panel-title"><Icon name="users" /><span>{tradeId ? <>{t('TRADE')} · <i data-no-localize>{partner?.nickname ?? ''}</i></> : t('PLAYERS')}</span></div><CloseButton onClick={closePanel} /></header>
         {!tradeId ? <>
-          <div className="nickname-row"><input value={draftName} maxLength={18} aria-label="Nickname" onChange={(event) => setDraftName(event.target.value)} onBlur={() => setNickname(draftName)} onKeyDown={(event) => { if (event.key === 'Enter') { setNickname(draftName); event.currentTarget.blur() } }} /><span>{players.length + 1}</span></div>
+          <div className="nickname-row"><input data-no-localize value={draftName} maxLength={18} aria-label={t('NICKNAME')} onChange={(event) => setDraftName(event.target.value)} onBlur={() => setNickname(draftName)} onKeyDown={(event) => { if (event.key === 'Enter') { setNickname(draftName); event.currentTarget.blur() } }} /><span>{players.length + 1}</span></div>
           {!minigameOpen && incoming && <div className="trade-request"><span>{incoming.fromNickname}</span><button onClick={() => sendMultiplayer('trade:accept', { fromId: incoming.fromId })}>ACCEPT</button><button className="quiet-button" onClick={() => setIncoming(null)}>NO</button></div>}
-          <div className="player-list">{players.length ? players.map((player) => <div className="player-row" key={player.id}><span className="player-avatar">{player.nickname[0]?.toUpperCase()}</span><span>{player.nickname}<small>{player.zone.toUpperCase()}</small></span>{!minigameOpen && <button onClick={() => { sendMultiplayer('trade:request', { targetId: player.id }); setToast('Trade request sent') }}>TRADE</button>}</div>) : <div className="empty-players">NO ONE ELSE ONLINE</div>}</div>
+          <div className="player-list">{players.length ? players.map((player) => <div className="player-row" key={player.id}><span className="player-avatar" data-no-localize>{player.nickname[0]?.toUpperCase()}</span><span><i data-no-localize>{player.nickname}</i><small>{zoneName(language, player.zone)}</small></span>{!minigameOpen && <button onClick={() => { sendMultiplayer('trade:request', { targetId: player.id }); setToast('Trade request sent') }}>{t('TRADE')}</button>}</div>) : <div className="empty-players">{t('NO ONE ELSE ONLINE')}</div>}</div>
         </> : <>
           <div className="trade-columns">
             <div className={`trade-side ${ready ? 'ready' : ''}`}><h3>YOU <span>{ready ? 'READY' : ''}</span></h3><label className="trade-cash"><Icon name="coin" /><input type="number" min="0" max={cash} value={offer.cash} onChange={(event) => publishOffer({ ...offer, cash: Math.min(cash, Math.max(0, Number(event.target.value) || 0)) })} /></label><div className="trade-items">{tradable.map((id) => <button key={id} onContextMenu={(event) => event.preventDefault()} onMouseDown={(event) => { event.preventDefault(); const delta = event.button === 2 ? -1 : 1; const quantity = Math.max(0, Math.min(inventory[id] ?? 0, (offer.items[id] ?? 0) + delta)); publishOffer({ ...offer, items: { ...offer.items, [id]: quantity } }) }}><img src={ITEMS[id].icon} alt={ITEMS[id].name} /><span>{offer.items[id] ?? 0}</span></button>)}</div></div>
-            <div className={`trade-side ${theirReady ? 'ready' : ''}`}><h3>{partner?.nickname ?? 'PLAYER'} <span>{theirReady ? 'READY' : ''}</span></h3><div className="trade-cash"><Icon name="coin" /><strong>{formatCoins(theirOffer.cash, true)}</strong></div><div className="trade-items receive">{Object.entries(theirOffer.items).filter(([, quantity]) => quantity > 0).map(([id, quantity]) => ITEMS[id as ItemId] && <div key={id}><img src={ITEMS[id as ItemId].icon} alt={ITEMS[id as ItemId].name} /><span>{quantity}</span></div>)}</div></div>
+            <div className={`trade-side ${theirReady ? 'ready' : ''}`}><h3><i data-no-localize>{partner?.nickname ?? 'PLAYER'}</i> <span>{theirReady ? t('READY') : ''}</span></h3><div className="trade-cash"><Icon name="coin" /><strong>{formatCoins(theirOffer.cash, true)}</strong></div><div className="trade-items receive">{Object.entries(theirOffer.items).filter(([, quantity]) => quantity > 0).map(([id, quantity]) => ITEMS[id as ItemId] && <div key={id}><img src={ITEMS[id as ItemId].icon} alt={ITEMS[id as ItemId].name} /><span>{quantity}</span></div>)}</div></div>
           </div>
           <footer className="trade-actions"><button className="quiet-button" onClick={closePanel}>CANCEL</button><button className={ready ? 'ready-button active' : 'ready-button'} onClick={() => publishOffer(offer, !ready)}>{ready ? 'UNREADY' : 'READY'}</button></footer>
         </>}
@@ -872,6 +975,7 @@ function Crosshair() {
 }
 
 function MenuPanel() {
+  const { language, t } = useLocale()
   const open = useGameStore((state) => state.menuOpen)
   const close = useGameStore((state) => state.setMenuOpen)
   const volumes = useGameStore((state) => state.audioVolumes)
@@ -882,6 +986,9 @@ function MenuPanel() {
   const setInvertY = useGameStore((state) => state.setCameraInvertY)
   const shiftLocked = useGameStore((state) => state.shiftLocked)
   const setShiftLocked = useGameStore((state) => state.setShiftLocked)
+  const graphicsMode = useGameStore((state) => state.graphicsMode)
+  const setGraphicsMode = useGameStore((state) => state.setGraphicsMode)
+  const setLanguage = useGameStore((state) => state.setLanguage)
   const openCookbook = useGameStore((state) => state.setCookbookOpen)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
@@ -889,20 +996,23 @@ function MenuPanel() {
   return (
     <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}>
       <section className="panel settings-panel">
-        <header><div className="panel-title"><Icon name="menu" /><span>SETTINGS</span></div><CloseButton onClick={() => close(false)} /></header>
+        <header><div className="panel-title"><Icon name="menu" /><span>{t('SETTINGS')}</span></div><CloseButton onClick={() => close(false)} /></header>
+        <div className="language-row"><span>{t('LANGUAGE')}</span><div><button className={language === 'en' ? 'active' : ''} onClick={() => setLanguage('en')}>English</button><button className={language === 'ko' ? 'active' : ''} onClick={() => setLanguage('ko')}>한국어</button></div></div>
+        <div className="language-row graphics-row"><span>{t('GRAPHICS')}</span><div>{(['auto', 'low', 'medium', 'high'] as const).map((mode) => <button className={graphicsMode === mode ? 'active' : ''} key={mode} onClick={() => setGraphicsMode(mode)}>{t(mode.toUpperCase())}</button>)}</div></div>
         {(['master', 'music', 'ambience', 'effects'] as const).map((channel) => (
-          <label className="volume-row" key={channel}><span>{channel.toUpperCase()}</span><input type="range" min="0" max="1" step="0.01" value={volumes[channel]} onChange={(event) => setVolume(channel, Number(event.target.value))} /><output>{Math.round(volumes[channel] * 100)}%</output></label>
+          <label className="volume-row" key={channel}><span>{t(channel.toUpperCase())}</span><input type="range" min="0" max="1" step="0.01" value={volumes[channel]} onChange={(event) => setVolume(channel, Number(event.target.value))} /><output>{Math.round(volumes[channel] * 100)}%</output></label>
         ))}
-        <label className="volume-row"><span>SENSITIVITY</span><input aria-label="Camera sensitivity" type="range" min="0.35" max="1.8" step="0.05" value={sensitivity} onChange={(event) => setSensitivity(Number(event.target.value))} /></label>
-        <div className="camera-options"><button className={shiftLocked ? 'active' : ''} onClick={() => setShiftLocked(!shiftLocked)}>SHIFT LOCK</button><button className={invertY ? 'active' : ''} onClick={() => setInvertY(!invertY)}>INVERT Y</button></div>
-        {(!minigameOpen || minigameKind === 'farm') && <button className="cookbook-open" onClick={() => openCookbook(true)}>COOKBOOK</button>}
-        <div className="control-strip"><kbd>Q</kbd><span>LOCK</span><kbd>E</kbd><span>PACK</span><kbd>TAB</kbd><span>PLAYERS</span></div>
+        <label className="volume-row"><span>{t('SENSITIVITY')}</span><input aria-label="Camera sensitivity" type="range" min="0.35" max="1.8" step="0.05" value={sensitivity} onChange={(event) => setSensitivity(Number(event.target.value))} /></label>
+        <div className="camera-options"><button className={shiftLocked ? 'active' : ''} onClick={() => setShiftLocked(!shiftLocked)}>{t('SHIFT LOCK')}</button><button className={invertY ? 'active' : ''} onClick={() => setInvertY(!invertY)}>{t('INVERT Y')}</button></div>
+        {(!minigameOpen || minigameKind === 'farm') && <button className="cookbook-open" onClick={() => openCookbook(true)}>{t('RECIPES')}</button>}
+        <div className="control-strip"><kbd>Q</kbd><span>{t('LOCK')}</span><kbd>E</kbd><span>{t('PACK')}</span><kbd>TAB</kbd><span>{t('PLAYERS')}</span></div>
       </section>
     </div>
   )
 }
 
 function NormalCookbookPanel() {
+  const { t, item: localizedItem } = useLocale()
   const open = useGameStore((state) => state.cookbookOpen)
   const close = useGameStore((state) => state.setCookbookOpen)
   const known = useGameStore((state) => state.knownRecipes)
@@ -911,10 +1021,7 @@ function NormalCookbookPanel() {
   const furnaceCount = inventory.furnace ?? 0
   const queue = useGameStore((state) => state.cookQueue)
   const activeFurnace = useGameStore((state) => state.activeFurnaceIndex)
-  const market = useGameStore((state) => state.commodityMarket)
-  const foodMarket = useGameStore((state) => state.foodMarket)
   const cook = useGameStore((state) => state.cookRecipe)
-  const sell = useGameStore((state) => state.sellFood)
   const [now, setNow] = useState(Date.now())
   const [batches, setBatches] = useState<Partial<Record<RecipeId, number>>>({})
   useEffect(() => {
@@ -925,29 +1032,28 @@ function NormalCookbookPanel() {
   if (!open) return null
   const activeQueue = activeFurnace === null ? [] : queue.filter((job) => job.furnaceIndex === activeFurnace)
   return <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}><section className="panel cookbook-panel">
-    <header><div className="panel-title"><img className="cookbook-mark" src="/assets/ui/cooking/cookbook.png" alt="" /><span>COOKBOOK</span></div><span className="cook-queue">{activeFurnace === null ? '—' : `${activeQueue.length}/3`}</span><CloseButton onClick={() => close(false)} /></header>
-    {activeQueue.length > 0 && <div className="furnace-queue">{activeQueue.map((job) => <span key={job.id}><img src="/assets/ui/cooking/furnace-cooking.png" alt="" />{RECIPES[job.recipe].name} ×{job.quantity ?? 1}<b>{Math.max(0, Math.ceil((job.readyAt - now) / 1000))}s</b></span>)}</div>}
-    {known.length === 0 && <div className="empty-ticket">NO RECIPES YET</div>}
+    <header><div className="panel-title"><img className="cookbook-mark" src="/assets/ui/cooking/cookbook.png" alt="" /><span>{t('RECIPES')}</span></div><span className="cook-queue">{activeFurnace === null ? '—' : `${activeQueue.length}/3`}</span><CloseButton onClick={() => close(false)} /></header>
+    {activeQueue.length > 0 && <div className="furnace-queue">{activeQueue.map((job) => <span key={job.id}><img src="/assets/ui/cooking/furnace-cooking.png" alt="" />{t(RECIPES[job.recipe].name)} ×{job.quantity ?? 1}<b>{t(`${Math.max(0, Math.ceil((job.readyAt - now) / 1000))}s`)}</b></span>)}</div>}
+    {known.length === 0 && <div className="empty-ticket">{t('NO RECIPES YET')}</div>}
     <div className="recipe-grid">{known.map((id) => {
       const recipe = RECIPES[id]
       const learned = true
-      const owned = inventory[recipe.food] ?? 0
-      const value = preparedFoodValue(id, market, foodMarket[id])
       const ingredients = Object.entries(recipe.ingredients) as Array<[ItemId, number]>
       const batchCapacity = Math.max(10, furnaceCount * 10)
       const maxBatch = learned ? Math.max(0, Math.min(batchCapacity, ...ingredients.map(([item, quantity]) => Math.floor((inventory[item] ?? 0) / quantity)))) : 0
       const batch = Math.max(1, Math.min(maxBatch || 1, batches[id] ?? 1))
       const canCook = learned && activeFurnace !== null && maxBatch >= batch && activeQueue.length < 3
       return <article className={`recipe-card ${learned ? '' : 'unknown'}`} key={id}>
-        <div><img src={ITEMS[recipe.food].icon} alt="" /><strong>{learned ? recipe.name : '???'}</strong><small>{learned ? recipe.group.toUpperCase() : `${recipe.group.toUpperCase()} CARD`}</small></div>
-        {learned && <><div className="recipe-ingredients">{ingredients.map(([item, quantity]) => <span key={item} className={(inventory[item] ?? 0) >= quantity * batch ? '' : 'missing'}><img src={ITEMS[item].icon} alt={ITEMS[item].name} />{quantity * batch}</span>)}</div><div className="cook-actions"><button aria-label={`Decrease ${recipe.name} batch`} onClick={() => setBatches((current) => ({ ...current, [id]: Math.max(1, batch - 1) }))}>−</button><b>×{batch}</b><button aria-label={`Increase ${recipe.name} batch`} onClick={() => setBatches((current) => ({ ...current, [id]: Math.min(batchCapacity, Math.max(1, maxBatch), batch + 1) }))}>+</button><button disabled={!canCook} onClick={() => cook(id as RecipeId, batch)}>COOK</button></div><footer><span>{recipe.cookSeconds}s</span><button disabled={!owned} onClick={() => sell(id as RecipeId, 1)}>{formatCoins(value, true)}{owned ? ` ×${owned}` : ''}</button></footer></>}
-        {learned && (cards[id] ?? 0) > 1 && <em>{cards[id]} CARDS</em>}
+        <div><img src={ITEMS[recipe.food].icon} alt="" /><strong>{t(recipe.name)}</strong></div>
+        {learned && <><div className="recipe-ingredients">{ingredients.map(([item, quantity]) => <span key={item} className={(inventory[item] ?? 0) >= quantity * batch ? '' : 'missing'}><img src={ITEMS[item].icon} alt={localizedItem(item)} />{quantity * batch}</span>)}</div><div className="cook-actions"><button aria-label={`Decrease ${recipe.name} batch`} onClick={() => setBatches((current) => ({ ...current, [id]: Math.max(1, batch - 1) }))}>−</button><b>×{batch}</b><button aria-label={`Increase ${recipe.name} batch`} onClick={() => setBatches((current) => ({ ...current, [id]: Math.min(batchCapacity, Math.max(1, maxBatch), batch + 1) }))}>+</button><button disabled={!canCook} onClick={() => cook(id as RecipeId, batch)}>{t('COOK')}</button></div><footer className="recipe-time-only"><span>{t(`${recipe.cookSeconds}s`)}</span></footer></>}
+        {learned && (cards[id] ?? 0) > 1 && <em>×{cards[id]}</em>}
       </article>
     })}</div>
   </section></div>
 }
 
 function EventCookbookPanel() {
+  const { t, item: localizedItem } = useLocale()
   const open = useGameStore((state) => state.cookbookOpen)
   const close = useGameStore((state) => state.setCookbookOpen)
   const milestone = useGameStore((state) => state.minigameMilestone)
@@ -962,23 +1068,24 @@ function EventCookbookPanel() {
     return () => window.clearInterval(timer)
   }, [open])
   if (!open) return null
-  const orders = farmRushOrders(milestone, 100)
+  const orders = farmRushOrders(milestone)
+  const pendingCount = queue.filter((job) => job.readyAt > now).length
   return <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}><section className="panel cookbook-panel event-cookbook-panel">
-    <header><div className="panel-title"><img className="cookbook-mark" src="/assets/ui/cooking/cookbook.png" alt="" /><span>COOKBOOK</span></div><span className="cook-queue">{queue.length}/3</span><CloseButton onClick={() => close(false)} /></header>
+    <header><div className="panel-title"><img className="cookbook-mark" src="/assets/ui/cooking/cookbook.png" alt="" /><span>{t('RECIPES')}</span></div><span className="cook-queue">{pendingCount}/3</span><CloseButton onClick={() => close(false)} /></header>
     {queue.length > 0 && <div className="furnace-queue">{queue.map((job) => {
-      const order = orders[job.orderIndex % orders.length]
-      return <span key={job.orderIndex}><img src="/assets/ui/cooking/furnace-cooking.png" alt="" />{order.name}<b>{Math.max(0, Math.ceil((job.readyAt - now) / 1000))}s</b></span>
+      const order = farmRushRecipe(job.recipe)
+      return <span key={`${job.orderIndex}-${job.readyAt}`}><img src="/assets/ui/cooking/furnace-cooking.png" alt="" />{t(order.name)}<b>{job.readyAt <= now ? t('READY') : t(`${Math.ceil((job.readyAt - now) / 1000)}s`)}</b></span>
     })}</div>}
     <div className="recipe-grid">{FARM_RUSH_RECIPE_IDS.map((id) => {
-      const order = orders.find((candidate) => candidate.recipe === id)!
-      const ingredients = Object.entries(order.ingredients) as Array<[FarmRushCrop, number]>
+      const order = farmRushRecipe(id)
+      const ingredients = Object.entries(order.ingredients) as Array<[FarmRushIngredient, number]>
       const matchingTicket = tickets.find((ticket) => ticket.expiresAt > now && orders[ticket.orderIndex % orders.length].recipe === id && !queue.some((job) => job.orderIndex === ticket.orderIndex))
       const hasIngredients = ingredients.every(([item, quantity]) => inventory[item] >= quantity)
       return <article className="recipe-card" key={id}>
-        <div><img src={ITEMS[order.food].icon} alt="" /><strong>{order.name}</strong><small>{order.points} PTS</small></div>
-        <div className="recipe-ingredients">{ingredients.map(([item, quantity]) => <span key={item} className={inventory[item] >= quantity ? '' : 'missing'}><img src={ITEMS[item].icon} alt={ITEMS[item].name} />{quantity}</span>)}</div>
-        <div className="cook-actions"><button disabled={!matchingTicket || !hasIngredients || queue.length >= 3} onClick={() => cook(id)}>COOK</button></div>
-        <footer><span>{order.cookSeconds}s</span></footer>
+        <div><img src={ITEMS[order.food].icon} alt="" /><strong>{t(order.name)}</strong><small>{t(`${order.points} PTS`)}</small></div>
+        <div className="recipe-ingredients">{ingredients.map(([item, quantity]) => <span key={item} className={inventory[item] >= quantity ? '' : 'missing'}><img src={ITEMS[item].icon} alt={localizedItem(item as ItemId)} />{quantity}</span>)}</div>
+        <div className="cook-actions"><button disabled={!matchingTicket || !hasIngredients || pendingCount >= 3} onClick={() => cook(id)}>{t('COOK')}</button></div>
+        <footer><span>{t(`${order.cookSeconds}s`)}</span></footer>
       </article>
     })}</div>
   </section></div>
@@ -990,6 +1097,7 @@ function CookbookPanel() {
 }
 
 function Toast() {
+  const { language } = useLocale()
   const toast = useGameStore((state) => state.toast)
   const setToast = useGameStore((state) => state.setToast)
   useEffect(() => {
@@ -997,22 +1105,24 @@ function Toast() {
     const timer = window.setTimeout(() => setToast(null), 1400)
     return () => window.clearTimeout(timer)
   }, [setToast, toast])
-  return toast ? <div className="toast">{toast}</div> : null
+  return toast ? <div className="toast">{toastText(language, toast)}</div> : null
 }
 
 function MinigameResultCard() {
+  const { t } = useLocale()
   const result = useGameStore((state) => state.lastMinigameResult)
   const clear = useGameStore((state) => state.clearMinigameResult)
   if (!result) return null
   const placement = result.placement === 1 ? '1ST' : result.placement === 2 ? '2ND' : result.placement === 3 ? '3RD' : `${result.placement}TH`
   const items = Object.entries(result.items).filter(([, quantity]) => Number(quantity) > 0) as Array<[MinigameRewardItemId, number]>
-  return <button className="minigame-result-card" onClick={clear} aria-label="Dismiss minigame reward">
-    <span>{placement}</span><strong>{result.score} PTS</strong>
-    <div>{result.cash > 0 && <b><Icon name="coin" />{formatCoins(result.cash, true)}</b>}{items.map(([id, quantity]) => <b key={id}><img src={ITEMS[id].icon} alt="" />×{quantity}</b>)}</div>
+  return <button className="minigame-result-card" onClick={clear} aria-label={t('Dismiss minigame reward')}>
+    <span>{t(placement)}</span><strong>{t(`${result.score} PTS`)}</strong>
+    <div>{result.cash > 0 && <b><Icon name="coin" />{formatCoins(result.cash, true)}</b>}{items.map(([id, quantity]) => <b className="result-item" key={id}><img src={ITEMS[id].icon} alt={ITEMS[id].name} />×{quantity}<HoverTip lines={[ITEMS[id].name, ...(itemTooltip(id) ?? [])]} /></b>)}</div>
   </button>
 }
 
 function ResultsPanel() {
+  const { t } = useLocale()
   const complete = useGameStore((state) => state.sessionComplete)
   const cash = useGameStore((state) => state.cash)
   const stats = useGameStore((state) => state.stats)
@@ -1027,10 +1137,11 @@ function ResultsPanel() {
   const restart = () => {
     if (isHost) sendMultiplayer('lobby:reset', {})
   }
-  return <div className="modal-scrim results-scrim"><section className="panel results-panel"><header><div className="panel-title"><span className="results-mark">{duration / 60}</span><span>FINAL LEDGER</span></div></header><div className="leaderboard-list">{leaderboard.map((player, index) => <button className={selected === index ? 'active' : ''} key={player.id} onClick={() => setSelected(index)}><b>{index + 1}</b><span>{player.nickname}</span><strong>{formatCoins(player.cash, true)}</strong></button>)}</div><strong className="final-cash"><Icon name="coin" />{formatCoins(focused.cash)}</strong><div className="result-stats"><span>FORAGED<strong>{focused.stats.foraged}</strong></span><span>MINED<strong>{focused.stats.mined}</strong></span><span>HARVESTED<strong>{focused.stats.harvested}</strong></span><span>SOLD<strong>{focused.stats.sold}</strong></span></div><button disabled={!isHost} onClick={restart}>{isHost ? 'NEW RUN' : 'WAITING FOR HOST'}</button></section></div>
+  return <div className="modal-scrim results-scrim"><section className="panel results-panel"><header><div className="panel-title"><span className="results-mark">{duration / 60}</span><span>{t('FINAL LEDGER')}</span></div></header><div className="leaderboard-list">{leaderboard.map((player, index) => <button className={selected === index ? 'active' : ''} key={player.id} onClick={() => setSelected(index)}><b>{index + 1}</b><span data-no-localize>{player.nickname}</span><strong>{formatCoins(player.cash, true)}</strong></button>)}</div><strong className="final-cash"><Icon name="coin" />{formatCoins(focused.cash)}</strong><div className="result-stats"><span>{t('FORAGED')}<strong>{focused.stats.foraged}</strong></span><span>{t('MINED')}<strong>{focused.stats.mined}</strong></span><span>{t('HARVESTED')}<strong>{focused.stats.harvested}</strong></span><span>{t('SOLD')}<strong>{focused.stats.sold}</strong></span></div><button disabled={!isHost} onClick={restart}>{t(isHost ? 'NEW RUN' : 'WAITING FOR HOST')}</button></section></div>
 }
 
 function EnhancementPanel() {
+  const { t, item: localizedItem } = useLocale()
   const open = useGameStore((state) => state.enhancementOpen)
   const close = useGameStore((state) => state.setEnhancementOpen)
   const inventory = useGameStore((state) => state.inventory)
@@ -1088,6 +1199,8 @@ function EnhancementPanel() {
   const targetOutcomes = fortuneFor(selected, target)
   const actionLabel = atMax
     ? 'MAX LEVEL'
+    : missingMaterials && cash < requirements.coins
+      ? 'NEED ITEMS + COINS'
     : missingMaterials
       ? 'NEED MATERIALS'
       : cash < requirements.coins
@@ -1100,14 +1213,14 @@ function EnhancementPanel() {
       : `Failure drops to +${Math.max(0, current - 1)}`
   return <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}>
     <section className="panel enhancement-panel">
-      <header><div className="panel-title"><span className="enhancement-mark">+</span><span>FORGE</span></div><div className="shop-balance"><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div><CloseButton onClick={() => close(false)} /></header>
+      <header><div className="panel-title"><span className="enhancement-mark">+</span><span>UPGRADE</span></div><div className="shop-balance"><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div><CloseButton onClick={() => close(false)} /></header>
       <div className="enhancement-layout">
-        <aside className="enhancement-items" aria-label="Gear">
+        <aside className="enhancement-items" aria-label={t('Gear')}>
           {owned.map((item) => {
             const itemLevel = enhancementLevel(enhancements, item)
             return <button className={item === selected ? 'active' : ''} key={item} onClick={() => { setSelected(item); setGuardEnabled(false); setVoucherEnabled(false) }}>
               <img src={ITEMS[item].icon} alt="" />
-              <span><strong>{ITEMS[item].name}</strong><small>+{itemLevel}</small></span>
+              <span><strong>{localizedItem(item)}</strong><small>+{itemLevel}</small></span>
             </button>
           })}
         </aside>
@@ -1115,8 +1228,8 @@ function EnhancementPanel() {
           {resultFx && <span className={`enhancement-result-fx ${resultFx.success ? 'success' : 'fail'}`} aria-hidden="true">{Array.from({ length: 12 }, (_, index) => <i key={index} />)}</span>}
           <div className="enhancement-current">
             <span className="enhancement-current-icon"><img src={ITEMS[selected].icon} alt="" /></span>
-            <span className="enhancement-current-name">{atMax && <small>MAX LEVEL</small>}<strong>{ITEMS[selected].name}</strong></span>
-            {!atMax && <span className={`enhancement-chance ${resultFx ? `result ${resultFx.success ? 'success' : 'fail'}` : ''}`}><small>{resultFx ? 'RESULT' : 'SUCCESS'}</small><b>{resultFx ? resultFx.success ? 'UPGRADED' : 'FAILED' : `${Math.round(enhancementChance(target) * 100)}%`}</b></span>}
+            <span className="enhancement-current-name">{atMax && <small>{t('MAX LEVEL')}</small>}<strong>{localizedItem(selected)}</strong></span>
+            {!atMax && <span className={`enhancement-chance ${resultFx ? `result ${resultFx.success ? 'success' : 'fail'}` : ''}`}><small>{t(resultFx ? 'RESULT' : 'SUCCESS RATE')}</small><b>{resultFx ? t(resultFx.success ? 'UPGRADED' : 'FAILED') : `${Math.round(enhancementChance(target) * 100)}%`}</b></span>}
           </div>
           <small className="enhancement-compare-title">{chanceLabel}</small>
           <div className={`enhancement-comparison ${atMax ? 'maxed' : ''}`}>
@@ -1126,7 +1239,7 @@ function EnhancementPanel() {
               {secondaryCurrent && <footer><span>{isPickaxeItem ? 'MINING SPEED' : 'STORAGE'}</span><b>{secondaryCurrent}</b></footer>}
             </div>
             {!atMax && <><span className="enhancement-compare-arrow">→</span><div className="enhancement-column target">
-              <header><span>UPGRADED</span><b>+{target}</b></header>
+              <header><span>{t('AFTER UPGRADE')}</span><b>+{target}</b></header>
               <div className="enhancement-chances">{targetOutcomes.map((outcome, index) => <div key={index}><span>{index + 1}×</span><i style={{ '--chance': `${outcome.chance * 100}%` } as CSSProperties} /><b>{Math.round(outcome.chance * 100)}%</b></div>)}</div>
               {secondaryTarget && <footer><span>{isPickaxeItem ? 'MINING SPEED' : 'STORAGE'}</span><b>{secondaryTarget}</b></footer>}
             </div></>}
@@ -1134,16 +1247,16 @@ function EnhancementPanel() {
           {!atMax && <div className="enhancement-payment">
             <div className="enhancement-materials">{materialRows.map(([id, quantity]) => {
               const held = inventory[id] ?? 0
-              return <span className={held < quantity ? 'missing' : ''} key={id}><img src={ITEMS[id].icon} alt="" /><span><strong>{ITEMS[id].name}</strong><small>{held} OF {quantity}</small></span></span>
+              return <span className={held < quantity ? 'missing' : ''} key={id}><img src={ITEMS[id].icon} alt="" /><span><strong>{localizedItem(id)}</strong><small>{held}/{quantity}</small></span></span>
             })}</div>
             <div className={`enhancement-cost ${cash < requirements.coins ? 'missing' : ''}`}><Icon name="coin" /><span><small>COST</small><strong>{formatCoins(requirements.coins, true)}</strong></span></div>
           </div>}
           {!atMax && <div className="enhancement-consumables">
-            {ward && <button disabled={!guardAvailable} className={useGuard ? 'active' : ''} onClick={() => setGuardEnabled((value) => !value)}><img src={ITEMS[ward].icon} alt="" /><span><strong>+{target} WARD</strong><small>{guardAvailable ? useGuard ? 'ON' : 'USE' : 'NONE'}</small></span></button>}
-            {canUseEnhancementVoucher(target) && <button disabled={!voucherAvailable} className={useVoucher ? 'active' : ''} onClick={() => setVoucherEnabled((value) => !value)}><img src={ITEMS[ENHANCEMENT_VOUCHER].icon} alt="" /><span><strong>COUPON</strong><small>{voucherAvailable ? useVoucher ? `-${formatCoins(requirements.coinDiscount, true)}` : 'USE' : 'NONE'}</small></span></button>}
+            {ward && <button disabled={!guardAvailable} className={useGuard ? 'active' : ''} onClick={() => setGuardEnabled((value) => !value)}><img src={ITEMS[ward].icon} alt="" /><span><strong>{t(`PROTECT +${target}`)}</strong><small>{useGuard ? `${t('ON')} · ${inventory[ward] ?? 0}` : t(`${inventory[ward] ?? 0} OWNED`)}</small></span></button>}
+            {canUseEnhancementVoucher(target) && <button disabled={!voucherAvailable} className={useVoucher ? 'active' : ''} onClick={() => setVoucherEnabled((value) => !value)}><img src={ITEMS[ENHANCEMENT_VOUCHER].icon} alt="" /><span><strong>{t('30% OFF')}</strong><small>{useVoucher ? `${t('ON')} · ${inventory[ENHANCEMENT_VOUCHER] ?? 0}` : t(`${inventory[ENHANCEMENT_VOUCHER] ?? 0} OWNED`)}</small></span></button>}
           </div>}
           {failureLabel && <small className={`enhancement-fail ${downgradeRisk ? 'danger' : ''}`}>{failureLabel}</small>}
-          <button className="enhance-button" disabled={!affordable} onClick={attempt}>{actionLabel}</button>
+          <button className="enhance-button" disabled={!affordable} onClick={attempt}>{t(actionLabel)}</button>
         </section>
       </div>
     </section>
@@ -1151,20 +1264,17 @@ function EnhancementPanel() {
 }
 
 function TravelPanel() {
+  const { t, language } = useLocale()
   const open = useGameStore((state) => state.travelOpen)
   const close = useGameStore((state) => state.setTravelOpen)
   const setZone = useGameStore((state) => state.setZone)
   if (!open) return null
-  const destinations = [
-    ['hub', 'COMMON'],
-    ['forage', 'FORAGE'],
-    ['farm', 'FARM'],
-    ['mine', 'MINE'],
-  ] as const
-  return <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}><section className="panel travel-panel"><header><div className="panel-title"><span className="travel-mark">↟</span><span>TRAVEL</span></div><CloseButton onClick={() => close(false)} /></header><div className="travel-grid">{destinations.map(([id, label]) => <button key={id} onClick={() => setZone(id)}>{label}</button>)}</div></section></div>
+  const destinations = ['hub', 'forage', 'farm', 'mine'] as const
+  return <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && close(false)}><section className="panel travel-panel"><header><div className="panel-title"><span className="travel-mark">↟</span><span>{t('TRAVEL')}</span></div><CloseButton onClick={() => close(false)} /></header><div className="travel-grid">{destinations.map((id) => <button key={id} onClick={() => setZone(id)}>{zoneName(language, id)}</button>)}</div></section></div>
 }
 
 function ForageCapacity() {
+  const { t, language } = useLocale()
   const zone = useGameStore((state) => state.zone)
   const inventory = useGameStore((state) => state.inventory)
   const enhancements = useGameStore((state) => state.enhancements)
@@ -1172,7 +1282,8 @@ function ForageCapacity() {
   const carrier = (inventory['master-basket'] ?? 0) > 0 ? 'master-basket' : (inventory['reinforced-basket'] ?? 0) > 0 ? 'reinforced-basket' : (inventory.basket ?? 0) > 0 ? 'basket' : 'hand'
   const capacity = carrier === 'hand' ? BASKET_CONFIG.hand.capacity : enhancedBasketCapacity(carrier, enhancementLevel(enhancements, carrier))
   const stored = (inventory.apple ?? 0) + (inventory.orange ?? 0)
-  return <div className="forage-capacity" title={BASKET_CONFIG[carrier].name}><span>FRUIT</span><i><b style={{ width: `${Math.min(100, stored / capacity * 100)}%` }} /></i><strong>{stored}/{capacity}</strong></div>
+  const carrierName = carrier === 'hand' ? t('Hand Gathering') : itemName(language, carrier, ITEMS[carrier].name)
+  return <div className="forage-capacity" title={carrierName}><span>{t('FRUIT')}</span><i><b style={{ width: `${Math.min(100, stored / capacity * 100)}%` }} /></i><strong>{stored}/{capacity}</strong></div>
 }
 
 function ActiveEffects() {
@@ -1192,7 +1303,22 @@ function ActiveEffects() {
   </div>
 }
 
+function MinigameSettlementSync() {
+  const connected = useGameStore((state) => state.lobbyConnected)
+  const finish = useGameStore((state) => state.finishMinigame)
+  useEffect(() => onMultiplayer('minigame:result', (raw) => {
+    const result = raw as { milestone?: number; kind?: 'mining' | 'farm' | 'forage'; score?: number; placement?: number; economyReference?: number; cashReward?: number; settlementId?: string; itemRolls?: MinigameItemRewardRoll[] }
+    if (!result.settlementId || !Number.isFinite(result.milestone) || !Number.isFinite(result.cashReward)) return
+    finish(Number(result.score) || 0, Math.max(1, Number(result.placement) || 1), Number(result.economyReference) || undefined, { cash: Number(result.cashReward), itemRolls: result.itemRolls ?? [], settlementId: result.settlementId, milestone: Number(result.milestone), kind: result.kind })
+  }), [finish])
+  useEffect(() => {
+    if (connected) sendMultiplayer('minigame:result:request', {})
+  }, [connected])
+  return null
+}
+
 function MinigameWorldHud() {
+  const { t, item: localizedItem } = useLocale()
   const open = useGameStore((state) => state.minigameOpen)
   const milestone = useGameStore((state) => state.minigameMilestone)
   const kind = useGameStore((state) => state.minigameKind)
@@ -1205,7 +1331,7 @@ function MinigameWorldHud() {
   const farmInventory = useGameStore((state) => state.farmRushInventory)
   const eventBay = useGameStore((state) => state.eventBay)
   const submitOrder = useGameStore((state) => state.farmRushSubmit)
-  const forageInventory = useGameStore((state) => state.forageRushInventory)
+  const forageProgress = useGameStore((state) => state.forageRushProgress)
   const forageDelivered = useGameStore((state) => state.forageRushDelivered)
   const tickFarmRush = useGameStore((state) => state.tickFarmRush)
   const syncForageRush = useGameStore((state) => state.syncForageRush)
@@ -1214,8 +1340,9 @@ function MinigameWorldHud() {
   const sceneReady = useGameStore((state) => state.sceneReady)
   const setActive = useGameStore((state) => state.setMinigameActive)
   const nickname = useGameStore((state) => state.nickname)
+  const selfId = useGameStore((state) => state.sharedFarmSelfId)
   const players = useGameStore((state) => state.onlinePlayers)
-  const [warning, setWarning] = useState(9)
+  const [warning, setWarning] = useState(5)
   const [started, setStarted] = useState(false)
   const [ready, setReady] = useState(false)
   const [readyCount, setReadyCount] = useState(0)
@@ -1225,7 +1352,7 @@ function MinigameWorldHud() {
   const [waiting, setWaiting] = useState(false)
   const submitted = useRef(false)
   const score = kind === 'mining' ? miningScore : kind === 'farm' ? farmScore : forageScore
-  const title = kind === 'mining' ? 'MINING RUSH' : kind === 'farm' ? 'KITCHEN RUSH' : 'FORAGE RACE'
+  const title = t(kind === 'mining' ? 'MINING RUSH' : kind === 'farm' ? 'KITCHEN RUSH' : 'FORAGE RACE')
   const forageComplete = Object.values(forageDelivered).every(Boolean)
   const standings = [
     { id: 'self', nickname, score },
@@ -1234,7 +1361,7 @@ function MinigameWorldHud() {
   useEffect(() => {
     if (!open) return
     setActive(false); setStarted(false); setReady(false); setReadyCount(0); setReadyTotal(1)
-    setWarning(9); setSeconds(MINIGAME_DURATION[kind]); setWaiting(false); submitted.current = false
+    setWarning(5); setSeconds(MINIGAME_DURATION[kind]); setWaiting(false); submitted.current = false
   }, [kind, milestone, open, setActive])
   useEffect(() => {
     if (!open) return
@@ -1264,13 +1391,6 @@ function MinigameWorldHud() {
     return () => window.clearInterval(timer)
   }, [active, kind, open, tickFarmRush, waiting, warning])
   useEffect(() => {
-    if (!open) return
-    return onMultiplayer('minigame:result', (raw) => {
-      const result = raw as { milestone: number; score: number; placement: number; economyReference: number; cashReward: number; itemRolls: MinigameItemRewardRoll[] }
-      if (result.milestone === milestone) finish(result.score, result.placement, result.economyReference, { cash: result.cashReward, itemRolls: result.itemRolls ?? [] })
-    })
-  }, [finish, milestone, open])
-  useEffect(() => {
     if (!open || kind !== 'forage') return
     return onMultiplayer('minigame:forage', (raw) => {
       const message = raw as { id?: string; readyAt?: number }
@@ -1282,7 +1402,7 @@ function MinigameWorldHud() {
     submitted.current = true; setWaiting(true)
     const state = useGameStore.getState()
     const progressValue = economyProgressValue(state)
-    const eventScore = kind === 'mining' ? state.rushScore : kind === 'farm' ? state.farmRushScore : state.forageRushScore + (forageComplete ? 10_000 + seconds * 10 : Object.values(state.forageRushInventory).reduce((sum, value) => sum + value, 0))
+    const eventScore = kind === 'mining' ? state.rushScore : kind === 'farm' ? state.farmRushScore : state.forageRushScore + (forageComplete ? 10_000 + seconds * 10 : 0)
     const submittedOnline = sendMultiplayer('minigame:finish', { milestone, score: eventScore, progressValue })
     if (!submittedOnline) { finish(eventScore, 1, progressValue); return }
   }, [active, finish, forageComplete, kind, milestone, open, seconds])
@@ -1294,40 +1414,48 @@ function MinigameWorldHud() {
   const progressMiddle = Math.floor(lobbyProgress.length / 2)
   const estimatedReference = lobbyProgress.length % 2 ? lobbyProgress[progressMiddle] : Math.round((lobbyProgress[progressMiddle - 1] + lobbyProgress[progressMiddle]) / 2)
   const leaderProgress = Math.max(selfProgress, ...players.map((player) => player.progressValue ?? player.cash))
-  const prizeRows = ['1ST', '2ND', '3RD', '4TH', '5TH', '6TH'].map((place, index) => ({ place, ...minigameRewardPackage(estimatedReference, index + 1, selfProgress, leaderProgress) }))
+  const prizeRows = ['1ST', '2ND', '3RD', '4TH', '5TH', '6TH'].map((place, index) => {
+    const placement = index + 1
+    const itemRolls = minigameItemRewards({ economyReference: estimatedReference, placement, matchSeed: currentState.sessionSeed, milestone, playerId: selfId ?? nickname })
+    const itemCounts = new Map<MinigameRewardItemId, number>()
+    itemRolls.forEach((roll) => roll.items.forEach(({ itemId, quantity }) => itemCounts.set(itemId, (itemCounts.get(itemId) ?? 0) + quantity)))
+    return { place: t(place), ...minigameRewardPackage(estimatedReference, placement, selfProgress, leaderProgress), items: [...itemCounts] }
+  })
   const markReady = () => {
     if (ready || !sceneReady) return
     setReady(true)
     const sent = sendMultiplayer('minigame:ready', { milestone, kind })
     const visualGate = new URLSearchParams(window.location.search).has('gate')
     if (!sent || visualGate) {
-      setReadyCount(1); setReadyTotal(1); setStarted(true); setWarning(9)
+      setReadyCount(1); setReadyTotal(1); setStarted(true); setWarning(5)
     }
   }
   return <>
-    {!started && <div className="event-ready"><strong>{title}</strong><button className={ready ? 'ready' : ''} disabled={!sceneReady || ready} onClick={markReady}>{!sceneReady ? 'LOADING' : ready ? 'WAITING' : 'READY'}</button><span>{readyCount}/{readyTotal}</span></div>}
-    {started && warning > 5 && <div className="rush-prize-reveal"><strong>PRIZES</strong><div>{prizeRows.map((prize, index) => <article key={prize.place}><b>{prize.place}</b><span><Icon name="coin" />{formatCoins(prize.cash, true)}</span>{index < 3 && <small>BONUS ITEM</small>}</article>)}</div></div>}
+    {!started && <div className="event-ready"><strong>{title}</strong><div className="event-ready-prizes"><small>{t('PRIZES')}</small>{prizeRows.map((prize) => <span key={prize.place}><b>{prize.place}</b><span className="event-ready-prize-value"><em><Icon name="coin" />{formatCoins(prize.cash, true)}</em>{prize.items.length > 0 && <i>{prize.items.map(([id, quantity]) => <span className="event-ready-prize-item" key={id} tabIndex={0}><img src={ITEMS[id].icon} alt={localizedItem(id)} />{quantity > 1 && <small>×{quantity}</small>}<HoverTip lines={[localizedItem(id), ...(itemTooltip(id) ?? [])]} /></span>)}</i>}</span></span>)}</div><button className={ready ? 'ready' : ''} disabled={!sceneReady || ready} onClick={markReady}>{t(!sceneReady ? 'LOADING' : ready ? 'WAITING' : 'READY')}</button><span>{readyCount}/{readyTotal}</span></div>}
     {started && warning > 0 && warning <= 5 && <div className="rush-countdown"><strong>{warning}</strong><span>{title}</span></div>}
-    {active && <div className="event-standings"><span>LEADERBOARD</span>{standings.map((player, index) => <div className={player.id === 'self' ? 'self' : ''} key={player.id}><b>{index + 1}</b><span>{player.nickname}</span><strong>{player.score}</strong></div>)}</div>}
+    {active && <div className="event-standings"><span>{t('LEADERBOARD')}</span>{standings.map((player, index) => <div className={player.id === 'self' ? 'self' : ''} key={player.id}><b>{index + 1}</b><span data-no-localize>{player.nickname}</span><strong>{player.score}</strong></div>)}</div>}
     {kind === 'mining' && active && <div className="mining-points">{(Object.keys(MINING_RUSH_POINTS) as MiningRushOre[]).map((ore) => <span key={ore}><img src={ITEMS[ore].icon} alt="" /><b>{MINING_RUSH_POINTS[ore]}</b></span>)}</div>}
     {kind === 'farm' && active && <div className="event-orders">{activeOrders.map((ticket) => {
       const order = orderDefinitions[ticket.orderIndex % orderDefinitions.length]
       const remaining = Math.max(0, ticket.expiresAt - Date.now())
-      const ingredients = Object.entries(order.ingredients) as Array<[FarmRushCrop, number]>
-      const cookingJob = cooking.find((job) => job.orderIndex === ticket.orderIndex)
-      const ready = Boolean(cookingJob && cookingJob.readyAt <= Date.now())
+      const ingredients = Object.entries(order.ingredients) as Array<[FarmRushIngredient, number]>
+      const cookingJob = cooking.find((job) => job.orderIndex === ticket.orderIndex && job.readyAt > Date.now())
+      const ready = cooking.some((job) => job.recipe === order.recipe && job.readyAt <= Date.now())
+      const timeBonus = 1 + .5 * Math.min(1, remaining / FARM_RUSH_ORDER_LIFETIME_MS)
       const state = ready ? 'ready' : cookingJob ? 'cooking' : ''
-      return <div className={state} key={ticket.orderIndex}><header><div className="event-order-food"><img src={ITEMS[order.food].icon} alt={order.name} /><strong>{order.name}</strong></div><b>{Math.ceil(remaining / 1000)}</b></header><div className="event-order-ingredients">{ingredients.map(([crop, quantity]) => <span className={farmInventory[crop] >= quantity ? 'owned' : ''} key={crop}><img src={ITEMS[crop as ItemId].icon} alt={ITEMS[crop as ItemId].name} /><b>{quantity}</b></span>)}</div><i><b style={{ width: `${remaining / FARM_RUSH_ORDER_LIFETIME_MS * 100}%` }} /></i><footer><small>{order.points} PTS</small>{ready && <button onClick={() => submitOrder(ticket.orderIndex)}>SUBMIT</button>}{cookingJob && !ready && <small>{Math.max(1, Math.ceil((cookingJob.readyAt - Date.now()) / 1000))}s</small>}</footer></div>
+      return <div className={state} key={ticket.orderIndex}><header><div className="event-order-food"><img src={ITEMS[order.food].icon} alt={localizedItem(order.food)} /><strong>{localizedItem(order.food)}</strong></div><b>{Math.ceil(remaining / 1000)}</b></header><div className="event-order-ingredients">{ingredients.map(([crop, quantity]) => <span className={farmInventory[crop] >= quantity ? 'owned' : ''} key={crop}><img src={ITEMS[crop as ItemId].icon} alt={localizedItem(crop as ItemId)} /><b>{quantity}</b></span>)}</div><i><b style={{ width: `${remaining / FARM_RUSH_ORDER_LIFETIME_MS * 100}%` }} /></i><footer><small>{t(`${Math.round(order.points * timeBonus)} PTS`)}</small>{ready && <button onClick={() => submitOrder(ticket.orderIndex)}>{t('SUBMIT')}</button>}{cookingJob && !ready && <small>{t(`${Math.max(1, Math.ceil((cookingJob.readyAt - Date.now()) / 1000))}s`)}</small>}</footer></div>
     })}</div>}
-    {kind === 'forage' && active && <div className="event-deliveries">{(['apple', 'orange', 'truffle', 'discovery'] as ForageRushKind[]).map((id) => <div className={forageDelivered[id] ? 'complete' : ''} key={id}><img src={id === 'discovery' ? ITEMS['natural-discovery'].icon : ITEMS[id].icon} alt="" /><strong>{forageDelivered[id] ? '✓' : `${forageInventory[id]}/${FORAGE_RUSH_REQUIREMENTS[id]}`}</strong></div>)}</div>}
-    {started && <div className="rush-world-hud"><span>{title}{kind === 'farm' ? ` · PLOT ${eventBay + 1}` : ''}</span><strong>{score}</strong><small>SCORE</small><b>{waiting ? 'RESULTS' : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`}</b>{kind === 'mining' && <img src={ITEMS['crystal-pickaxe'].icon} alt="Crystal Pickaxe" />}{kind === 'mining' && combo > 1 && <em>×{combo}</em>}</div>}
+    {kind === 'forage' && active && <div className="event-deliveries">{(['apple', 'orange', 'truffle', 'discovery'] as ForageRushKind[]).map((id) => <div className={forageDelivered[id] ? 'complete' : ''} key={id}><img src={id === 'discovery' ? ITEMS['natural-discovery'].icon : ITEMS[id].icon} alt="" /><strong>{forageDelivered[id] ? '✓' : `${forageProgress[id]}/${FORAGE_RUSH_REQUIREMENTS[id]}`}</strong></div>)}</div>}
+    {started && <div className="rush-world-hud"><span>{title}{kind === 'farm' ? ` · ${t('PLOT')} ${eventBay + 1}` : ''}</span><strong>{score}</strong><small>{t('SCORE')}</small><b>{waiting ? t('RESULTS') : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`}</b>{kind === 'mining' && <img src={ITEMS['crystal-pickaxe'].icon} alt={localizedItem('crystal-pickaxe')} />}{kind === 'mining' && combo > 1 && <em>×{combo}</em>}</div>}
   </>
 }
 
 function EventUtilityDock() {
+  const cash = useGameStore((state) => state.cash)
   const setMenuOpen = useGameStore((state) => state.setMenuOpen)
   const setPlayerPanelOpen = useGameStore((state) => state.setPlayerPanelOpen)
-  return <div className="event-utility-dock"><button className="hud-chip icon-button" onClick={() => setPlayerPanelOpen(true)} aria-label="Players"><Icon name="users" /></button><button className="hud-chip icon-button" onClick={() => setMenuOpen(true)} aria-label="Menu"><Icon name="menu" /></button></div>
+  const { t } = useLocale()
+  return <div className="event-utility-dock"><div className="hud-chip event-cash" title={formatCoins(cash)}><Icon name="coin" /><span>{formatCoins(cash, true)}</span></div><button className="hud-chip icon-button" onClick={() => setPlayerPanelOpen(true)} aria-label={t('Players')}><Icon name="users" /></button><button className="hud-chip icon-button" onClick={() => setMenuOpen(true)} aria-label={t('Menu')}><Icon name="menu" /></button></div>
 }
 
 function Interface() {
@@ -1481,5 +1609,30 @@ function Interface() {
 }
 
 export function App() {
-  return <main className="game-shell"><GameWorld /><Interface /><AudioBed /><FeedbackBed /><MineSync /><FarmSync /><DeedSync /><MerchantSync /></main>
+  const language = useGameStore((state) => state.language)
+  useEffect(() => {
+    document.documentElement.lang = language
+    const root = document.querySelector('.game-shell')
+    if (!root) return
+    localizeDom(root, language)
+    if (language !== 'ko') return
+    const observer = new MutationObserver((records) => {
+      const targets = new Set<ParentNode>()
+      records.forEach((record) => {
+        if (record.type === 'characterData') {
+          if (record.target.parentElement) targets.add(record.target.parentElement)
+          return
+        }
+        if (record.target instanceof Element) targets.add(record.target)
+        record.addedNodes.forEach((node) => {
+          if (node instanceof Element) targets.add(node)
+          else if (node.parentElement) targets.add(node.parentElement)
+        })
+      })
+      targets.forEach((target) => localizeDom(target, language))
+    })
+    observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['aria-label', 'title', 'alt'] })
+    return () => observer.disconnect()
+  }, [language])
+  return <main className="game-shell"><GameWorld /><Interface /><AudioBed /><FeedbackBed /><MinigameSettlementSync /><MineSync /><ForageSync /><FarmSync /><DeedSync /><MerchantSync /></main>
 }

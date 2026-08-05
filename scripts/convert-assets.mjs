@@ -30,6 +30,19 @@ for (const name of ['Tomato_1', 'Tomato_2', 'Tomato_3', 'Tomato_4', 'Tomato_Crop
 }
 
 const io = new NodeIO()
+
+async function patchCropMaterial(filename, materialName, color) {
+  const cropPath = path.join(out, 'crops', filename)
+  const crop = await io.read(cropPath)
+  const material = crop.getRoot().listMaterials().find((entry) => entry.getName() === materialName)
+  if (!material) throw new Error(`Missing ${materialName} material in ${filename}`)
+  material
+    .setBaseColorFactor(color)
+    .setMetallicFactor(0)
+    .setRoughnessFactor(0.82)
+  await io.write(cropPath, crop)
+}
+
 async function patchRanger(filename, colorFilename) {
   const rangerPath = path.join(out, 'characters', filename)
   const ranger = await io.read(rangerPath)
@@ -57,6 +70,8 @@ async function patchRanger(filename, colorFilename) {
   await io.write(rangerPath, ranger)
 }
 
+await patchCropMaterial('tomato_4.glb', 'Red', [0.72, 0.075, 0.018, 1])
+await patchCropMaterial('tomato_crop.glb', 'Red', [0.72, 0.075, 0.018, 1])
 await patchRanger('ranger.glb', 'T_Ranger_BaseColor.png')
 await patchRanger('shopkeeper.glb', 'T_Ranger_3_BaseColor.png')
 console.log('Converted Ranger and representative crop stages to GLB with web-ready PBR materials.')

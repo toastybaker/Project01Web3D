@@ -32,7 +32,7 @@ console.warn = (...args: unknown[]) => {
   originalWarn(...args)
 }
 const server = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
-  cwd: process.cwd(), env: { ...process.env, PORT: String(port) }, stdio: ['pipe', 'pipe', 'pipe'],
+  cwd: process.cwd(), env: { ...process.env, PORT: String(port), TEST_ALLOW_EARLY_MINIGAME: '1' }, stdio: ['pipe', 'pipe', 'pipe'],
 })
 const rooms: Room[] = []
 
@@ -72,7 +72,7 @@ try {
   assert(eventA.kind === kind && eventB.kind === kind, 'Ready gate started the wrong minigame')
   assert(eventA.gameplayAt === eventB.gameplayAt, 'Players received different gameplay start times')
   const warningMs = eventA.gameplayAt - Date.now()
-  assert(warningMs > 8_000 && warningMs <= 9_050, `Ready gate warning was not nine seconds (${warningMs}ms)`)
+  assert(warningMs > 4_000 && warningMs <= 5_050, `Ready gate warning was not five seconds (${warningMs}ms)`)
   await new Promise((resolve) => setTimeout(resolve, 300))
   assert(startsA === 1 && startsB === 1, `Start was broadcast repeatedly (${startsA}/${startsB})`)
 
@@ -107,7 +107,7 @@ try {
   ])
   assert(rewardA.placement === 1 && rewardB.placement === 2, 'Ready players did not receive deterministic placements')
   assert(syncAfterA.startedAt === syncAfterB.startedAt, 'Players resumed with different match clocks')
-  assert(syncAfterA.startedAt > matchA.startedAt + 8_000, 'Minigame time was not removed from the shared match clock')
+  assert(syncAfterA.startedAt > matchA.startedAt + 4_000, 'Minigame time was not removed from the shared match clock')
 
   console.log(JSON.stringify({ status: 'pass', players: 2, kind, milestone, warningMs, prematureRewardBlocked: true, pausedLateJoin: true, synchronizedResume: true }, null, 2))
 } finally {

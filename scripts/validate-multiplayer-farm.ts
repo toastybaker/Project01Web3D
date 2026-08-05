@@ -57,35 +57,47 @@ try {
   assert(initialDeedA.personalAvailable && initialDeedB.personalAvailable, 'A player did not receive a personal deed entitlement')
   assert(initialDeedA.globalRemaining === 2 && initialDeedB.globalRemaining === 2, 'Shared expansion pool did not begin at two')
 
+  const movement = { zone: 'farm', position: [-48.15, 0.86, -9.75], nickname: 'Farmer', cash: 100_000, progressValue: 100_000, stats: { foraged: 0, mined: 0, harvested: 0, sold: 0 }, minigameOpen: false }
+  farmerA.send('move', movement)
+  farmerB.send('move', movement)
+  await new Promise((resolve) => setTimeout(resolve, 120))
+  const noDeedClaim = message<{ requestId: string; ok: boolean; reason?: string }>(farmerB, 'farm:result', (result) => result.requestId === 'claim-without-deed')
+  farmerB.send('farm:action', { requestId: 'claim-without-deed', op: 'claim', farmId: 0 })
+  const noDeed = await noDeedClaim
+  assert(!noDeed.ok && noDeed.reason === 'Need a farm deed', 'Farm claim succeeded without a purchased deed entitlement')
+
   type DeedResult = { requestId: string; ok: boolean; quantity: number; personalCount: number; globalCount: number; personalAvailable: boolean; globalRemaining: number; reason?: string }
+  const lockedGlobalPurchase = message<DeedResult>(farmerA, 'deed:result', (result) => result.requestId === 'global-before-personal')
+  farmerA.send('deed:purchase', { requestId: 'global-before-personal', kind: 'global', quantity: 1 })
+  const lockedGlobal = await lockedGlobalPurchase
+  assert(!lockedGlobal.ok && lockedGlobal.reason === 'Buy personal deed first' && lockedGlobal.globalRemaining === 2, 'Shared deed was not gated behind the personal deed')
   const leaderPersonalPurchase = message<DeedResult>(farmerA, 'deed:result', (result) => result.requestId === 'leader-buys-personal')
-  farmerA.send('deed:purchase', { requestId: 'leader-buys-personal', quantity: 3 })
+  farmerA.send('deed:purchase', { requestId: 'leader-buys-personal', kind: 'personal', quantity: 1 })
   const leaderPersonal = await leaderPersonalPurchase
   assert(leaderPersonal.ok && leaderPersonal.quantity === 1 && leaderPersonal.personalCount === 1 && leaderPersonal.globalCount === 0, 'First transaction did not stay personal-only')
 
   const leaderPurchase = message<DeedResult>(farmerA, 'deed:result', (result) => result.requestId === 'leader-buys-shared')
   const depletedStock = message<{ globalRemaining: number }>(farmerB, 'deed:stock', (stock) => stock.globalRemaining === 0)
-  farmerA.send('deed:purchase', { requestId: 'leader-buys-shared', quantity: 3 })
+  farmerA.send('deed:purchase', { requestId: 'leader-buys-shared', kind: 'global', quantity: 3 })
   const [leaderDeeds] = await Promise.all([leaderPurchase, depletedStock])
   assert(leaderDeeds.ok && leaderDeeds.quantity === 2, 'Leader could not buy both shared deeds after the personal deed')
   assert(leaderDeeds.personalCount === 0 && leaderDeeds.globalCount === 2 && leaderDeeds.globalRemaining === 0, 'Leader purchase used the wrong deed pool')
 
   const protectedPurchase = message<DeedResult>(farmerB, 'deed:result', (result) => result.requestId === 'protected-personal')
-  farmerB.send('deed:purchase', { requestId: 'protected-personal', quantity: 1 })
+  farmerB.send('deed:purchase', { requestId: 'protected-personal', kind: 'personal', quantity: 1 })
   const protectedDeed = await protectedPurchase
   assert(protectedDeed.ok && protectedDeed.quantity === 1 && protectedDeed.personalCount === 1 && protectedDeed.globalCount === 0, 'Depleted shared stock blocked another player personal deed')
 
   const soldOutPurchase = message<DeedResult>(farmerB, 'deed:result', (result) => result.requestId === 'shared-sold-out')
-  farmerB.send('deed:purchase', { requestId: 'shared-sold-out', quantity: 1 })
+  farmerB.send('deed:purchase', { requestId: 'shared-sold-out', kind: 'global', quantity: 1 })
   const soldOut = await soldOutPurchase
   assert(!soldOut.ok && soldOut.quantity === 0 && soldOut.globalRemaining === 0, 'Shared pool sold more than two expansion deeds')
 
   const duplicatePurchase = message<DeedResult>(farmerA, 'deed:result', (result) => result.requestId === 'leader-buys-shared')
-  farmerA.send('deed:purchase', { requestId: 'leader-buys-shared', quantity: 3 })
+  farmerA.send('deed:purchase', { requestId: 'leader-buys-shared', kind: 'global', quantity: 3 })
   const duplicate = await duplicatePurchase
   assert(duplicate.quantity === 2 && duplicate.globalRemaining === 0, 'Idempotent deed retry returned a different result')
 
-  const movement = { zone: 'farm', position: [-48.15, 0.86, -9.75], nickname: 'Farmer', cash: 100_000, progressValue: 100_000, stats: { foraged: 0, mined: 0, harvested: 0, sold: 0 }, minigameOpen: false }
   farmerA.send('move', movement)
   farmerB.send('move', movement)
   await new Promise((resolve) => setTimeout(resolve, 160))
@@ -101,6 +113,28 @@ try {
   assert(broadcastA.ownerId === broadcastB.ownerId, 'Clients received different farm owners')
   const owner = broadcastA.ownerId === farmerA.sessionId ? farmerA : farmerB
   const intruder = owner === farmerA ? farmerB : farmerA
+
+  const farmCenters = [[-54, -16], [-18, -14], [19, -17], [55, -13], [-53, -50], [-17, -49], [20, -53], [56, -48]] as const
+  const farmsOwnedByA = broadcastA.ownerId === farmerA.sessionId ? [0] : []
+  for (let farmId = 1; farmsOwnedByA.length < 3; farmId += 1) {
+    const [centerX, centerZ] = farmCenters[farmId]
+    farmerA.send('move', { ...movement, position: [centerX + 5.85, 0.86, centerZ + 6.25] })
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    const claim = message<{ requestId: string; ok: boolean; reason?: string }>(farmerA, 'farm:result', (result) => result.requestId === `leader-claim-${farmId}`)
+    farmerA.send('farm:action', { requestId: `leader-claim-${farmId}`, op: 'claim', farmId })
+    const claimed = await claim
+    assert(claimed.ok, `Leader could not consume a purchased deed for farm ${farmId}: ${claimed.reason ?? 'unknown'}`)
+    farmsOwnedByA.push(farmId)
+  }
+  const fourthFarmId = farmCenters.findIndex((_, farmId) => farmId > 0 && !farmsOwnedByA.includes(farmId))
+  assert(fourthFarmId >= 0, 'Validator could not find a fourth farm target')
+  const [fourthX, fourthZ] = farmCenters[fourthFarmId]
+  farmerA.send('move', { ...movement, position: [fourthX + 5.85, 0.86, fourthZ + 6.25] })
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  const fourthClaim = message<{ requestId: string; ok: boolean; reason?: string }>(farmerA, 'farm:result', (result) => result.requestId === 'leader-fourth-farm')
+  farmerA.send('farm:action', { requestId: 'leader-fourth-farm', op: 'claim', farmId: fourthFarmId })
+  const fourth = await fourthClaim
+  assert(!fourth.ok && fourth.reason === 'Farm limit reached', 'A player was able to claim a fourth farm')
 
   const plantPosition = { ...movement, position: [-58.97, 0.86, -20.97] }
   owner.send('move', plantPosition)
@@ -151,7 +185,7 @@ try {
   const rainReadyB = message<{ farmId: number; cellIndex: number; cell: { stage: string } }>(farmerB, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 1 && update.cell?.stage === 'ready')
   await Promise.all([rainReadyA, rainReadyB])
 
-  console.log(JSON.stringify({ status: 'pass', maxPlayers: 6, farms: 8, personalDeeds: true, sharedExpansionDeeds: 2, leaderCanOwn: leaderPersonal.quantity + leaderDeeds.quantity, personalProtected: protectedDeed.quantity, deedRetryIdempotent: true, oneOwner: true, nonOwnerRejected: true, sharedCrop: true, sharedRainWatering: true, lateJoin: true, harvestQuantity: harvest.quantity }, null, 2))
+  console.log(JSON.stringify({ status: 'pass', maxPlayers: 6, farms: 8, noDeedRejected: true, personalDeeds: true, sharedExpansionDeeds: 2, sharedLockedUntilPersonal: true, leaderOwns: farmsOwnedByA.length, fourthFarmRejected: true, personalProtected: protectedDeed.quantity, deedRetryIdempotent: true, oneOwner: true, nonOwnerRejected: true, sharedCrop: true, sharedRainWatering: true, lateJoin: true, harvestQuantity: harvest.quantity }, null, 2))
 } finally {
   await Promise.allSettled(rooms.map((room) => room.leave()))
   server.kill()

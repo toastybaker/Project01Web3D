@@ -264,7 +264,7 @@ const oreRockGeometry = new THREE.DodecahedronGeometry(0.72, 1)
 const oreVeinGeometry = new THREE.OctahedronGeometry(0.15, 0)
 const quarryStoneGeometry = new THREE.DodecahedronGeometry(1, 1)
 const farmWetSoilGeometry = new RoundedBoxGeometry(1.18, 0.025, 1.18, 3, 0.08)
-const rushWetSoilGeometry = new RoundedBoxGeometry(1.78, 0.025, 1.78, 3, 0.1)
+const rushWetSoilGeometry = new RoundedBoxGeometry(1.96, 0.025, 1.96, 3, 0.1)
 const berryClusterGeometry = mergeGeometries(Array.from({ length: 9 }, (_, index) => {
   const angle = (index / 9) * Math.PI * 2
   return berryGeometries[index % 2].clone().translate(
@@ -905,8 +905,8 @@ function mineGroundHeight(x, z) {
         : z >= -84 ? -8
           : z >= -98 ? ramp(-84, -98, -8, -15)
             : z >= -132 ? -15
-              : z >= -146 ? ramp(-132, -146, -15, -22)
-                : -22
+            : z >= -146 ? ramp(-132, -146, -15, -22)
+                : -22 - smoothstep(0, 1, THREE.MathUtils.clamp((-146 - z) / 56, 0, 1)) * 4.8
   const shelf = (cx, cz, radiusX, radiusZ, height) => {
     const distance = Math.hypot((x - cx) / radiusX, (z - cz) / radiusZ)
     return (1 - smoothstep(0.48, 1, distance)) * height
@@ -920,6 +920,17 @@ function mineGroundHeight(x, z) {
   level -= Math.exp(-((x - 41) ** 2 + (z + 67) ** 2) / 360) * 1.2
   level += Math.exp(-((x - 34) ** 2 + (z + 113) ** 2) / 330) * 0.9
   level -= Math.exp(-((x + 24) ** 2 + (z + 118) ** 2) / 330) * 1.05
+  if (z < -150) {
+    // A readable overlook descends through three broad shelves. The side banks
+    // establish the cavern silhouette while the center remains fully walkable
+    // and open to the chamber beyond.
+    const deep = smoothstep(150, 198, -z)
+    const bank = smoothstep(18, 42, Math.abs(x)) * (1.4 + deep * 3.4)
+    const terraces = smoothstep(160, 168, -z) * 0.9
+      + smoothstep(174, 183, -z) * 1.05
+      + smoothstep(188, 198, -z) * 1.2
+    level += bank - terraces
+  }
   return level
 }
 
@@ -992,20 +1003,23 @@ function oreNode(id, x, z) {
   bed.rotation.y = seeded(seed, 6110) * Math.PI
   group.add(bed)
   const boulderPositions = [[-0.34, 0.39, 0.04], [0.08, 0.52, -0.06], [0.39, 0.35, 0.12]]
+  const boulderGeometries = []
+  const veinGeometries = []
   for (let index = 0; index < boulderPositions.length; index += 1) {
     const radius = 0.3 + seeded(index, seed + 6130) * 0.09
-    const boulder = mesh(new THREE.DodecahedronGeometry(radius, 1), mats.stoneOre, 'Ore Boulder')
     const [bx, by, bz] = boulderPositions[index]
-    boulder.position.set(bx, by, bz)
-    boulder.scale.set(1.06 + seeded(index, seed + 6140) * 0.24, 1.02 + seeded(index, seed + 6150) * 0.18, 0.96 + seeded(index, seed + 6160) * 0.22)
-    boulder.rotation.set(seeded(index, seed + 6170) * 0.28, seeded(index, seed + 6180) * Math.PI, seeded(index, seed + 6190) * 0.24)
-    group.add(boulder)
-    const vein = mesh(new THREE.DodecahedronGeometry(radius * .43, 0), mats.richOre, 'Ore Vein')
-    vein.position.set(bx + (seeded(index, seed + 6201) - .5) * radius * .45, by + radius * .72, bz + radius * .42)
-    vein.scale.set(1.28, .62, .9)
-    vein.rotation.set(.18 + seeded(index, seed + 6211) * .4, seeded(index, seed + 6221) * Math.PI, .1)
-    group.add(vein)
+    const boulderPosition = new THREE.Vector3(bx, by, bz)
+    const boulderScale = new THREE.Vector3(1.06 + seeded(index, seed + 6140) * 0.24, 1.02 + seeded(index, seed + 6150) * 0.18, 0.96 + seeded(index, seed + 6160) * 0.22)
+    const boulderRotation = new THREE.Euler(seeded(index, seed + 6170) * 0.28, seeded(index, seed + 6180) * Math.PI, seeded(index, seed + 6190) * 0.24)
+    const boulderMatrix = new THREE.Matrix4().compose(boulderPosition, new THREE.Quaternion().setFromEuler(boulderRotation), boulderScale)
+    boulderGeometries.push(new THREE.DodecahedronGeometry(radius, 1).applyMatrix4(boulderMatrix))
+    const veinPosition = new THREE.Vector3(bx + (seeded(index, seed + 6201) - .5) * radius * .45, by + radius * .72, bz + radius * .42)
+    const veinRotation = new THREE.Euler(.18 + seeded(index, seed + 6211) * .4, seeded(index, seed + 6221) * Math.PI, .1)
+    const veinMatrix = new THREE.Matrix4().compose(veinPosition, new THREE.Quaternion().setFromEuler(veinRotation), new THREE.Vector3(1.28, .62, .9))
+    veinGeometries.push(new THREE.DodecahedronGeometry(radius * .43, 0).applyMatrix4(veinMatrix))
   }
+  group.add(mesh(mergeGeometries(boulderGeometries), mats.stoneOre, 'Ore Boulder'))
+  group.add(mesh(mergeGeometries(veinGeometries), mats.richOre, 'Ore Vein'))
   return group
 }
 
@@ -1092,8 +1106,9 @@ function decorativeOreSeam(x, z, rotation = 0, color = mats.crystal) {
 
 const mineFootprint = [
   [-10, 24], [-18, 12], [-40, 8], [-57, -1], [-64, -18], [-62, -36], [-48, -51], [-61, -64],
-  [-67, -82], [-61, -96], [-43, -108], [-54, -120], [-53, -139], [-45, -158], [-53, -176], [-43, -191], [-20, -199],
-  [20, -199], [43, -191], [53, -176], [45, -158], [53, -139], [54, -120], [42, -108], [59, -98], [67, -83], [63, -63],
+  [-67, -82], [-61, -96], [-43, -108], [-54, -120], [-53, -139], [-45, -158], [-53, -176], [-43, -191], [-35, -211],
+  [-46, -229], [-31, -246], [-9, -253], [10, -253], [31, -246], [46, -229], [35, -211], [43, -191], [53, -176],
+  [45, -158], [53, -139], [54, -120], [42, -108], [59, -98], [67, -83], [63, -63],
   [49, -50], [62, -36], [64, -17], [57, -1], [40, 8], [18, 12], [10, 24],
 ]
 
@@ -1162,6 +1177,7 @@ function caveHeight(x, z) {
     + Math.exp(-((x - 40) ** 2 + (z + 76) ** 2) / 920) * 7.5
     + Math.exp(-((x + 28) ** 2 + (z + 124) ** 2) / 720) * 6.4
     + Math.exp(-((x - 31) ** 2 + (z + 121) ** 2) / 720) * 6.8
+    + Math.exp(-(x ** 2) / 1300 - ((z + 226) ** 2) / 1050) * 9.5
   return mineGroundHeight(x, z) + 8.5 + depth * 3.4 + chamber + Math.sin(x * 0.13 + z * 0.065) * 0.62
 }
 
@@ -1169,7 +1185,7 @@ function authoredCavern() {
   const group = new THREE.Group()
   group.name = 'Authored Stonewake Cavern'
   group.add(maskedTerrain(
-    'Continuous Cavern Floor', [-68, 68, -202, 25], 1.35,
+    'Continuous Cavern Floor', [-68, 68, -255, 25], 1.35,
     (x, z) => mineGroundHeight(x, z) + 0.09 + Math.sin(x * 0.21 + z * 0.11) * 0.025,
     mats.mineGround,
     (x, z) => pointInPolygon(x, z, mineFootprint),
@@ -1654,6 +1670,7 @@ function farmScene() {
   scene.add(pathRibbon([[-79, -32], [-54, -32], [-18, -32], [20, -32], [57, -32], [80, -31]], 1.8, 'South Farm Lane', farmGroundHeight))
   scene.add(pathRibbon([[-1, 13], [-4, 11], [-7, 9]], 1.4, 'Seed Shop Path', farmGroundHeight))
   scene.add(pathRibbon([[1, 13], [4, 11], [7, 9]], 1.4, 'Produce Stand Path', farmGroundHeight))
+  scene.add(pathRibbon([[2, 13], [9, 12], [16, 10]], 1.35, 'Food Market Path', farmGroundHeight))
   const homeY = farmGroundHeight(0, 27)
   scene.add(portal('Home', mats.glassHome, [0, homeY, 27], Math.PI))
   farmParcels.forEach(([x, z], index) => scene.add(farmParcel(x, z, index)))
@@ -1664,17 +1681,23 @@ function farmScene() {
   farmParcels.forEach(([x, z], index) => scene.add(farmFurnacePad(x - 8.8, z + 4.8, index)))
   const farmShopY = farmGroundHeight(-7, 9)
   const buyerY = farmGroundHeight(7, 9)
+  const foodBuyerY = farmGroundHeight(18, 9)
   const farmShopPosition = [-7, farmShopY, 9]
   const buyerPosition = [7, buyerY, 9]
+  const foodBuyerPosition = [18, foodBuyerY, 9]
   const farmShopRotation = Math.PI + 0.16
   const buyerRotation = Math.PI - 0.16
+  const foodBuyerRotation = Math.PI - 0.16
   const farmShopFront = shopOffset(farmShopPosition, farmShopRotation, -1.78)
   const farmShopNpc = shopOffset(farmShopPosition, farmShopRotation, 0.3)
   const buyerFront = shopOffset(buyerPosition, buyerRotation, -1.78)
   const buyerNpc = shopOffset(buyerPosition, buyerRotation, 0.3)
+  const foodBuyerFront = shopOffset(foodBuyerPosition, foodBuyerRotation, -1.78)
+  const foodBuyerNpc = shopOffset(foodBuyerPosition, foodBuyerRotation, 0.3)
   scene.add(
     shop('Farm Shop', farmShopPosition, farmShopRotation, mats.glassFarm),
     shop('Produce Stand', buyerPosition, buyerRotation, mats.leaf),
+    shop('Food Market', foodBuyerPosition, foodBuyerRotation, mats.richOre),
     hayStack(-78, -30, 0.35), hayStack(77, -69, -0.4), hayStack(10, -86, 0.12),
   )
 
@@ -1696,8 +1719,10 @@ function farmScene() {
     anchor('Home', [0, homeY, 27]),
     anchor('FarmShop', [farmShopFront[0], farmGroundHeight(...farmShopFront), farmShopFront[1]]),
     anchor('ProduceBuyer', [buyerFront[0], farmGroundHeight(...buyerFront), buyerFront[1]]),
+    anchor('FoodBuyer', [foodBuyerFront[0], farmGroundHeight(...foodBuyerFront), foodBuyerFront[1]]),
     anchor('NpcFarmShop', [farmShopNpc[0], farmGroundHeight(...farmShopNpc), farmShopNpc[1]]),
     anchor('NpcProduceBuyer', [buyerNpc[0], farmGroundHeight(...buyerNpc), buyerNpc[1]]),
+    anchor('NpcFoodBuyer', [foodBuyerNpc[0], farmGroundHeight(...foodBuyerNpc), foodBuyerNpc[1]]),
     anchor('SecretSite0', [-78, farmGroundHeight(-78, -30), -30]),
     anchor('SecretSite1', [77, farmGroundHeight(77, -69), -69]),
     anchor('SecretSite2', [10, farmGroundHeight(10, -86), -86]),
@@ -1764,13 +1789,15 @@ function mineScene() {
   scene.add(
     mineTrack(0, -3, 38), mineTrack(-27, -19, 16), mineTrack(28, -21, 13), mineTrack(0, -45, 18, Math.PI / 2),
     mineTrack(-34, -73, 15), mineTrack(35, -76, 16), mineTrack(0, -104, 17, Math.PI / 2),
-    mineTrack(-27, -128, 14), mineTrack(29, -127, 13), mineTrack(0, -176, 20, Math.PI / 2),
+    mineTrack(-27, -128, 14), mineTrack(29, -127, 13), mineTrack(-10, -174, 18, -0.34), mineTrack(11, -179, 18, 0.32),
+    mineTrack(-17, -218, 20, -0.22), mineTrack(18, -222, 18, 0.25),
     caveLantern(-7, 7, 1), caveLantern(-28, -8, 1), caveLantern(29, -10, -1),
     caveLantern(-42, -39, 1), caveLantern(41, -42, -1), caveLantern(-42, -70, 1),
     caveLantern(43, -73, -1), caveLantern(-34, -103, 1), caveLantern(35, -103, -1),
     caveLantern(-31, -139, 1), caveLantern(31, -140, -1),
     decorativeOreSeam(-55, -32, Math.PI / 2), decorativeOreSeam(56, -36, -Math.PI / 2, mats.richOre),
     decorativeOreSeam(-47, -112, Math.PI / 2, mats.richOre), decorativeOreSeam(48, -116, -Math.PI / 2),
+    decorativeOreSeam(-20, -178, Math.PI / 2, mats.crystal), decorativeOreSeam(22, -184, -Math.PI / 2, mats.richOre),
     caveColumn(-17, -17, 1.05, 21), caveColumn(19, -21, 1.0, 22),
     caveColumn(-24, -42, 1.35, 1), caveColumn(27, -43, 1.25, 2), caveColumn(-31, -96, 1.45, 3),
     caveColumn(32, -99, 1.3, 4), caveColumn(17, -146, 1.18, 5), caveColumn(-24, -177, 1.32, 6), caveColumn(26, -184, 1.22, 7),
@@ -1778,27 +1805,37 @@ function mineScene() {
     cavernSpur(-47, -76, 13.6, 11.8, 8.2, 33), cavernSpur(47, -84, 12.4, 10.8, 7.7, 34),
     cavernSpur(-40, -127, 11.6, 10.2, 7.6, 35), cavernSpur(41, -134, 12.8, 10.7, 8.1, 36),
     cavernSpur(-37, -178, 13.2, 11.4, 8.0, 37), cavernSpur(36, -181, 12.6, 11.0, 7.8, 38),
+    // Pull the final chamber walls inward in two irregular tiers. These frame
+    // the descent and split the deep floor into readable routes without
+    // blocking the central ore line.
+    cavernSpur(-27, -165, 8.8, 7.3, 4.9, 43), cavernSpur(28, -168, 9.2, 7.7, 5.3, 44),
+    cavernSpur(-25, -191, 6.8, 5.7, 3.7, 45), cavernSpur(27, -193, 7.1, 5.9, 4.0, 46),
+    cavernSpur(-20, -207, 7.4, 6.3, 6.1, 51), cavernSpur(21, -209, 7.7, 6.5, 6.4, 52),
     cavePool(44, -75, 7.2, 4.6), caveWaterfall(60.4, -78, 1.8),
     cavePool(-39, -123, 6.4, 3.8), cavePool(0, -119, 8.2, 3.9),
-    caveColumn(-11, -124, 1.08, 41), caveColumn(13, -130, 1.18, 42), caveLantern(-4, -111, 1), caveLantern(-5, -169, 1), caveLantern(8, -192, -1),
+    cavePool(10, -196, 5.4, 3.2), cavePool(-17, -232, 7.2, 4.7), caveWaterfall(-43, -232, 1.8),
+    caveColumn(-11, -124, 1.08, 41), caveColumn(13, -130, 1.18, 42), caveColumn(-26, -224, 1.38, 49), caveColumn(27, -235, 1.24, 50),
+    caveLantern(-4, -111, 1), caveLantern(-5, -169, 1), caveLantern(8, -192, -1), caveLantern(-13, -218, 1), caveLantern(15, -231, -1),
     stalagmiteCluster(-51, -8, 1.05, 11), stalagmiteCluster(51, -10, 1.0, 12),
     stalagmiteCluster(-53, -19, 1.35, 13), stalagmiteCluster(52, -25, 1.3, 14),
     stalagmiteCluster(-55, -82, 1.5, 15), stalagmiteCluster(55, -90, 1.4, 16),
     stalagmiteCluster(-18, -102, 1.15, 17), stalagmiteCluster(19, -105, 1.25, 18),
     stalagmiteCluster(-43, -144, 1.2, 19), stalagmiteCluster(43, -141, 1.25, 20),
+    stalagmiteCluster(-38, -215, 1.35, 21), stalagmiteCluster(39, -221, 1.28, 22), stalagmiteCluster(2, -245, 1.5, 23),
   )
   for (const [x, z, scale, seed] of [
     [-24,-2,1.1,81],[25,-4,1.0,82],[-42,-18,1.25,83],[43,-21,1.15,84],[-29,-39,1.2,85],[31,-41,1.15,86],
     [-20,-54,1.05,87],[22,-56,1.1,88],[-48,-67,1.25,89],[49,-70,1.2,90],[-28,-88,1.15,91],[29,-91,1.15,92],
     [-46,-104,1.25,93],[47,-106,1.1,94],[-19,-113,1.1,95],[20,-115,1.15,96],[-43,-132,1.2,97],[44,-134,1.25,98],
     [-23,-149,1.1,99],[24,-149,1.0,100],[-34,-169,1.15,101],[35,-172,1.1,102],[-18,-190,1.05,103],[20,-191,1.1,104],
+    [-34,-210,1.2,105],[36,-216,1.15,106],[-8,-236,1.0,107],[12,-244,1.1,108],
   ]) scene.add(caveRubble(x, z, scale, seed))
   MINE_NODE_SITES.forEach(({ id, x, z }) => scene.add(oreNode(id, x, z)))
   scene.add(
     anchor('Spawn', [0, mineGroundHeight(0, 34), 34]), anchor('GateDeep', [0, mineGroundHeight(0, -154), -154]), anchor('Home', [-16, mineGroundHeight(-16, 36), 36]),
     anchor('MineShop', [mineShopFront[0], mineGroundHeight(...mineShopFront), mineShopFront[1]]), anchor('OreBuyer', [oreBuyerFront[0], mineGroundHeight(...oreBuyerFront), oreBuyerFront[1]]),
     anchor('NpcMineShop', [mineShopNpc[0], mineGroundHeight(...mineShopNpc), mineShopNpc[1]]), anchor('NpcOreBuyer', [oreBuyerNpc[0], mineGroundHeight(...oreBuyerNpc), oreBuyerNpc[1]]),
-    anchor('SecretSite0', [-55, mineGroundHeight(-55, -40), -40]), anchor('SecretSite1', [56, mineGroundHeight(56, -98), -98]), anchor('SecretSite2', [-39, mineGroundHeight(-39, -145), -145]),
+    anchor('SecretSite0', [-55, mineGroundHeight(-55, -40), -40]), anchor('SecretSite1', [56, mineGroundHeight(56, -98), -98]), anchor('SecretSite2', [-29, mineGroundHeight(-29, -231), -231]),
     ...MINE_NODE_SITES.map(({ id, x, z }) => anchor(id, [x, mineGroundHeight(x, z), z])),
   )
   return scene
@@ -1850,9 +1887,9 @@ function miningRushScene() {
       node.position.set(x, floorHeight(x, z) + .04, z)
       node.traverse((child) => {
         if (!child.isMesh) return
-        if (child.name === 'Embedded Ore Bed') { child.scale.set(.86, .16, .74); child.position.y = .11 }
-        if (child.name === 'Ore Boulder') { child.scale.multiply(new THREE.Vector3(1.24, 1.78, 1.24)); child.position.y += .29 }
-        if (child.name === 'Ore Vein') { child.scale.multiply(new THREE.Vector3(2.18, 1.58, 1.92)); child.position.y += .43 }
+        if (child.name === 'Embedded Ore Bed') { child.scale.set(.94, .18, .82); child.position.y = .11 }
+        if (child.name === 'Ore Boulder') { child.scale.multiply(new THREE.Vector3(1.08, 1.08, 1.08)); child.position.y += .05 }
+        if (child.name === 'Ore Vein') { child.scale.multiply(new THREE.Vector3(1.2, 1.08, 1.16)); child.position.y += .09 }
       })
       scene.add(node)
     }
@@ -1860,7 +1897,7 @@ function miningRushScene() {
   })
   scene.add(caveColumn(-2, 0, 1.12, 205), caveColumn(2, -33, 1.08, 206), caveColumn(-53, 0, 1.15, 207), caveColumn(53, 0, 1.15, 208))
   scene.add(
-    ...bayCenters.map(([x, z], index) => anchor(`Spawn${index}`, [x, floorHeight(x, z + 11), z + 11])),
+    ...bayCenters.map(([x, z], index) => anchor(`Spawn${index}`, [x, floorHeight(x, z + 13.75), z + 13.75])),
     ...baySites.flatMap((sites, bay) => sites.map(([x, z], index) => anchor(`RushOre${bay}_${String(index).padStart(2, '0')}`, [x, floorHeight(x, z), z]))),
   )
   return scene
@@ -1986,6 +2023,8 @@ function farmRushScene() {
 function forageRushScene() {
   const scene = forageScene()
   scene.name = 'Mosswood Forage Race'
+  const nearSpawnResources = []
+  scene.updateMatrixWorld(true)
   scene.traverse((object) => {
     if (object.name.startsWith('Resource_ForageApple')) object.name = object.name.replace('Resource_ForageApple', 'Resource_ForageRushApple')
     else if (object.name.startsWith('Resource_ForageOrange')) object.name = object.name.replace('Resource_ForageOrange', 'Resource_ForageRushOrange')
@@ -1995,11 +2034,16 @@ function forageRushScene() {
     else if (object.name.startsWith('Anchor_ForageOrange')) object.name = object.name.replace('Anchor_ForageOrange', 'Anchor_ForageRushOrange')
     else if (object.name.startsWith('Anchor_ForageTruffle')) object.name = object.name.replace('Anchor_ForageTruffle', 'Anchor_ForageRushTruffle')
     else if (object.name.startsWith('Anchor_ForageDiscovery')) object.name = object.name.replace('Anchor_ForageDiscovery', 'Anchor_ForageRushDiscovery')
+    if ((object.name.startsWith('Resource_ForageRush') || object.name.startsWith('Anchor_ForageRush')) && object.getWorldPosition(new THREE.Vector3()).distanceTo(new THREE.Vector3(0, 0, -69)) < 24) nearSpawnResources.push(object)
+  })
+  nearSpawnResources.forEach((object) => {
+    if (object.name.startsWith('Resource_ForageRush') && object.parent && object.parent.name.includes('Fruit Tree')) object.parent.parent?.remove(object.parent)
+    else object.parent?.remove(object)
   })
   // Event sites reuse the real orchard trees, but bring enough of them onto the
   // established forest route that collecting—not hiking—decides the race.
-  const eventApples = [[-23,-84],[-17,-101],[-6,-111],[9,-105],[21,-91],[27,-76],[17,-57],[-8,-52]]
-  const eventOranges = [[22,-84],[15,-101],[4,-112],[-11,-104],[-24,-89],[-28,-73],[-17,-57],[8,-55]]
+  const eventApples = [[-23,-84],[-17,-101],[-6,-111],[9,-105],[21,-91],[27,-76],[31,-56],[-31,-58]]
+  const eventOranges = [[22,-84],[15,-101],[4,-112],[-11,-104],[-24,-89],[-28,-73],[-32,-56],[31,-61]]
   const eventTruffles = [[-18,-94],[16,-96],[-4,-116],[25,-64],[-27,-65],[3,-72]]
   const eventDiscoveries = [[-2,-122],[29,-106],[-31,-106]]
   eventApples.forEach(([x,z], index) => {
@@ -2102,7 +2146,8 @@ async function exportScene(scene, filename) {
   }
   // Event resources must keep their authored parent hierarchy so runtime state can
   // recolor/hide one player's ore or crop without affecting every matching mesh.
-  if (filename === 'farm-rush.glb' || filename === 'mining-rush.glb') await document.transform(dedup())
+  if (filename === 'farm-rush.glb') await document.transform(dedup())
+  else if (filename === 'mining-rush.glb') await document.transform(dedup(), instance({ min: 5 }))
   else await document.transform(dedup(), instance({ min: filename === 'forage.glb' ? 3 : 5 }))
   if (deferredWetMesh && deferredWetTiles.length) {
     const targetScene = document.getRoot().listScenes()[0]

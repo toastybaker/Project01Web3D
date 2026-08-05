@@ -1,4 +1,18 @@
-Project 01 Reboot audio credits
+Project 01 audio notes
+
+Current music files under assets/audio/music are user-supplied local recordings
+for private evaluation. Replace or license them before any public distribution.
+
+Hub: Sicilienne, Op. 78 — Gabriel Fauré
+Forage: Aerie — Lena Raine
+Farm: Haggstrom — C418
+Mine: Dead Voxel — C418
+Mining Rush: Aria Math — C418
+Kitchen Rush: Cat — C418
+Forage Race: otherside — Lena Raine
+Results: Alpha — C418
+
+Legacy cleared recordings retained in this directory:
 
 Hub: Gabriel Fauré, Pelléas et Mélisande, Op. 80, III. Sicilienne.
 DuPage Symphony Orchestra; Barbara Schubert, conductor. Performed 9 February 2008.

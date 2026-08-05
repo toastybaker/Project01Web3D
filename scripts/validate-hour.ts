@@ -21,7 +21,7 @@ const miningRates = {
   crystal: miningCoinsPerMinute('crystal-pickaxe', -150),
 }
 
-assert(miningRates.starter >= 200_000 && miningRates.starter <= 320_000, 'starter mining no longer funds a first upgrade in a few focused minutes')
+assert(miningRates.starter >= 180_000 && miningRates.starter <= 280_000, 'starter mining no longer funds the first upgrade in roughly four focused minutes')
 assert(miningRates.iron > miningRates.starter * 1.35, 'iron pickaxe lacks a meaningful throughput improvement')
 assert(miningRates.steel > miningRates.iron * 1.45, 'steel pickaxe lacks a meaningful throughput improvement')
 assert(miningRates.crystal > miningRates.steel * 1.7, 'crystal pickaxe lacks an end-game throughput improvement')

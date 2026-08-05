@@ -10,7 +10,7 @@ Project 01 is a third-person warm-storybook social economy game. A shared woodla
 
 - Foraging: find fruit trees and rare discoveries, manage carry capacity, sell resources, and improve gathering equipment.
 - Mining: explore a branching cave, hold to mine depth-weighted ore spawns, and progress through pickaxes with different speed and Fortune.
-- Farming and cooking: own a deed-gated farm, plant and water crops, harvest, unlock recipes from Cookbook Boxes, and queue dishes in furnaces.
+- Farming and cooking: own a deed-gated farm, plant and water crops, harvest, unlock recipes from Recipe Boxes, and queue dishes in furnaces.
 - Economy and social play: area-specific shops, commodity prices, real-company-inspired stocks, lottery tickets, trading, weather, timed market corrections, a hidden information broker, and multiplayer minigames.
 
 At minutes 20 and 40, the game chooses two different equalized 3D minigames from Mining Rush, Farm Kitchen Rush, and Forage Delivery Race. They reuse the main hotbar, inventory, tools, interactions, and art language while isolating temporary event data.

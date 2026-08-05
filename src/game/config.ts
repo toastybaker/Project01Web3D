@@ -15,7 +15,7 @@ export type FortuneOutcome = { chance: number; bonus: number }
 
 export const PICKAXE_CONFIG = {
   'worn-pickaxe': {
-    name: 'Starter Pickaxe', price: 0, speed: 1,
+    name: 'Starter Pickaxe', price: 50_000, speed: 1,
     unlocks: ['copper-ore', 'iron-ore'],
     fortune: [{ chance: 0.95, bonus: 0 }, { chance: 0.05, bonus: 1 }],
   },
@@ -30,19 +30,19 @@ export const PICKAXE_CONFIG = {
     fortune: [{ chance: 0.65, bonus: 0 }, { chance: 0.25, bonus: 1 }, { chance: 0.08, bonus: 2 }, { chance: 0.02, bonus: 3 }],
   },
   'crystal-pickaxe': {
-    name: 'Crystal Pickaxe', price: 18_000_000, speed: 2.25,
+    name: 'Crystal Pickaxe', price: 18_000_000, speed: 4.2,
     unlocks: ['copper-ore', 'iron-ore', 'silver-ore', 'gold-ore', 'crystal-ore', 'ancient-ore'],
     fortune: [{ chance: 0.48, bonus: 0 }, { chance: 0.35, bonus: 1 }, { chance: 0.12, bonus: 2 }, { chance: 0.04, bonus: 3 }, { chance: 0.01, bonus: 4 }],
   },
 } as const
 
 export const ORE_CONFIG = {
-  'copper-ore': { name: 'Copper Ore', value: 8_000, hardness: 1 },
-  'iron-ore': { name: 'Iron Ore', value: 18_000, hardness: 1.6 },
-  'silver-ore': { name: 'Silver Ore', value: 55_000, hardness: 2.4 },
-  'gold-ore': { name: 'Gold Ore', value: 150_000, hardness: 3.5 },
-  'crystal-ore': { name: 'Crystal', value: 500_000, hardness: 5 },
-  'ancient-ore': { name: 'Ancient Ore', value: 1_500_000, hardness: 7.5 },
+  'copper-ore': { name: 'Copper Ore', value: 6_800, hardness: 1 },
+  'iron-ore': { name: 'Iron Ore', value: 15_300, hardness: 1.6 },
+  'silver-ore': { name: 'Silver Ore', value: 46_800, hardness: 2.4 },
+  'gold-ore': { name: 'Gold Ore', value: 127_500, hardness: 3.5 },
+  'crystal-ore': { name: 'Crystal', value: 425_000, hardness: 5 },
+  'ancient-ore': { name: 'Ancient Ore', value: 1_275_000, hardness: 7.5 },
 } as const
 
 export const BASKET_CONFIG = {

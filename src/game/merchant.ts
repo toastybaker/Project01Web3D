@@ -32,11 +32,11 @@ export const MERCHANT_ITEMS: Readonly<Record<MerchantItemId, MerchantItemDefinit
   'fortune-boost': item({ id: 'fortune-boost', name: 'Luck Tonic', basePrice: 450_000, appearanceChance: .30, globalStock: 2, eligibleAfter: 0, commonFallback: true }),
   'cook-timer': item({ id: 'cook-timer', name: 'Cook Timer', basePrice: 325_000, appearanceChance: .25, globalStock: 2, eligibleAfter: 0, commonFallback: true }),
   'rain-bottle': item({ id: 'rain-bottle', name: 'Rain Bottle', basePrice: 375_000, appearanceChance: .20, globalStock: 1, eligibleAfter: 0, commonFallback: false }),
-  'upgrade-coupon': item({ id: 'upgrade-coupon', name: 'Forge Coupon', basePrice: 450_000, appearanceChance: .15, globalStock: 1, eligibleAfter: .25, commonFallback: false }),
-  'cookbook-box': item({ id: 'cookbook-box', name: 'Cookbook Box', basePrice: 450_000, appearanceChance: .25, globalStock: 1, eligibleAfter: 0, commonFallback: true }),
-  'upgrade-guard-4': item({ id: 'upgrade-guard-4', name: '+4 Ward', basePrice: 140_000, appearanceChance: .22, globalStock: 2, eligibleAfter: .15, commonFallback: false }),
-  'upgrade-guard-5': item({ id: 'upgrade-guard-5', name: '+5 Ward', basePrice: 550_000, appearanceChance: .14, globalStock: 1, eligibleAfter: .33, commonFallback: false }),
-  'upgrade-guard-6': item({ id: 'upgrade-guard-6', name: '+6 Ward', basePrice: 2_000_000, appearanceChance: .08, globalStock: 1, eligibleAfter: .60, commonFallback: false }),
+  'upgrade-coupon': item({ id: 'upgrade-coupon', name: '30% Upgrade Discount', basePrice: 450_000, appearanceChance: .15, globalStock: 1, eligibleAfter: .25, commonFallback: false }),
+  'cookbook-box': item({ id: 'cookbook-box', name: 'Recipe Box', basePrice: 450_000, appearanceChance: .25, globalStock: 1, eligibleAfter: 0, commonFallback: true }),
+  'upgrade-guard-4': item({ id: 'upgrade-guard-4', name: '+4 Protection', basePrice: 140_000, appearanceChance: .22, globalStock: 2, eligibleAfter: .15, commonFallback: false }),
+  'upgrade-guard-5': item({ id: 'upgrade-guard-5', name: '+5 Protection', basePrice: 550_000, appearanceChance: .14, globalStock: 1, eligibleAfter: .33, commonFallback: false }),
+  'upgrade-guard-6': item({ id: 'upgrade-guard-6', name: '+6 Protection', basePrice: 2_000_000, appearanceChance: .08, globalStock: 1, eligibleAfter: .60, commonFallback: false }),
 })
 
 export const MERCHANT_ITEM_IDS = Object.freeze(Object.keys(MERCHANT_ITEMS) as MerchantItemId[])

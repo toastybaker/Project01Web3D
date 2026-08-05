@@ -17,6 +17,14 @@ export type GameSfx =
   | 'footstep-grass'
   | 'footstep-stone'
 
+export type CollectionZone = 'hub' | 'forage' | 'farm' | 'mine'
+export type CollectionEvent = 'mining' | 'farm' | 'forage'
+
+export function collectionSfx(zone: CollectionZone, minigameOpen: boolean, minigameKind: CollectionEvent): GameSfx {
+  const activity = minigameOpen ? minigameKind : zone
+  return activity === 'mine' || activity === 'mining' ? 'mine-complete' : 'forage'
+}
+
 let audioContext: AudioContext | null = null
 const lastSoundIndex = new Map<GameSfx, number>()
 
@@ -25,9 +33,12 @@ const authoredSounds: Partial<Record<GameSfx, string[]>> = {
   'mine-complete': ['/assets/audio/sfx/impactMining_002.ogg', '/assets/audio/sfx/impactMining_003.ogg', '/assets/audio/sfx/impactMining_004.ogg'],
   forage: ['/assets/audio/sfx/handleSmallLeather.ogg', '/assets/audio/sfx/handleSmallLeather2.ogg'],
   plant: ['/assets/audio/sfx/impactSoft_medium_002.ogg'],
+  water: ['/assets/audio/sfx/impactSoft_medium_002.ogg'],
   coin: ['/assets/audio/sfx/handleCoins.ogg'],
   buy: ['/assets/audio/sfx/handleCoins2.ogg'],
+  teleport: ['/assets/audio/sfx/bookOpen.ogg'],
   unlock: ['/assets/audio/sfx/bookOpen.ogg'],
+  ready: ['/assets/audio/sfx/handleCoins2.ogg'],
   error: ['/assets/audio/sfx/click5.ogg'],
   jump: ['/assets/audio/sfx/handleSmallLeather.ogg', '/assets/audio/sfx/handleSmallLeather2.ogg'],
   land: ['/assets/audio/sfx/impactSoft_medium_002.ogg'],
@@ -84,7 +95,7 @@ export function playGameSfx(kind: GameSfx, volume = 0.5) {
     lastSoundIndex.set(kind, index)
     const sound = new Audio(authored[index])
     const footstep = kind.startsWith('footstep')
-    const gain = footstep ? 0.1 : kind === 'jump' ? 0.16 : kind === 'land' ? 0.25 : 0.46
+    const gain = footstep ? 0.1 : kind === 'jump' ? 0.16 : kind === 'land' ? 0.25 : kind === 'ready' ? 0.28 : kind === 'water' ? 0.25 : kind === 'teleport' ? 0.3 : 0.46
     sound.volume = Math.min(1, Math.max(0, volume)) * gain
     sound.playbackRate = footstep ? 1.12 + Math.random() * 0.12 : 0.99 + Math.random() * 0.02
     if (footstep) {
