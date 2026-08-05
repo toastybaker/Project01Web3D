@@ -189,7 +189,7 @@ function migrateSave(value: SaveData | null): SaveData | null {
 }
 
 const query = new URLSearchParams(window.location.search)
-const gateFresh = query.get('gate') === 'final' || query.get('gate') === 'deep' || query.get('gate') === 'resource' || query.get('gate') === 'cell' || query.get('gate') === 'furnace' || query.get('gate') === 'result'
+const gateFresh = query.get('fresh') === '1' || query.get('gate') === 'final' || query.get('gate') === 'deep' || query.get('gate') === 'resource' || query.get('gate') === 'cell' || query.get('gate') === 'furnace' || query.get('gate') === 'result'
 const saved = gateFresh ? null : migrateSave(readJson<SaveData>('project01-save-v12') ?? readJson<SaveData>('project01-save-v11'))
 const requestedZone = query.get('zone')
 const requestedPanel = query.get('panel')
@@ -646,7 +646,9 @@ export const useGameStore = create<GameState>((set, get) => ({
   minigameMilestone: requestedPanel === 'minigame' ? 20 * 60 : 0,
   minigameKind: requestedMinigame,
   eventBay: 0,
-  minigamesCompleted: saved?.minigamesCompleted ?? [],
+  minigamesCompleted: balanceRound
+    ? minigameMilestones(MATCH_CONFIG.defaultDurationSeconds).filter((milestone) => milestone <= (balanceRound - 1) * MATCH_CONFIG.worldCycleSeconds)
+    : saved?.minigamesCompleted ?? [],
   minigameSnapshot: requestedPanel === 'minigame' ? { zone: initialZone, playerPosition: SPAWNS[initialZone], hotbar: ['water-can', 'worn-pickaxe', null, null, null, null, null, null, 'home-charm'], selectedHotbar: 0, inventoryOpen: false, startedAt: Date.now() } : null,
   rushNodes: {},
   rushScore: 0,

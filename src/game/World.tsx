@@ -1006,11 +1006,13 @@ function Player() {
     }
     const requestedAnimation = interactionProgress > 0 && prompt
       ? 'Armature|Interact'
-      : !grounded.current
-        ? 'Armature|Jump_Loop'
-        : sprinting && locomotionSpeed > 4.6
-          ? 'Armature|Sprint_Loop'
-          : moving ? 'Armature|Walk_Loop' : 'Armature|Idle_Loop'
+      : !grounded.current && moving
+        ? sprinting ? 'Armature|Sprint_Loop' : 'Armature|Walk_Loop'
+        : !grounded.current
+          ? 'Armature|Jump_Loop'
+          : sprinting && locomotionSpeed > 4.6
+            ? 'Armature|Sprint_Loop'
+            : moving ? 'Armature|Walk_Loop' : 'Armature|Idle_Loop'
     if (requestedAnimation !== activeAnimation.current || !actions[requestedAnimation]?.isRunning()) {
       const jumpTransition = requestedAnimation === 'Armature|Jump_Loop' || activeAnimation.current === 'Armature|Jump_Loop'
       actions[activeAnimation.current]?.fadeOut(jumpTransition ? 0.1 : 0.18)
