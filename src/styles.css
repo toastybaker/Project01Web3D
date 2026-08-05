@@ -72,7 +72,7 @@ button { color: inherit; }
 .icon-button:hover { background: rgba(66, 86, 67, 0.9); }
 
 .hotbar { position: absolute; z-index: 20; left: 50%; bottom: 22px; transform: translateX(-50%); display: grid; grid-template-columns: repeat(9, 54px); gap: 5px; padding: 7px; border-radius: 16px; }
-.forage-capacity { position: absolute; z-index: 8; left: 50%; bottom: 91px; transform: translateX(-50%); width: 250px; height: 28px; padding: 0 10px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; border: 1px solid rgba(244,232,198,.16); border-radius: 10px; background: rgba(28,39,30,.83); box-shadow: 0 5px 16px rgba(13,20,15,.2); color: rgba(244,232,198,.78); font-size: 9px; font-weight: 1000; letter-spacing: .08em; pointer-events: auto; }
+.forage-capacity { position: absolute; z-index: 8; left: 18px; bottom: 60px; width: 230px; height: 28px; padding: 0 10px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; border: 1px solid rgba(244,232,198,.16); border-radius: 10px; background: rgba(28,39,30,.83); box-shadow: 0 5px 16px rgba(13,20,15,.2); color: rgba(244,232,198,.78); font-size: 9px; font-weight: 1000; letter-spacing: .08em; pointer-events: auto; }
 .forage-capacity i { height: 6px; overflow: hidden; border-radius: 6px; background: rgba(244,232,198,.12); }
 .forage-capacity b { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#88af5a,#d2be66); transition: width .2s ease; }
 .forage-capacity strong { min-width: 45px; text-align: right; color: var(--ivory); font-size: 9px; }
@@ -383,8 +383,8 @@ button { color: inherit; }
 @keyframes toast { 0% { opacity: 0; transform: translate(-50%, -6px); } 12%, 78% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; transform: translate(-50%, -4px); } }
 @keyframes action-burst { 0% { opacity: 0; transform: translate(-50%,-50%) scale(.35) rotate(0); } 18% { opacity: .92; } 100% { opacity: 0; transform: translate(var(--x),var(--y)) scale(.8) rotate(105deg); } }
 
-.lobby-scrim { background: radial-gradient(circle at 50% 42%, rgba(38,48,39,.12), rgba(9,13,10,.66)); backdrop-filter: blur(3px); }
-.lobby-panel { width: min(430px, calc(100vw - 28px)); overflow: hidden; pointer-events: auto; }
+.lobby-dock { position: absolute; z-index: 50; top: 18px; right: 18px; width: min(360px, calc(100vw - 36px)); pointer-events: none; }
+.lobby-panel { width: 100%; max-height: calc(100vh - 36px); overflow-x: hidden; overflow-y: auto; pointer-events: auto; background: rgba(28,39,30,.9); box-shadow: 0 14px 40px rgba(8,12,9,.28); }
 .lobby-panel header { display: flex; align-items: center; min-height: 58px; padding: 0 18px; border-bottom: 1px solid var(--line); }
 .lobby-panel header > b { margin-left: auto; color: rgba(244,232,198,.55); font-size: 11px; letter-spacing: .08em; }
 .lobby-mark { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px; background: #65754e; color: #f5e8c5; font-size: 10px; font-weight: 1000; letter-spacing: .03em; }
@@ -393,7 +393,7 @@ button { color: inherit; }
 .lobby-name input { width: 100%; height: 44px; padding: 0 13px; border: 1px solid rgba(244,232,198,.2); border-radius: 10px; outline: none; background: rgba(15,21,17,.52); color: #f4e8c6; font: 900 15px/1 'Nunito Sans', sans-serif; }
 .lobby-name input:focus { border-color: rgba(226,180,91,.72); }
 .lobby-duration > div { display: grid; grid-template-columns: repeat(4,1fr); gap: 7px; }
-.lobby-duration.lobby-extra > div { grid-template-columns: repeat(var(--farm-options, 3),minmax(34px,1fr)); }
+.lobby-duration.lobby-extra > div { grid-template-columns: repeat(4,minmax(34px,1fr)); }
 .lobby-duration button { height: 42px; border: 1px solid rgba(244,232,198,.16); border-radius: 10px; background: rgba(244,232,198,.05); color: rgba(244,232,198,.66); font-size: 13px; font-weight: 1000; cursor: pointer; }
 .lobby-duration button.active { border-color: rgba(226,180,91,.7); background: rgba(226,180,91,.16); color: #f2cf84; }
 .lobby-duration button:disabled { cursor: default; }
@@ -413,6 +413,12 @@ button { color: inherit; }
   .interaction { bottom: 83px; }
   .event-utility-dock { right: 14px; top: 14px; }
   .event-orders { max-height: calc(100vh - 204px); overflow-y: auto; scrollbar-width: thin; padding-right: 2px; }
+  .lobby-dock { top: 12px; right: 12px; width: min(330px, calc(100vw - 24px)); }
+  .lobby-panel header { min-height: 48px; }
+  .lobby-name, .lobby-duration { padding-top: 10px; }
+  .lobby-name input { height: 38px; }
+  .lobby-duration button { height: 35px; }
+  .lobby-start, .lobby-wait { height: 40px; margin-top: 13px; margin-bottom: 13px; }
 }
 
 @media (max-width: 760px) {

@@ -2118,6 +2118,18 @@ async function exportScene(scene, filename) {
   const deferredWetMesh = filename === 'farm.glb'
     ? document.getRoot().listNodes().find((node) => node.getName().startsWith('WateredSoil_'))?.getMesh()
     : null
+  // gltf-transform's static join pass correctly removes empty nodes. Our
+  // Anchor_* nodes are deliberately empty, however: runtime interaction and
+  // NPC placement read them by name. Preserve and restore them around the
+  // mine optimization instead of relying on transform implementation details.
+  const deferredAnchors = filename === 'mine.glb' || filename === 'mining-rush.glb'
+    ? document.getRoot().listNodes().filter((node) => node.getName().startsWith('Anchor_')).map((node) => ({
+        name: node.getName(),
+        translation: [...node.getTranslation()],
+        rotation: [...node.getRotation()],
+        scale: [...node.getScale()],
+      }))
+    : []
   if (deferredWetTiles.length) document.getRoot().listNodes().filter((node) => node.getName().startsWith('WateredSoil_')).forEach((node) => node.dispose())
   document.createExtension(EXTMeshGPUInstancing).setRequired(true)
   const woodlandSource = await readFile(path.join(root, 'public', 'assets', 'textures', 'woodland-ground-v1.png'))
@@ -2157,6 +2169,14 @@ async function exportScene(scene, filename) {
   if (deferredWetMesh && deferredWetTiles.length) {
     const targetScene = document.getRoot().listScenes()[0]
     deferredWetTiles.forEach(({ name, translation }) => targetScene.addChild(document.createNode(name).setMesh(deferredWetMesh).setTranslation(translation)))
+  }
+  if (deferredAnchors.length) {
+    const targetScene = document.getRoot().listScenes()[0]
+    const remainingNames = new Set(document.getRoot().listNodes().map((node) => node.getName()))
+    deferredAnchors.forEach(({ name, translation, rotation, scale }) => {
+      if (remainingNames.has(name)) return
+      targetScene.addChild(document.createNode(name).setTranslation(translation).setRotation(rotation).setScale(scale))
+    })
   }
   await io.write(nextPath, document)
   await rm(rawPath, { force: true })

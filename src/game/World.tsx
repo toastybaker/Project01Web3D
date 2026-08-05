@@ -16,9 +16,9 @@ const SCENES: Record<ZoneId, string> = {
   hub: '/assets/3d/scenes/hub.glb?v=16',
   forage: '/assets/3d/scenes/forage.glb?v=23',
   farm: '/assets/3d/scenes/farm.glb?v=18',
-  mine: '/assets/3d/scenes/mine.glb?v=32',
+  mine: '/assets/3d/scenes/mine.glb?v=33',
 }
-const MINING_RUSH_SCENE = '/assets/3d/scenes/mining-rush.glb?v=13'
+const MINING_RUSH_SCENE = '/assets/3d/scenes/mining-rush.glb?v=14'
 const FARM_RUSH_SCENE = '/assets/3d/scenes/farm-rush.glb?v=13'
 const FORAGE_RUSH_SCENE = '/assets/3d/scenes/forage-rush.glb?v=9'
 const MINIGAME_SCENES: Record<MinigameKind, string> = { mining: MINING_RUSH_SCENE, farm: FARM_RUSH_SCENE, forage: FORAGE_RUSH_SCENE }
@@ -212,6 +212,10 @@ function minigameGroundHeight(kind: MinigameKind, x: number, z: number) {
 
 function SceneLighting({ reduced = false }: { reduced?: boolean }) {
   const { scene } = useThree()
+  const sun = useRef<THREE.DirectionalLight>(null)
+  const mineLights = useRef<THREE.PointLight[]>([])
+  const nextMineLightRefresh = useRef(0)
+  const shadowTarget = useMemo(() => new THREE.Object3D(), [])
   const zone = useGameStore((state) => state.zone)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
@@ -219,6 +223,60 @@ function SceneLighting({ reduced = false }: { reduced?: boolean }) {
   const graphicsMode = useGameStore((state) => state.graphicsMode)
   const eventMining = minigameOpen && minigameKind === 'mining'
   const mineLike = zone === 'mine' || (minigameOpen && minigameKind === 'mining')
+  const shadowsEnabled = graphicsMode !== 'low' && !reduced
+  const high = graphicsMode === 'high'
+  useEffect(() => {
+    scene.add(shadowTarget)
+    return () => { scene.remove(shadowTarget) }
+  }, [scene, shadowTarget])
+  useFrame((state) => {
+    const [x, y, z] = useGameStore.getState().playerPosition
+    if (sun.current && shadowsEnabled) {
+      const mapSize = high ? 2048 : 1024
+      const frustum = high ? 18 : 23
+      const texel = frustum * 2 / mapSize
+      const focusX = Math.round(x / texel) * texel
+      const focusZ = Math.round(z / texel) * texel
+      shadowTarget.position.set(focusX, y + .4, focusZ)
+      sun.current.position.set(focusX - 13, y + 21, focusZ + 10)
+      sun.current.target = shadowTarget
+      shadowTarget.updateMatrixWorld()
+    }
+    if (mineLike && state.clock.elapsedTime >= nextMineLightRefresh.current) {
+      nextMineLightRefresh.current = state.clock.elapsedTime + .25
+      const sites = eventMining
+        ? [
+            { color: '#efbd79', intensity: 12, distance: 48, position: [0, 4.6, 18] },
+            { color: '#d99a5c', intensity: 9.5, distance: 48, position: [-14, 3.2, -2] },
+            { color: '#9cbcc0', intensity: 9.5, distance: 48, position: [14, 3.2, -4] },
+          ]
+        : [
+            { color: '#efc98e', intensity: 5.8, distance: 11, position: [-8.5, 2.3, 22.5] },
+            { color: '#efc98e', intensity: 5.8, distance: 11, position: [8.5, 2.3, 22.5] },
+            { color: '#efbd79', intensity: 10.2, distance: 48, position: [0, 4.6, 18] },
+            { color: '#d99a5c', intensity: 8.8, distance: 48, position: [-14, 3.2, -2] },
+            { color: '#9cbcc0', intensity: 8.4, distance: 48, position: [14, 3.2, -4] },
+            { color: '#e5aa68', intensity: 8.8, distance: 50, position: [-41, -5, -75] },
+            { color: '#9dc7d0', intensity: 9.2, distance: 50, position: [42, -6, -78] },
+            { color: '#e0ad70', intensity: 9, distance: 52, position: [-31, -13, -124] },
+            { color: '#98c2cd', intensity: 9, distance: 50, position: [32, -13, -126] },
+            { color: '#dba266', intensity: 8.6, distance: 54, position: [0, -25, -206] },
+          ]
+      const nearest = sites.sort((a, b) => {
+        const distanceA = (a.position[0] - x) ** 2 + (a.position[1] - y) ** 2 + (a.position[2] - z) ** 2
+        const distanceB = (b.position[0] - x) ** 2 + (b.position[1] - y) ** 2 + (b.position[2] - z) ** 2
+        return distanceA - distanceB
+      }).slice(0, 3)
+      mineLights.current.forEach((light, index) => {
+        const site = nearest[index]
+        if (!light || !site) return
+        light.color.set(site.color)
+        light.intensity = site.intensity
+        light.distance = site.distance
+        light.position.set(site.position[0], site.position[1], site.position[2])
+      })
+    }
+  })
   useEffect(() => {
     const colors = eventMining ? ['#343230', '#4a4540'] : mineLike ? ['#211e1b', '#3b342f'] : zone === 'farm' ? ['#b7c39a', '#9ba97c'] : zone === 'hub' ? ['#aebc98', '#96a27f'] : ['#91a47e', '#728565']
     scene.background = new THREE.Color(colors[0])
@@ -229,20 +287,23 @@ function SceneLighting({ reduced = false }: { reduced?: boolean }) {
     <>
       <hemisphereLight color={mineLike ? '#efe7dc' : '#fff0cc'} groundColor={mineLike ? '#5b5046' : '#263b29'} intensity={eventMining ? 1.7 : mineLike ? 1.32 : 1.12} />
       <directionalLight
-        castShadow={!mineLike && graphicsMode !== 'low' && !reduced}
+        ref={sun}
+        castShadow={shadowsEnabled}
         color={mineLike ? '#a8babd' : '#ffdca0'}
         intensity={eventMining ? 2.35 : mineLike ? 2.05 : 2.05}
         position={[-12, 19, 10]}
-        shadow-mapSize={graphicsMode === 'high' ? [2048, 2048] : [1024, 1024]}
-        shadow-camera-left={-30}
-        shadow-camera-right={30}
-        shadow-camera-top={30}
-        shadow-camera-bottom={-30}
-        shadow-bias={-0.0004}
+        shadow-mapSize={high ? [2048, 2048] : [1024, 1024]}
+        shadow-camera-left={high ? -18 : -23}
+        shadow-camera-right={high ? 18 : 23}
+        shadow-camera-top={high ? 18 : 23}
+        shadow-camera-bottom={high ? -18 : -23}
+        shadow-camera-near={1}
+        shadow-camera-far={62}
+        shadow-bias={-0.00008}
+        shadow-normalBias={0.025}
       />
       {zone === 'hub' && <pointLight color="#efb25d" intensity={4.2} distance={10} decay={2} position={[2.6, 2.5, 1.8]} />}
-      {mineLike && <><pointLight color="#efbd79" intensity={eventMining ? 12 : 10.2} distance={48} decay={2} position={[0, 4.6, 18]} /><pointLight color="#d99a5c" intensity={eventMining ? 9.5 : 8.8} distance={48} decay={2} position={[-14, 3.2, -2]} /><pointLight color="#9cbcc0" intensity={eventMining ? 9.5 : 8.4} distance={48} decay={2} position={[14, 3.2, -4]} /></>}
-      {zone === 'mine' && !minigameOpen && <><pointLight color="#e5aa68" intensity={8.8} distance={50} decay={2} position={[-41, -5, -75]} />{!reduced && <pointLight color="#9dc7d0" intensity={9.2} distance={50} decay={2} position={[42, -6, -78]} />}<pointLight color="#e0ad70" intensity={9} distance={52} decay={2} position={[-31, -13, -124]} />{!reduced && <pointLight color="#98c2cd" intensity={9} distance={50} decay={2} position={[32, -13, -126]} />}<pointLight color="#dba266" intensity={8.6} distance={54} decay={2} position={[0, -25, -206]} /></>}
+      {mineLike && [0, 1, 2].map((index) => <pointLight key={index} ref={(light) => { if (light) mineLights.current[index] = light }} color="#efbd79" intensity={0} distance={48} decay={2} />)}
     </>
   )
 }
@@ -297,7 +358,7 @@ function AdaptiveRenderScale({ rendererLow, onReduced }: { rendererLow: boolean;
     : graphicsMode === 'medium'
       ? Math.min(deviceDpr, 1)
       : graphicsMode === 'high'
-        ? Math.min(deviceDpr, 1.5)
+        ? Math.min(deviceDpr, 1.25)
         : autoDpr
   const sample = useRef({ startedAt: performance.now(), frames: 0, currentDpr: presetDpr, recoveryWindows: 0, grace: true, reduced: false })
 
@@ -332,15 +393,33 @@ function AdaptiveRenderScale({ rendererLow, onReduced }: { rendererLow: boolean;
       setDpr(state.currentDpr)
       return
     }
-    if (fps > 112 && state.currentDpr < autoDpr) {
+    if (fps > 112) {
       state.recoveryWindows += 1
       if (state.recoveryWindows >= 3) {
-        state.currentDpr = state.currentDpr < 1 ? Math.min(deviceDpr, 1) : autoDpr
+        if (state.currentDpr < autoDpr) {
+          state.currentDpr = state.currentDpr < 1 ? Math.min(deviceDpr, 1) : autoDpr
+          setDpr(state.currentDpr)
+        } else if (state.reduced) {
+          state.reduced = false
+          onReduced(false)
+        }
         state.recoveryWindows = 0
-        setDpr(state.currentDpr)
       }
     } else state.recoveryWindows = 0
   })
+  return null
+}
+
+function RendererQuality() {
+  const gl = useThree((state) => state.gl)
+  const graphicsMode = useGameStore((state) => state.graphicsMode)
+  useEffect(() => {
+    gl.toneMapping = THREE.ACESFilmicToneMapping
+    gl.outputColorSpace = THREE.SRGBColorSpace
+    gl.toneMappingExposure = 1
+    gl.shadowMap.type = graphicsMode === 'high' ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap
+    gl.shadowMap.needsUpdate = true
+  }, [gl, graphicsMode])
   return null
 }
 
@@ -603,6 +682,8 @@ function EnvironmentScene({ reduced = false }: { reduced?: boolean }) {
   const farmCells = farmCellVisualGate ? localFarmCells : sharedFarmOnline ? sharedFarmCells : localFarmCells
   const farmRushCells = useGameStore((state) => state.farmRushCells)
   const weather = useGameStore((state) => state.weather)
+  const graphicsMode = useGameStore((state) => state.graphicsMode)
+  const gl = useThree((state) => state.gl)
   const ownedFarms = useMemo(() => sharedFarmOnline ? Object.keys(farmOwners).map(Number).filter((farm) => farmOwners[farm] === sharedFarmSelfId) : claimedFarms, [claimedFarms, farmOwners, sharedFarmOnline, sharedFarmSelfId])
   const cookQueue = useGameStore((state) => state.cookQueue)
   const farmRushCooking = useGameStore((state) => state.farmRushCooking)
@@ -801,17 +882,25 @@ function EnvironmentScene({ reduced = false }: { reduced?: boolean }) {
         colliders.push({ x: point.x, z: point.z, radius: object.userData.colliderRadius * Math.max(scale.x, scale.z) })
       }
       if (object instanceof THREE.Mesh) {
-        object.castShadow = !reduced
+        // The cavern is already authored with baked form and receives dynamic
+        // character shadows. Excluding its million-plus static triangles from
+        // the shadow pass keeps High smooth without making actors float.
+        object.castShadow = !reduced && zone !== 'mine' && !(minigameOpen && minigameKind === 'mining')
         object.receiveShadow = true
         const materials = Array.isArray(object.material) ? object.material : [object.material]
         materials.forEach((material) => {
           if (material.transparent) material.depthWrite = false
+          const textured = material as THREE.Material & { map?: THREE.Texture | null }
+          if (textured.map) {
+            textured.map.anisotropy = graphicsMode === 'high' ? Math.min(16, gl.capabilities.getMaxAnisotropy()) : graphicsMode === 'low' ? 1 : Math.min(4, gl.capabilities.getMaxAnisotropy())
+            textured.map.needsUpdate = true
+          }
         })
       }
     })
     setAnchors(anchors)
     setColliders(colliders)
-  }, [collectedForage, eventBay, farmRushCooking, forageRushCollected, furnaceBodies, furnaceCount, matchStartedAt, minedNodes, mineGenerations, minigameKind, minigameMilestone, minigameOpen, ownedFarms, rareResourceIds, reduced, rushNodes, scene, sessionSeed, setAnchors, setColliders])
+  }, [collectedForage, eventBay, farmRushCooking, forageRushCollected, furnaceBodies, furnaceCount, gl, graphicsMode, matchStartedAt, minedNodes, mineGenerations, minigameKind, minigameMilestone, minigameOpen, ownedFarms, rareResourceIds, reduced, rushNodes, scene, sessionSeed, setAnchors, setColliders, zone])
 
   return <primitive object={scene} />
 }
@@ -902,6 +991,7 @@ function shortestAngle(from: number, to: number) {
 }
 
 function RemotePlayer({ peer }: { peer: PeerPresence }) {
+  const graphicsMode = useGameStore((state) => state.graphicsMode)
   const root = useRef<THREE.Group>(null)
   const rendered = useRef(new THREE.Vector3(peer.position[0], peer.position[1], peer.position[2]))
   const renderedYaw = useRef(Number.isFinite(peer.yaw) ? Number(peer.yaw) : 0)
@@ -958,7 +1048,7 @@ function RemotePlayer({ peer }: { peer: PeerPresence }) {
   })
 
   return <group ref={root}>
-    <AnimatedCharacter src="/assets/3d/characters/ranger.glb" height={1.75} position={[0, -.86, 0]} rotation={[0, Math.PI, 0]} animation={animation} castShadow={false} />
+    <AnimatedCharacter src="/assets/3d/characters/ranger.glb" height={1.75} position={[0, -.86, 0]} rotation={[0, Math.PI, 0]} animation={animation} castShadow={graphicsMode !== 'low'} />
     <Html position={[0, 1.18, 0]} center zIndexRange={[1, 0]} style={{ pointerEvents: 'none' }}>
       <span className="world-label" data-no-localize>{peer.nickname || 'PLAYER'}</span>
     </Html>
@@ -1221,7 +1311,7 @@ function Player() {
       }
       const live = useGameStore.getState()
       const floor = (live.minigameOpen ? minigameGroundHeight(live.minigameKind, position.current.x, position.current.z) : groundHeight(live.zone, position.current.x, position.current.z)) + 0.86
-      const jumpLocked = !live.sessionStarted || (live.minigameOpen && !live.minigameActive) || live.shopOpen || live.stockOpen || live.inventoryOpen || live.menuOpen || live.playerPanelOpen || live.lotteryOpen || live.ticketInspectOpen || live.noteInspectOpen || live.travelOpen || live.secretOpen || live.cookbookOpen || live.enhancementOpen || Boolean(live.itemUseOpen) || live.sessionComplete
+      const jumpLocked = (live.minigameOpen && !live.minigameActive) || live.shopOpen || live.stockOpen || live.inventoryOpen || live.menuOpen || live.playerPanelOpen || live.lotteryOpen || live.ticketInspectOpen || live.noteInspectOpen || live.travelOpen || live.secretOpen || live.cookbookOpen || live.enhancementOpen || Boolean(live.itemUseOpen) || live.sessionComplete
       if (event.code === 'Space' && !event.repeat && !jumpLocked && position.current.y <= floor + 0.03) {
         verticalVelocity.current = 5.2
         grounded.current = false
@@ -1247,11 +1337,22 @@ function Player() {
       } else if (!live.minigameOpen) setSelectedHotbar((live.selectedHotbar + (event.deltaY > 0 ? 1 : -1) + 9) % 9)
     }
     const context = (event: MouseEvent) => event.preventDefault()
+    const captureRightPointer = (event: PointerEvent) => {
+      if (event.button !== 2) return
+      event.preventDefault()
+      try { gl.domElement.setPointerCapture(event.pointerId) } catch { /* Browser may already own capture. */ }
+    }
+    const releaseRightPointer = (event: PointerEvent) => {
+      if (event.button !== 2 || !gl.domElement.hasPointerCapture(event.pointerId)) return
+      gl.domElement.releasePointerCapture(event.pointerId)
+    }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
     window.addEventListener('blur', clearInput)
     document.addEventListener('visibilitychange', clearInput)
     gl.domElement.addEventListener('pointermove', move)
+    gl.domElement.addEventListener('pointerdown', captureRightPointer)
+    gl.domElement.addEventListener('pointerup', releaseRightPointer)
     gl.domElement.addEventListener('wheel', wheel, { passive: false })
     gl.domElement.addEventListener('contextmenu', context)
     return () => {
@@ -1260,6 +1361,8 @@ function Player() {
       window.removeEventListener('blur', clearInput)
       document.removeEventListener('visibilitychange', clearInput)
       gl.domElement.removeEventListener('pointermove', move)
+      gl.domElement.removeEventListener('pointerdown', captureRightPointer)
+      gl.domElement.removeEventListener('pointerup', releaseRightPointer)
       gl.domElement.removeEventListener('wheel', wheel)
       gl.domElement.removeEventListener('contextmenu', context)
       if (document.pointerLockElement === gl.domElement) document.exitPointerLock()
@@ -1278,7 +1381,7 @@ function Player() {
 
   useFrame((state, delta) => {
     const liveUi = useGameStore.getState()
-    const movementLocked = !liveUi.sessionStarted || (liveUi.minigameOpen && !liveUi.minigameActive) || liveUi.shopOpen || liveUi.stockOpen || liveUi.inventoryOpen || liveUi.menuOpen || liveUi.playerPanelOpen || liveUi.lotteryOpen || liveUi.ticketInspectOpen || liveUi.noteInspectOpen || liveUi.travelOpen || liveUi.secretOpen || liveUi.cookbookOpen || liveUi.enhancementOpen || Boolean(liveUi.itemUseOpen) || liveUi.sessionComplete
+    const movementLocked = (liveUi.minigameOpen && !liveUi.minigameActive) || liveUi.shopOpen || liveUi.stockOpen || liveUi.inventoryOpen || liveUi.menuOpen || liveUi.playerPanelOpen || liveUi.lotteryOpen || liveUi.ticketInspectOpen || liveUi.noteInspectOpen || liveUi.travelOpen || liveUi.secretOpen || liveUi.cookbookOpen || liveUi.enhancementOpen || Boolean(liveUi.itemUseOpen) || liveUi.sessionComplete
     if (movementLocked) {
       keys.current = {}
       horizontalVelocity.current.set(0, 0, 0)
@@ -1433,7 +1536,7 @@ function Player() {
           { point: anchors.PortalMine, destination: 'mine' },
         ]
       : [{ point: anchors.Home, destination: 'hub' }]
-    const entered = portals.find(({ point }) => point && Math.hypot(current.x - point[0], current.z - point[2]) <= 2.1)
+    const entered = liveUi.sessionStarted ? portals.find(({ point }) => point && Math.hypot(current.x - point[0], current.z - point[2]) <= 2.1) : undefined
     if (entered && performance.now() >= portalReadyAt.current) {
       portalReadyAt.current = performance.now() + 2000
       setZone(entered.destination)
@@ -1829,6 +1932,7 @@ export function GameWorld() {
   return (
     <Canvas key={low ? 'low-renderer' : 'full-renderer'} shadows={low ? false : 'basic'} dpr={[1, 1.25]} camera={{ fov: 48, near: 0.1, far: 300, position: [0, 4.2, 20.2] }} gl={{ antialias: !low, powerPreference: 'high-performance' }}>
       <AdaptiveRenderScale rendererLow={low} onReduced={setAutoReduced} />
+      <RendererQuality />
       <SceneLighting reduced={autoReduced} />
       <WeatherEffect />
       <Suspense fallback={<LoadingMark />}>

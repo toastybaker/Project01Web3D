@@ -27,9 +27,13 @@ Mine: Gabriel Fauré, Élégie, Op. 24. Hans Goldstein (cello), Eli Kalman (pian
 Source: https://commons.wikimedia.org/wiki/File:Faure_-_Elegie.ogg
 License: CC BY-SA 2.0.
 
-Forest ambience: nille, "forest ambience" (PDSounds recording 707).
+Outdoor ambience: Wilfredor, "Leaves falling from the trees during autumn in the forest".
+Source: https://commons.wikimedia.org/wiki/File:Leaves_falling_from_the_trees_during_autumn_in_the_forest.wav
+License: CC0 1.0.
+
+Previous forest ambience (retained, no longer used): nille, "forest ambience"
+(PDSounds recording 707). Public domain.
 Source: https://commons.wikimedia.org/wiki/File:20090610_0_ambience.ogg
-License: public domain.
 
 Cave ambience: ZooFari, "Water drops dripping".
 Source: https://commons.wikimedia.org/wiki/File:Water_drops_dripping.ogg

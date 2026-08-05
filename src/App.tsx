@@ -185,7 +185,7 @@ function AudioBed() {
   const unlocked = useRef(false)
   useEffect(() => {
     const music = new Audio(MUSIC_TRACKS.hub.src)
-    const ambience = new Audio('/assets/audio/Forest_Ambience_PD.ogg')
+    const ambience = new Audio('/assets/audio/Woodland_Leaves_CC0.ogg')
     musicRef.current = music
     ambienceRef.current = ambience
     music.loop = true
@@ -229,7 +229,7 @@ function AudioBed() {
     if (!music.src.endsWith(track.src)) music.src = track.src
     music.volume = musicVolume(volumes.master, volumes.music, track)
     const audioZone = !sessionStarted ? 'hub' : minigameOpen ? (minigameKind === 'mining' ? 'mine' : minigameKind) : zone
-    const ambienceSource = audioZone === 'mine' ? '/assets/audio/Cave_Water_Drips_CC-BY-SA.ogg' : '/assets/audio/Forest_Ambience_PD.ogg'
+    const ambienceSource = audioZone === 'mine' ? '/assets/audio/Cave_Water_Drips_CC-BY-SA.ogg' : '/assets/audio/Woodland_Leaves_CC0.ogg'
     if (!ambience.src.endsWith(ambienceSource)) ambience.src = ambienceSource
     ambience.volume = ambienceVolume(volumes.master, volumes.ambience, audioZone === 'mine')
     if (unlocked.current) {
@@ -379,11 +379,11 @@ function LobbyPanel() {
     if (!isHost) return
     sendMultiplayer('lobby:start', {})
   }
-  return <div className="modal-scrim lobby-scrim"><section className="panel lobby-panel">
+  return <div className="lobby-dock"><section className="panel lobby-panel">
     <header><div className="panel-title"><span className="lobby-mark">P1</span><span>WOODLAND RUN</span></div><b>{playerCount}/6</b></header>
     <label className="lobby-name"><span>{t('NAME')}</span><input aria-label="Nickname" value={draftName} maxLength={18} onChange={(event) => setDraftName(event.target.value)} onBlur={() => setNickname(draftName)} onKeyDown={(event) => { if (event.key === 'Enter') { setNickname(draftName); event.currentTarget.blur() } }} /></label>
     <div className="lobby-duration"><span>{t('TIME')}</span><div>{MATCH_CONFIG.selectableDurationsSeconds.map((seconds) => <button className={duration === seconds ? 'active' : ''} disabled={!isHost} key={seconds} onClick={() => chooseDuration(seconds)}>{seconds / 60}</button>)}</div></div>
-    <div className="lobby-duration lobby-extra"><span>{t('EXTRA FARMS')}</span><div style={{ '--farm-options': maxGlobalExpansionDeeds + 1 } as CSSProperties}>{Array.from({ length: maxGlobalExpansionDeeds + 1 }, (_, quantity) => <button className={globalExpansionDeeds === quantity ? 'active' : ''} disabled={!isHost} key={quantity} onClick={() => chooseGlobalExpansionDeeds(quantity)}>{quantity}</button>)}</div></div>
+    <div className="lobby-duration lobby-extra"><span>{t('EXTRA FARMS')}</span><div>{Array.from({ length: maxGlobalExpansionDeeds + 1 }, (_, quantity) => <button className={globalExpansionDeeds === quantity ? 'active' : ''} disabled={!isHost} key={quantity} onClick={() => chooseGlobalExpansionDeeds(quantity)}>{quantity}</button>)}</div></div>
     {isHost ? <button className="lobby-start" disabled={!connected} onClick={start}>{connected ? t('START GAME') : t('CONNECTING')}</button> : <div className="lobby-wait">{connected ? t('WAITING FOR HOST') : t('CONNECTING')}</div>}
   </section></div>
 }
@@ -1634,5 +1634,5 @@ export function App() {
     observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['aria-label', 'title', 'alt'] })
     return () => observer.disconnect()
   }, [language])
-  return <main className="game-shell"><GameWorld /><Interface /><AudioBed /><FeedbackBed /><MinigameSettlementSync /><MineSync /><ForageSync /><FarmSync /><DeedSync /><MerchantSync /></main>
+  return <main className="game-shell" onContextMenu={(event) => event.preventDefault()}><GameWorld /><Interface /><AudioBed /><FeedbackBed /><MinigameSettlementSync /><MineSync /><ForageSync /><FarmSync /><DeedSync /><MerchantSync /></main>
 }
