@@ -12,7 +12,7 @@ import { FARM_RUSH_CROPS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_PANTRY, FARM_RU
 import { collectionSfx, playGameSfx, type GameSfx } from './game/sfx'
 import { ambienceVolume, MUSIC_TRACKS, musicTrackFor, musicVolume } from './game/audio'
 import { ENHANCEABLE_ITEMS, ENHANCEMENT_VOUCHER, canUseEnhancementVoucher, enhancedBasketCapacity, enhancementChance, enhancementLevel, enhancementName, enhancementRequirements, enhancementWardForTarget, fortuneFor, isEnhanceableItem, miningSpeedBonus, type EnhanceableItem, type EnhancementWardId } from './game/enhancement'
-import type { MerchantCycle, MerchantItemId } from './game/merchant'
+import { MERCHANT_CYCLE_MS, merchantCycle, type MerchantCycle, type MerchantItemId } from './game/merchant'
 import { itemName, localizeDom, shopName, toastText, uiText, zoneName } from './game/i18n'
 import type { SharedMarketSnapshot } from './game/market'
 
@@ -160,8 +160,19 @@ function MerchantSync() {
     if (visualFixture) return
     const offSnapshot = onMultiplayer('merchant:snapshot', (raw) => syncCycle(raw as MerchantCycle))
     const offResult = onMultiplayer('merchant:result', (raw) => applyPurchase(raw as MerchantPurchaseResult))
-    sendMultiplayer('merchant:request', {})
-    return () => { offSnapshot(); offResult() }
+    const requestOrUseLocalCycle = () => {
+      if (sendMultiplayer('merchant:request', {})) return
+      const state = useGameStore.getState()
+      const matchDurationMs = state.sessionDurationSeconds * 1000
+      const cycleCount = Math.max(1, Math.ceil(matchDurationMs / MERCHANT_CYCLE_MS))
+      const elapsedMs = Math.max(0, Date.now() - state.matchStartedAt)
+      const cycleIndex = Math.min(cycleCount - 1, Math.floor(elapsedMs / MERCHANT_CYCLE_MS))
+      const localCycle = merchantCycle({ matchSeed: state.sessionSeed, matchStartedAtMs: state.matchStartedAt, matchDurationMs }, cycleIndex)
+      if (state.merchantCycle?.id !== localCycle.id) syncCycle(localCycle)
+    }
+    requestOrUseLocalCycle()
+    const localTimer = window.setInterval(requestOrUseLocalCycle, 5_000)
+    return () => { offSnapshot(); offResult(); window.clearInterval(localTimer) }
   }, [applyPurchase, syncCycle, visualFixture])
   useEffect(() => {
     if (!open || visualFixture) return
@@ -1082,7 +1093,7 @@ function SecretDealPanel() {
         <header><div className="panel-title"><span className="secret-mark">?</span><span>{t('WANDERING MERCHANT')}</span></div><CloseButton onClick={() => close(false)} /></header>
         <div className="merchant-offers">{merchantCycle?.inventory.map((offer) => {
           const item = ITEMS[offer.id]
-          return <article className={offer.stock < 1 ? 'sold' : ''} key={offer.id}><img src={item.icon} alt="" /><span><strong>{localizedItem(offer.id)}</strong><small>{offer.stock}/{offer.maxStock}</small></span><button disabled={merchantPending || offer.stock < 1 || cash < offer.price} onClick={() => buyItem(offer.id)}>{offer.stock < 1 ? t('SOLD OUT') : formatCoins(offer.price, true)}</button></article>
+          return <article className={offer.stock < 1 ? 'sold' : ''} key={offer.id} tabIndex={0}><img src={item.icon} alt="" /><span><strong>{localizedItem(offer.id)}</strong><small>{offer.stock}/{offer.maxStock}</small></span><button disabled={merchantPending || offer.stock < 1 || cash < offer.price} onClick={() => buyItem(offer.id)}>{offer.stock < 1 ? t('SOLD OUT') : formatCoins(offer.price, true)}</button><HoverTip lines={itemTooltip(offer.id)} /></article>
         })}</div>
         <div className="broker-info">{offers.map((offer, slot) => {
           const bought = purchases.includes(`${round}:${slot}`)

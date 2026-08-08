@@ -13,7 +13,7 @@ const io = new NodeIO()
   .registerExtensions([EXTMeshoptCompression, EXTTextureWebP])
   .registerDependencies({ 'meshopt.encoder': MeshoptEncoder, 'meshopt.decoder': MeshoptDecoder })
 
-for (const filename of ['ranger.glb', 'shopkeeper.glb']) {
+for (const filename of ['ranger.glb', 'shopkeeper.glb', 'merchant.glb']) {
   const target = path.resolve('public', 'assets', '3d', 'characters', filename)
   const pending = `${target}.next`
   const document = await io.read(target)

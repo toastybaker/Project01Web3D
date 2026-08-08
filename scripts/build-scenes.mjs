@@ -1743,6 +1743,33 @@ function lanternLandmark() {
   return group
 }
 
+function merchantRest(x, z, heightAt, stone = false, rotation = 0) {
+  const group = new THREE.Group()
+  group.name = stone ? 'Wandering Merchant Stone Seat' : 'Wandering Merchant Stump'
+  group.position.set(x, heightAt(x, z), z)
+  group.rotation.y = rotation
+  const seat = stone
+    ? mesh(new THREE.DodecahedronGeometry(.64, 1), mats.mineWall, 'Weathered Merchant Seat')
+    : mesh(new THREE.CylinderGeometry(.48, .58, .62, 9), mats.barkLight, 'Merchant Resting Stump')
+  seat.position.y = stone ? .31 : .3
+  if (stone) seat.scale.set(1.08, .52, .88)
+  const satchel = mesh(new RoundedBoxGeometry(.5, .42, .25, 4, .09), mats.bark, 'Merchant Travel Satchel')
+  satchel.position.set(.67, .25, .2)
+  satchel.rotation.y = -.2
+  group.add(seat, satchel)
+  if (stone) {
+    // A shallow authored nook blocks long sightlines while preserving a broad,
+    // snag-free opening toward the cavern. The merchant remains discoverable
+    // from nearby paths without reading as a shop placed in an open arena.
+    group.add(
+      authoredRock('Rock3', [-1.2, .2, 1.35], [1.0, .95, .78], [.04, .42, -.03], mats.mineStrata),
+      authoredRock('Rock2', [1.15, .12, 1.42], [.92, .82, .8], [-.03, -.5, .02], mats.mineWall),
+      authoredRock('Rock1', [0, .08, 1.75], [1.05, .72, .72], [.02, .18, 0], mats.mineWall),
+    )
+  }
+  return group
+}
+
 function enhancementForge() {
   const group = new THREE.Group()
   group.name = 'Enhancement Forge'
@@ -2010,6 +2037,11 @@ function forageScene() {
   truffles.forEach(([x, z], index) => scene.add(trufflePatch(`ForageTruffle${String(index).padStart(3, '0')}`, x, z, index * 0.69, forageGroundHeight)))
   discoveries.forEach(([x, z], index) => scene.add(discoveryRelic(`ForageDiscovery${String(index).padStart(2, '0')}`, x, z, index * 0.83, forageGroundHeight)))
   scene.add(
+    merchantRest(-43, -51, forageGroundHeight),
+    merchantRest(49, -78, forageGroundHeight),
+    merchantRest(-40, -112, forageGroundHeight),
+  )
+  scene.add(
     anchor('Spawn', [0, forageGroundHeight(0, -69), -69]),
     anchor('GateDeep', [4, forageGroundHeight(4, -174), -174]),
     anchor('Home', homePosition),
@@ -2086,6 +2118,12 @@ function farmScene() {
     scene.add(natureGrass(x, z, 0.8 + seeded(index, 1013) * 0.82, seeded(index, 1019) * Math.PI * 2, farmGroundHeight, index))
     if (index % 6 === 0) scene.add(natureFlowers(x + 0.5, z - 0.4, 0.48, index, farmGroundHeight))
   }
+
+  scene.add(
+    merchantRest(-78, -30, farmGroundHeight),
+    merchantRest(77, -69, farmGroundHeight),
+    merchantRest(10, -86, farmGroundHeight),
+  )
 
   scene.add(
     anchor('Spawn', [0, farmGroundHeight(0, 17), 17]),
@@ -2208,11 +2246,16 @@ function mineScene() {
   ]) scene.add(caveRubble(x, z, scale, seed))
   MINE_NODE_SITES.forEach(({ id, x, z }) => scene.add(oreNode(id, x, z)))
   scene.add(
+    merchantRest(-51, -43, mineGroundHeight, true, Math.atan2(51, -29) + Math.PI),
+    merchantRest(56, -98, mineGroundHeight, true, Math.atan2(-56, 26) + Math.PI),
+    merchantRest(-34, -230, mineGroundHeight, true, Math.atan2(34, 158) + Math.PI),
+  )
+  scene.add(
     anchor('Spawn', [0, mineGroundHeight(0, 13.4), 13.4]), anchor('GateDeep', [0, mineGroundHeight(0, -154), -154]), anchor('Home', homePosition),
     anchor('MineShop', [mineShopFront[0], mineGroundHeight(...mineShopFront), mineShopFront[1]]), anchor('OreBuyer', [oreBuyerFront[0], mineGroundHeight(...oreBuyerFront), oreBuyerFront[1]]),
     anchor('LabelMineShop', mineShopPosition), anchor('LabelOreBuyer', oreBuyerPosition),
     anchor('NpcMineShop', [mineShopNpc[0], mineGroundHeight(...mineShopNpc), mineShopNpc[1]]), anchor('NpcOreBuyer', [oreBuyerNpc[0], mineGroundHeight(...oreBuyerNpc), oreBuyerNpc[1]]),
-    anchor('SecretSite0', [-55, mineGroundHeight(-55, -40), -40]), anchor('SecretSite1', [56, mineGroundHeight(56, -98), -98]), anchor('SecretSite2', [-29, mineGroundHeight(-29, -231), -231]),
+    anchor('SecretSite0', [-51, mineGroundHeight(-51, -43), -43]), anchor('SecretSite1', [56, mineGroundHeight(56, -98), -98]), anchor('SecretSite2', [-34, mineGroundHeight(-34, -230), -230]),
     ...MINE_NODE_SITES.map(({ id, x, z }) => anchor(id, [x, mineGroundHeight(x, z), z])),
   )
   return scene

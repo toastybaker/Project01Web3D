@@ -7,7 +7,7 @@ import { PREPARED_FOOD_BASE_VALUE, PREPARED_FOOD_MARKUP, RECIPES, RECIPE_IDS, ty
 import { COOKBOOK_BOX_REWARD_VALUE, FARM_RUSH_GROWTH_MS, FARM_RUSH_MAX_ORDERS, FARM_RUSH_ORDER_LIFETIME_MS, FORAGE_RUSH_DELIVERY_POINTS, FORAGE_RUSH_REQUIREMENTS, FORAGE_RUSH_RESPAWN_MS, MINING_RUSH_POINTS, MINING_RUSH_RESPAWN_MS, applyMinigameItemRewards, farmRushOrders, minigameMilestones, minigameRewards, miningRushOre, scheduledMinigame, type FarmRushCell, type FarmRushCrop, type FarmRushIngredient, type FarmRushTool, type ForageRushKind, type MinigameItemRewardRoll, type MinigameKind, type MinigameRewardItemId, type MiningRushOre } from './minigame'
 import { onAuthoritativeAccount, sendMultiplayer, type AuthoritativeAccountAction, type AuthoritativeAccountSnapshot } from './multiplayer'
 import { enhancedBasketCapacity, enhancedYield, enhancementLevel, enhancementName, enhancementRequirements, isEnhanceableItem, resolveEnhancementAttempt, type EnhanceableItem, type EnhancementAttemptOptions, type EnhancementLevels } from './enhancement'
-import { merchantCycle, type MerchantCycle, type MerchantItemId } from './merchant'
+import { consumeMerchantStock, merchantCycle, type MerchantCycle, type MerchantItemId } from './merchant'
 import { STOCK_IDS, commodityPriceSnapshot, createInitialFoodHistory, createInitialFoodMarket, createInitialStockHistory, createInitialStockPrices, createInitialStockSupply, marketCorrectionFor, preparedFoodValue, weatherAtElapsed, type SharedMarketSnapshot } from './market'
 
 export { marketCorrectionFor, preparedFoodValue } from './market'
@@ -1644,7 +1644,17 @@ export const useGameStore = create<GameState>((set, get) => ({
     pendingMerchantPurchases.add(requestId)
     if (sendMultiplayer('merchant:buy', { requestId, cycleId: state.merchantCycle?.id, itemId })) return set({ merchantPurchasePending: true })
     pendingMerchantPurchases.delete(requestId)
-    set({ toast: 'Merchant unavailable' })
+    if (!state.merchantCycle) return set({ toast: 'Merchant unavailable' })
+    const purchase = consumeMerchantStock(state.merchantCycle, itemId)
+    if (!purchase.ok) return set({ toast: purchase.reason === 'sold-out' ? 'Sold out' : 'Merchant unavailable' })
+    const inventory = { ...state.inventory, [itemId]: (state.inventory[itemId] ?? 0) + 1 }
+    set({
+      cash: state.cash - offer.price,
+      inventory,
+      hotbar: hotbarWithNewItem(state.hotbar, state.inventory, itemId),
+      merchantCycle: purchase.cycle,
+      toast: `+1 ${ITEMS[itemId].name}`,
+    })
   },
   applyMerchantPurchase: (result) => set((state) => {
     if (result.cycle) state = { ...state, merchantCycle: result.cycle }

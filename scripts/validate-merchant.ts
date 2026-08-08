@@ -4,6 +4,7 @@ import {
   MERCHANT_CYCLE_MS,
   MERCHANT_ITEMS,
   MERCHANT_ITEM_IDS,
+  MERCHANT_MIN_SLOTS,
   MERCHANT_MAX_SLOTS,
   consumeMerchantStock,
   currentMerchantCycle,
@@ -124,7 +125,7 @@ for (let seed = 0; seed < scheduleCount; seed += 1) {
 
   for (const cycle of first) {
     simulatedCycles += 1
-    assert(cycle.inventory.length > 0, `seed ${seed}, cycle ${cycle.index} was empty`)
+    assert(cycle.inventory.length >= MERCHANT_MIN_SLOTS, `seed ${seed}, cycle ${cycle.index} had too few tangible offers`)
     assert(cycle.inventory.length <= MERCHANT_MAX_SLOTS, `seed ${seed}, cycle ${cycle.index} exceeded the slot cap`)
     assert.equal(new Set(cycle.inventory.map((entry) => entry.id)).size, cycle.inventory.length, 'duplicate item in one inventory')
     const elapsedMs = cycle.index * MERCHANT_CYCLE_MS
@@ -165,7 +166,7 @@ assert(guardMatchAppearances['upgrade-guard-6'] < scheduleCount, '+6 Guard appea
 console.log(JSON.stringify({
   schedules: scheduleCount,
   cycles: simulatedCycles,
-  inventories: 'all nonempty and capped at four',
+  inventories: 'all contain two to four tangible offers',
   firstEligibleCycleMinutes,
   guardMatchAppearances,
   priceToValue: Object.fromEntries(MERCHANT_ITEM_IDS.map((id) => [id, {

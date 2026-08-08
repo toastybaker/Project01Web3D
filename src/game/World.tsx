@@ -20,9 +20,9 @@ import { ITEMS, type ItemId } from './items'
 
 const SCENES: Record<ZoneId, string> = {
   hub: '/assets/3d/scenes/hub.glb?v=29',
-  forage: '/assets/3d/scenes/forage.glb?v=38',
-  farm: '/assets/3d/scenes/farm.glb?v=27',
-  mine: '/assets/3d/scenes/mine.glb?v=48',
+  forage: '/assets/3d/scenes/forage.glb?v=39',
+  farm: '/assets/3d/scenes/farm.glb?v=28',
+  mine: '/assets/3d/scenes/mine.glb?v=52',
 }
 const MINING_RUSH_SCENE = '/assets/3d/scenes/mining-rush.glb?v=17'
 const FARM_RUSH_SCENE = '/assets/3d/scenes/farm-rush.glb?v=17'
@@ -66,6 +66,14 @@ function visibleRareForageIds(
 const visualGateMode = new URLSearchParams(window.location.search).get('gate')
 const resourceVisualTarget = new URLSearchParams(window.location.search).get('target')
 const miningMotionVisualTest = new URLSearchParams(window.location.search).get('motion') === 'mining'
+const heldVisualParam = new URLSearchParams(window.location.search).get('held')
+const heldItemVisualTest = heldVisualParam && heldVisualParam in ITEMS ? heldVisualParam as ItemId : null
+const frontVisualTest = new URLSearchParams(window.location.search).get('camera') === 'front'
+const closeVisualTest = new URLSearchParams(window.location.search).get('camera') === 'close'
+const merchantSiteVisualParam = Number(new URLSearchParams(window.location.search).get('site'))
+const merchantSiteVisualTest = Number.isInteger(merchantSiteVisualParam) && merchantSiteVisualParam >= 0 && merchantSiteVisualParam <= 2 ? merchantSiteVisualParam : null
+const pickaxeTiltVisualParam = Number(new URLSearchParams(window.location.search).get('pickTilt'))
+const pickaxeTiltVisualTest = Number.isFinite(pickaxeTiltVisualParam) ? THREE.MathUtils.clamp(pickaxeTiltVisualParam, -1.2, 1.2) : null
 const deepVisualGate = visualGateMode === 'deep'
 const resourceVisualGate = visualGateMode === 'resource'
 const furnaceVisualGate = visualGateMode === 'furnace'
@@ -917,6 +925,7 @@ function EnvironmentScene({ reduced = false }: { reduced?: boolean }) {
   const minigameMilestone = useGameStore((state) => state.minigameMilestone)
   const lobbyPlayerCount = useGameStore((state) => state.lobbyPlayerCount)
   const sessionSeed = useGameStore((state) => state.sessionSeed)
+  const roundNumber = useGameStore((state) => state.roundNumber)
   const matchStartedAt = useGameStore((state) => state.matchStartedAt)
   const forageRushRareSnapshot = useGameStore((state) => state.forageRushRareSnapshot)
   const eventBay = useGameStore((state) => state.eventBay)
@@ -1257,7 +1266,13 @@ function HeldPickaxeAttachment({ character, item }: { character: THREE.Object3D;
   // The handle runs through the closed fist and leans forward from the torso.
   // Keep this socket fixed: the animated hand supplies the entire swing, so
   // the pickaxe cannot lag behind or appear to move independently.
-  const gripRotation = useMemo(() => new THREE.Quaternion().setFromEuler(new THREE.Euler(-.5, .4, -.1, 'YXZ')), [])
+  const gripRotation = useMemo(() => {
+    const lean = new THREE.Quaternion().setFromEuler(new THREE.Euler(-.5, .4, pickaxeTiltVisualTest ?? .3, 'YXZ'))
+    // The imported right-hand bone points its local Y axis toward the ground.
+    // Reverse the tool around its grip so the pick head rises above the fist,
+    // then retain the forward lean instead of hanging like a hammer.
+    return lean.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI))
+  }, [])
   const gripOffset = useMemo(() => new THREE.Vector3(-.008, -.34, 0), [])
   const toolScale = .58
   useEffect(() => {
@@ -1324,7 +1339,10 @@ function HeldPickaxeAttachment({ character, item }: { character: THREE.Object3D;
 
 function HeldSpriteAttachment({ character, item }: { character: THREE.Object3D; item: Exclude<ItemId, HeldPickaxeId> | null }) {
   const equipped = useRef<THREE.Group | null>(null)
-  const displayRotation = useMemo(() => new THREE.Quaternion().setFromEuler(new THREE.Euler(-.34, .7, -.2, 'YXZ')), [])
+  const displayRotation = useMemo(() => {
+    const lean = new THREE.Quaternion().setFromEuler(new THREE.Euler(-.34, .7, -.2, 'YXZ'))
+    return lean.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI))
+  }, [])
   useFrame(() => {
     equipped.current?.quaternion.copy(displayRotation)
   })
@@ -1342,6 +1360,7 @@ function HeldSpriteAttachment({ character, item }: { character: THREE.Object3D; 
     const display = new THREE.Mesh(geometry, material)
     display.scale.set(1 / Math.max(.001, handScale.x), 1 / Math.max(.001, handScale.y), 1 / Math.max(.001, handScale.z))
     display.position.y = .15 * display.scale.y
+    display.rotation.z = Math.PI
     const socket = new THREE.Group()
     socket.name = `Equipped ${ITEMS[item].name}`
     socket.quaternion.copy(displayRotation)
@@ -1617,10 +1636,10 @@ function Player() {
   const verticalVelocity = useRef(0)
   const keys = useRef<Record<string, boolean>>({})
   const sprintToggled = useRef(false)
-  const yaw = useRef(0)
+  const yaw = useRef(frontVisualTest || closeVisualTest ? Math.PI : 0)
   const pitch = useRef(0.08)
   const shiftLock = useRef(false)
-  const distance = useRef(6.2)
+  const distance = useRef(closeVisualTest ? 3.25 : 6.2)
   const cameraPosition = useRef(new THREE.Vector3(0, 4.2, 20.2))
   const cameraTarget = useRef(new THREE.Vector3(0, 1.68, 14))
   const cameraRaycaster = useRef(new THREE.Raycaster())
@@ -1640,6 +1659,7 @@ function Player() {
   const minigameMilestone = useGameStore((state) => state.minigameMilestone)
   const lobbyPlayerCount = useGameStore((state) => state.lobbyPlayerCount)
   const sessionSeed = useGameStore((state) => state.sessionSeed)
+  const roundNumber = useGameStore((state) => state.roundNumber)
   const matchStartedAt = useGameStore((state) => state.matchStartedAt)
   const forageRushRareSnapshot = useGameStore((state) => state.forageRushRareSnapshot)
   const eventBay = useGameStore((state) => state.eventBay)
@@ -1671,7 +1691,7 @@ function Player() {
   const { actions } = useAnimations(animationClips, visual)
   const activeAnimation = useRef('')
   const selectedHeldItem = useGameStore(heldItemForState)
-  const heldItem = miningMotionVisualTest ? selectedHeldItem ?? 'worn-pickaxe' : selectedHeldItem
+  const heldItem = heldItemVisualTest ?? (miningMotionVisualTest ? selectedHeldItem ?? 'worn-pickaxe' : selectedHeldItem)
   const visuallyMining = miningMotionVisualTest || interactionProgress > 0 && Boolean(prompt && (prompt.id.startsWith('MineOre') || prompt.id.startsWith('RushOre')))
   const eventSpawn = minigameOpen ? anchors[`Spawn${eventBay}`] : null
   const eventFarmCell = minigameOpen && minigameKind === 'farm' ? anchors[`FarmRushCell${eventBay}_22`] : null
@@ -1733,16 +1753,18 @@ function Player() {
     // during GLB loading permanently placed the player at an obsolete outdoor
     // mine coordinate before the real cavern spawn became available.
     if (!minigameOpen && !resourceVisualGate && !furnaceVisualGate && !farmCellVisualGate && !deepVisualGate && !anchors.Spawn) return
-    const resource = minigameOpen ? ((resourceVisualGate || furnaceVisualGate) ? eventResource : farmCellVisualGate && eventFarmCell ? eventFarmCell : eventSpawn ?? eventFallback) : zone === 'forage' ? anchors.ForageApple000 : zone === 'mine' ? anchors.MineOre000 : zone === 'farm' ? ((furnaceVisualGate || resourceVisualGate) ? anchors.FurnacePad0 : anchors.FarmClaim0) : null
+    const resource = minigameOpen ? ((resourceVisualGate || furnaceVisualGate) ? eventResource : farmCellVisualGate && eventFarmCell ? eventFarmCell : eventSpawn ?? eventFallback) : zone === 'forage' ? (resourceVisualTarget === 'merchant' ? anchors[`SecretSite${merchantSiteVisualTest ?? secretSiteForRound('forage', roundNumber, sessionSeed)}`] : anchors.ForageApple000) : zone === 'mine' ? (resourceVisualTarget === 'merchant' ? anchors[`SecretSite${merchantSiteVisualTest ?? secretSiteForRound('mine', roundNumber, sessionSeed)}`] : anchors.MineOre000) : zone === 'farm' ? (resourceVisualTarget === 'merchant' ? anchors[`SecretSite${merchantSiteVisualTest ?? secretSiteForRound('farm', roundNumber, sessionSeed)}`] : (furnaceVisualGate || resourceVisualGate) ? anchors.FurnacePad0 : anchors.FarmClaim0) : null
     const farmCell = zone === 'farm' ? anchors.FarmCell0_27 : null
     if ((resourceVisualGate || furnaceVisualGate) && !resource) return
     if (farmCellVisualGate && !minigameOpen && !farmCell) return
     const resourceSpawn = resource
       ? minigameOpen
         ? (farmCellVisualGate || resourceVisualGate) ? [resource[0], resource[1], resource[2] + 2.45] as [number, number, number] : resource
-        : zone === 'mine'
-        ? [resource[0], resource[1], resource[2] + 3.4] as [number, number, number]
-        : [resource[0], resource[1], resource[2] + 2.45] as [number, number, number]
+        : resourceVisualTarget === 'merchant'
+          ? [resource[0] + (resource[0] < 0 ? 4.2 : -4.2), resource[1], resource[2]] as [number, number, number]
+          : zone === 'mine'
+            ? [resource[0], resource[1], resource[2] + 3.4] as [number, number, number]
+            : [resource[0], resource[1], resource[2] + 2.45] as [number, number, number]
       : null
     const farmCellSpawn = farmCell ? [farmCell[0] + 2.15, farmCell[1], farmCell[2] + 3.15] as [number, number, number] : null
     const tutorialTarget = tutorialActive
@@ -1762,9 +1784,12 @@ function Player() {
     const normalSpawn = anchors.Spawn
     const spawn = (minigameOpen ? resourceSpawn : null) ?? tutorialSpawn ?? (farmCellVisualGate ? farmCellSpawn : null) ?? ((resourceVisualGate || furnaceVisualGate) ? resourceSpawn : null) ?? (deepVisualGate ? anchors.GateDeep : null) ?? normalSpawn ?? FALLBACK_SPAWNS[zone]
     spawnedZone.current = spawnKey
-    yaw.current = farmCellVisualGate ? -0.42 : 0
+    yaw.current = resourceVisualTarget === 'merchant' && resource
+      ? resource[0] < 0 ? Math.PI / 2 : -Math.PI / 2
+      : frontVisualTest || closeVisualTest ? Math.PI
+      : farmCellVisualGate ? -0.42 : 0
     pitch.current = resourceVisualGate && zone === 'mine' ? 0.08 : deepVisualGate ? 0.12 : 0.08
-    distance.current = deepVisualGate ? 6.8 : 6.2
+    distance.current = closeVisualTest ? 3.25 : deepVisualGate ? 6.8 : 6.2
     position.current.set(spawn[0], (minigameOpen ? minigameGroundHeight(minigameKind, spawn[0], spawn[2]) : groundHeight(zone, spawn[0], spawn[2])) + 0.86, spawn[2])
     livePlayerPosition.copy(position.current)
     horizontalVelocity.current.set(0, 0, 0)
@@ -2135,8 +2160,9 @@ function InteractiveWorldObjects() {
   const language = useGameStore((state) => state.language)
   const roundNumber = useGameStore((state) => state.roundNumber)
   const sessionSeed = useGameStore((state) => state.sessionSeed)
-  const secretPoint = zone === 'hub' ? null : anchors[`SecretSite${secretSiteForRound(zone, roundNumber, sessionSeed)}`]
-  const secretActive = zone !== 'hub' && secretZoneForRound(roundNumber) === zone && secretPoint
+  const secretPoint = zone === 'hub' ? null : anchors[`SecretSite${merchantSiteVisualTest ?? secretSiteForRound(zone, roundNumber, sessionSeed)}`]
+  const secretActive = zone !== 'hub' && (resourceVisualTarget === 'merchant' || secretZoneForRound(roundNumber) === zone) && secretPoint
+  const secretFacing = secretPoint ? Math.atan2(-secretPoint[0], -72 - secretPoint[2]) : 0
   return (
     <>
       {zone === 'hub' && anchors.NpcShop && <AnimatedCharacter src="/assets/3d/characters/shopkeeper.glb" height={1.68} position={[anchors.NpcShop[0], anchors.NpcShop[1] + 0.02, anchors.NpcShop[2]]} rotation={[0, -2.85, 0]} animation="Armature|Idle_Talking_Loop" />}
@@ -2148,7 +2174,7 @@ function InteractiveWorldObjects() {
       {zone === 'farm' && anchors.NpcFoodBuyer && <AnimatedCharacter src="/assets/3d/characters/shopkeeper.glb" height={1.68} position={[anchors.NpcFoodBuyer[0], anchors.NpcFoodBuyer[1] + 0.02, anchors.NpcFoodBuyer[2]]} rotation={[0, 2.85, 0]} animation="Armature|Idle_Talking_Loop" />}
       {zone === 'mine' && anchors.NpcMineShop && <AnimatedCharacter src="/assets/3d/characters/shopkeeper.glb" height={1.68} position={[anchors.NpcMineShop[0], anchors.NpcMineShop[1] + 0.02, anchors.NpcMineShop[2]]} rotation={[0, -2.85, 0]} animation="Armature|Idle_Talking_Loop" />}
       {zone === 'mine' && anchors.NpcOreBuyer && <AnimatedCharacter src="/assets/3d/characters/shopkeeper.glb" height={1.68} position={[anchors.NpcOreBuyer[0], anchors.NpcOreBuyer[1] + 0.02, anchors.NpcOreBuyer[2]]} rotation={[0, 2.85, 0]} animation="Armature|Idle_Talking_Loop" />}
-      {secretActive && <AnimatedCharacter src="/assets/3d/characters/shopkeeper.glb" height={1.82} position={[secretPoint[0], secretPoint[1] + 0.02, secretPoint[2]]} rotation={[0, Math.PI * 0.72, 0]} animation="Armature|Idle_Talking_Loop" />}
+      {secretActive && <AnimatedCharacter src="/assets/3d/characters/merchant.glb" height={1.76} position={[secretPoint[0], secretPoint[1] + 0.02, secretPoint[2]]} rotation={[0, secretFacing, 0]} animation="Armature|Sitting_Talking_Loop" />}
       {minigameOpen && minigameKind === 'forage' && (['Apple', 'Orange', 'Truffle', 'Discovery'] as const).map((label) => {
         const point = anchors[`NpcForageRush${label}`]
         if (!point) return null
@@ -2628,6 +2654,7 @@ export function GameWorld() {
 
 useGLTF.preload('/assets/3d/characters/ranger.glb')
 useGLTF.preload('/assets/3d/characters/shopkeeper.glb')
+useGLTF.preload('/assets/3d/characters/merchant.glb')
 useGLTF.preload('/assets/3d/animations/standard.glb')
 useGLTF.preload('/assets/3d/animations/tool-actions.glb?v=3')
 useGLTF.preload('/assets/3d/tools/pickaxe.glb?v=5')

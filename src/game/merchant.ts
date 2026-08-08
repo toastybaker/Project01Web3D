@@ -1,4 +1,5 @@
 export const MERCHANT_CYCLE_MS = 4 * 60 * 1000
+export const MERCHANT_MIN_SLOTS = 2
 export const MERCHANT_MAX_SLOTS = 4
 export const DEFAULT_MATCH_DURATION_MS = 60 * 60 * 1000
 
@@ -147,12 +148,17 @@ function selectedItemIds(matchSeed: number, cycleIndex: number, elapsedMs: numbe
     && merchantItemRoll(matchSeed, cycleIndex, id) < MERCHANT_ITEMS[id].appearanceChance
   ))
 
-  if (successful.length === 0) {
-    const fallback = [...MERCHANT_COMMON_ITEM_IDS].sort((left, right) => (
+  // Information is sold separately. The item shelf should still look like a
+  // useful travelling shop every time it is found, rather than occasionally
+  // collapsing to one object after a sparse roll.
+  if (successful.length < MERCHANT_MIN_SLOTS) {
+    const fallbacks = MERCHANT_COMMON_ITEM_IDS
+      .filter((id) => !successful.includes(id) && isMerchantItemEligible(id, elapsedMs, matchDurationMs))
+      .sort((left, right) => (
       cycleRandom(matchSeed, cycleIndex, `fallback:${left}`) - cycleRandom(matchSeed, cycleIndex, `fallback:${right}`)
       || left.localeCompare(right)
-    ))[0]
-    return [fallback]
+      ))
+    successful.push(...fallbacks.slice(0, MERCHANT_MIN_SLOTS - successful.length))
   }
 
   if (successful.length <= MERCHANT_MAX_SLOTS) return successful
