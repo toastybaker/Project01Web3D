@@ -32,7 +32,7 @@ console.warn = (...args: unknown[]) => {
 
 const port = 26_575
 const server = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
-  cwd: process.cwd(), env: { ...process.env, PORT: String(port), TEST_ALLOW_EARLY_RESET: '1' }, stdio: ['pipe', 'pipe', 'pipe'],
+  cwd: process.cwd(), env: { ...process.env, PORT: String(port), TEST_ALLOW_EARLY_RESET: '1', TEST_STARTING_CASH: '10000000' }, stdio: ['pipe', 'pipe', 'pipe'],
 })
 const rooms: Room[] = []
 
@@ -81,11 +81,23 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 250))
   assert(prematureStarts === 0, 'A non-host started the match')
 
+  rooms[0].send('lobby:start', {})
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  assert(prematureStarts === 0, 'The host started before every player completed or skipped onboarding')
+
   const lobbyUpdates = rooms.map((room) => once<{ durationSeconds: number; globalExpansionDeeds: number }>(room, 'lobby:state'))
   rooms[0].send('lobby:update', { durationSeconds: 180 * 60, globalExpansionDeeds: 1 })
   const updatedLobby = await Promise.all(lobbyUpdates)
   assert(updatedLobby.every((entry) => entry.durationSeconds === 180 * 60), 'Host duration choice did not synchronize')
   assert(updatedLobby.every((entry) => entry.globalExpansionDeeds === 1), 'Host extra-farm choice did not synchronize')
+
+  rooms.forEach((room) => room.send('lobby:onboarding-ready', { ready: true }))
+  await new Promise((resolve) => setTimeout(resolve, 120))
+  const readyStates = rooms.map((room) => once<{ readyCount: number; allReady: boolean; selfReady: boolean; readyPlayerIds: string[] }>(room, 'lobby:state'))
+  rooms.forEach((room) => room.send('lobby:ready', {}))
+  const readyLobby = await Promise.all(readyStates)
+  assert(readyLobby.every((entry) => entry.readyCount === 6 && entry.allReady && entry.selfReady), 'Onboarding readiness did not synchronize across the lobby')
+  assert(readyLobby.every((entry) => new Set(entry.readyPlayerIds).size === 6), 'Lobby did not identify which players completed or skipped onboarding')
 
   const syncs = rooms.map((room) => once<{ seed: number; startedAt: number; durationSeconds: number }>(room, 'match:sync'))
   rooms[0].send('lobby:start', {})
@@ -116,7 +128,7 @@ try {
   const restartedState = await restartedStatePromise
   assert(!restartedState.started, 'New Run did not reset the room to the lobby')
 
-  console.log(JSON.stringify({ status: 'pass', lobbyPlayers: 6, fourPlayerExtraFarmCap: 4, sixPlayerExtraFarmCap: 2, totalFarmCap: 8, seventhRejected, hostReassigned: true, inMatchHostReassigned: true, nonHostStartBlocked: true, synchronizedSettings: true, extraFarms: 1, personalDeedProtected: true, sharedDeedLimitEnforced: true, synchronizedMatch: true, synchronizedNewRun: true }, null, 2))
+  console.log(JSON.stringify({ status: 'pass', lobbyPlayers: 6, fourPlayerExtraFarmCap: 4, sixPlayerExtraFarmCap: 2, totalFarmCap: 8, seventhRejected, hostReassigned: true, inMatchHostReassigned: true, nonHostStartBlocked: true, onboardingStartBlocked: true, onboardingReadySynchronized: true, synchronizedSettings: true, extraFarms: 1, personalDeedProtected: true, sharedDeedLimitEnforced: true, synchronizedMatch: true, synchronizedNewRun: true }, null, 2))
 } finally {
   await Promise.allSettled(rooms.map((room) => room.leave()))
   server.kill('SIGTERM')

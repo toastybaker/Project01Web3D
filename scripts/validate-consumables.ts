@@ -48,6 +48,14 @@ useGameStore.getState().useFortuneBoost('harvest-charm')
 assert.equal(useGameStore.getState().fortuneBoostCharges.basket, 30)
 assert.equal(useGameStore.getState().fortuneBoostCharges['harvest-charm'], 32)
 
+useGameStore.setState({
+  hotbar: ['worn-pickaxe', 'iron-pickaxe', null, null, null, null, null, null, null],
+  selectedHotbar: 1,
+  mineAwardGenerations: {},
+})
+useGameStore.getState().awardMineNode('MineOreFortuneTest', 'copper-ore', 1, { generation: 1, readyAt: now + 30_000 }, 'worn-pickaxe')
+assert.equal(useGameStore.getState().fortuneBoostCharges['worn-pickaxe'], 19, 'Mining award consumed Fortune from the selected slot instead of the requesting pickaxe')
+
 const beforeJobs = Object.fromEntries(useGameStore.getState().cookQueue.map((job) => [job.id, job.readyAt]))
 useGameStore.getState().useCookTimer()
 const afterJobs = Object.fromEntries(useGameStore.getState().cookQueue.map((job) => [job.id, job.readyAt]))

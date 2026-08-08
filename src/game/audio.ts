@@ -46,7 +46,7 @@ export function musicVolume(master: number, music: number, track: MusicTrack) {
 }
 
 export function ambienceVolume(master: number, ambience: number, cave: boolean) {
-  // The forest recording contains prominent bird calls. Its bed sits at half
-  // the cave recording's gain so those calls do not dominate the music or SFX.
-  return Math.min(1, Math.max(0, master * ambience * (cave ? .38 : .19)))
+  // The outdoor recording has occasional close bird calls. Keep that bed much
+  // lower than the cave texture so those peaks read as distant atmosphere.
+  return Math.min(1, Math.max(0, master * ambience * (cave ? .32 : .055)))
 }

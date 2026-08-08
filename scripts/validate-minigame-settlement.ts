@@ -45,7 +45,7 @@ Object.assign(globalThis, {
 const port = 26_576
 const server = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
   cwd: process.cwd(),
-  env: { ...process.env, PORT: String(port), TEST_ALLOW_EARLY_MINIGAME: '1' },
+  env: { ...process.env, PORT: String(port), TEST_ALLOW_EARLY_MINIGAME: '1', TEST_ALLOW_SCORE_INJECTION: '1' },
   stdio: ['pipe', 'pipe', 'pipe'],
 })
 const rooms: Room[] = []
@@ -60,6 +60,9 @@ try {
   rooms.push(playerA, playerB)
   playerA.send('lobby:ready', {})
   playerB.send('lobby:ready', {})
+  playerA.send('lobby:onboarding-ready', { ready: true })
+  playerB.send('lobby:onboarding-ready', { ready: true })
+  await new Promise((resolve) => setTimeout(resolve, 80))
 
   const syncA = message<{ seed: number; durationSeconds: number }>(playerA, 'match:sync')
   const syncB = message<{ seed: number; durationSeconds: number }>(playerB, 'match:sync')
@@ -82,12 +85,14 @@ try {
   check(eventA.gameplayAt === eventB.gameplayAt, 'Players received different event start times')
   await new Promise((resolve) => setTimeout(resolve, Math.max(0, eventA.gameplayAt - Date.now()) + 40))
 
-  const resultA = message<{ settlementId: string; cashReward: number; itemRolls: unknown[] }>(playerA, 'minigame:result')
-  const resultB = message<{ settlementId: string; cashReward: number; itemRolls: unknown[] }>(playerB, 'minigame:result')
+  const resultA = message<{ settlementId: string; cashReward: number; itemRolls: unknown[]; standings: Array<{ placement: number; nickname: string; score: number }> }>(playerA, 'minigame:result')
+  const resultB = message<{ settlementId: string; cashReward: number; itemRolls: unknown[]; standings: Array<{ placement: number; nickname: string; score: number }> }>(playerB, 'minigame:result')
   playerA.send('minigame:finish', { milestone, score: 240, progressValue: 100_000 })
   playerB.send('minigame:finish', { milestone, score: 120, progressValue: 100_000 })
   const [rewardA, rewardB] = await Promise.all([resultA, resultB])
   check(rewardA.settlementId !== rewardB.settlementId, 'Two profiles shared one settlement key')
+  check(rewardA.standings.length === 2 && rewardB.standings.length === 2, 'Results included placements for players who did not enter the event')
+  check(rewardA.standings[0]?.nickname === 'Profile A' && rewardA.standings[0]?.score === 240 && rewardA.standings[1]?.nickname === 'Profile B' && rewardA.standings[1]?.score === 120, 'Results did not preserve the actual two-player ranking')
 
   const retry = message<typeof rewardA>(playerA, 'minigame:result')
   playerA.send('minigame:finish', { milestone, score: 999_999, progressValue: 5_000_000_000 })
@@ -114,9 +119,10 @@ try {
   useGameStore.getState().finishMinigame(999, 1, 999, reward)
   check(useGameStore.getState().cash === 150, 'Client applied settlement cash more than once')
   check(useGameStore.getState().inventory['cookbook-box'] === 1, 'Client applied settlement items more than once')
+  check(useGameStore.getState().hotbar.includes('cookbook-box'), 'Client settlement reward skipped the hotbar row')
   check(useGameStore.getState().appliedMinigameSettlementIds.length === 1, 'Client settlement ledger did not stay idempotent')
 
-  console.log(JSON.stringify({ status: 'pass', sameMatch: true, duplicateFinishStable: true, reconnectReplay: true, clientCashAndItemsExactlyOnce: true }, null, 2))
+  console.log(JSON.stringify({ status: 'pass', sameMatch: true, twoPlayerRankingOnly: true, duplicateFinishStable: true, reconnectReplay: true, clientCashAndItemsExactlyOnce: true }, null, 2))
 } finally {
   await Promise.allSettled(rooms.map((room) => room.leave()))
   server.kill('SIGTERM')

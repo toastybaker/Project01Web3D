@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { ITEMS, SHOPS } from '../src/game/items'
 import { itemName, localizedItemIds, shopName, uiText, zoneName } from '../src/game/i18n'
 
-assert.equal(zoneName('ko', 'hub'), '광장')
+assert.equal(zoneName('ko', 'hub'), '로비')
 assert.equal(zoneName('ko', 'forage'), '채집')
 assert.equal(zoneName('ko', 'farm'), '농장')
 assert.equal(zoneName('ko', 'mine'), '광산')
@@ -17,6 +17,7 @@ assert.equal(uiText('ko', 'Hand Gathering'), '맨손 채집')
 assert.equal(uiText('en', 'Recipe unlocked!'), 'Recipe unlocked!')
 assert.equal(uiText('ko', 'Opens at 12m'), '12분 후 공개')
 assert.equal(uiText('ko', 'Plant wheat'), '밀 심기')
+assert.equal(uiText('ko', 'Equip Watering Can'), '물뿌리개 선택')
 assert.equal(uiText('ko', '+3 Iron Ore'), '+3 철 원석')
 assert.equal(uiText('ko', 'Low'), '낮음')
 assert.equal(uiText('ko', 'Medium'), '보통')
@@ -54,7 +55,7 @@ for (const file of ['src/game/store.ts', 'src/App.tsx', 'server/index.ts']) {
     while ((match = pattern.exec(source))) runtimeCopy.add(match[1])
   }
 }
-const untranslatedRuntime = [...runtimeCopy].filter((copy) => uiText('ko', copy) === copy)
+const untranslatedRuntime = [...runtimeCopy].filter((copy) => uiText('ko', copy) === copy && !/^[A-Z]{1,5} [+-]\d+(?:\.\d+)?%$/.test(copy))
 assert.deepEqual(untranslatedRuntime, [], `Runtime popups remained English:\n${untranslatedRuntime.join('\n')}`)
 
 for (const [id, item] of Object.entries(ITEMS)) {

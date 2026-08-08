@@ -6,6 +6,7 @@ type Presence = {
   position: [number, number, number]
   yaw: number
   animation: string
+  heldItem?: string | null
 }
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -55,22 +56,26 @@ try {
   const sprinting = messageWhere<Presence>(observer, 'presence:move', (presence) => presence.id === sender.sessionId && presence.position[0] === 8)
   sender.send('move', {
     zone: 'hub', position: [8, 0.86, -6], yaw: 1.2, animation: 'Armature|Sprint_Loop',
+    heldItem: 'home-charm',
     nickname: 'Runner', cash: 100_000, progressValue: 100_000,
     stats: { foraged: 0, mined: 0, harvested: 0, sold: 0 }, minigameOpen: false,
   })
   const sprintPresence = await sprinting
   assert(Math.abs(sprintPresence.yaw - 1.2) < 0.001, 'Remote facing yaw was not replicated')
   assert(sprintPresence.animation === 'Armature|Sprint_Loop', 'Remote sprint animation was not replicated')
+  assert(sprintPresence.heldItem === 'home-charm', 'Remote held item was not replicated')
 
   const sanitized = messageWhere<Presence>(observer, 'presence:move', (presence) => presence.id === sender.sessionId && presence.position[0] === 9)
   sender.send('move', {
     zone: 'hub', position: [9, 0.86, -6], yaw: 20, animation: 'not-a-real-animation',
+    heldItem: null,
     nickname: 'Runner', cash: 100_000, progressValue: 100_000,
     stats: { foraged: 0, mined: 0, harvested: 0, sold: 0 }, minigameOpen: false,
   })
   const sanitizedPresence = await sanitized
   assert(sanitizedPresence.yaw >= -Math.PI && sanitizedPresence.yaw <= Math.PI, 'Remote yaw was not normalized')
   assert(sanitizedPresence.animation === 'Armature|Sprint_Loop', 'Invalid animation replaced the last valid animation')
+  assert(sanitizedPresence.heldItem === null, 'Empty remote hand did not clear the previous item')
 
   const jumping = messageWhere<Presence>(observer, 'presence:move', (presence) => presence.id === sender.sessionId && presence.position[0] === 10)
   sender.send('move', {
@@ -81,7 +86,7 @@ try {
   const jumpPresence = await jumping
   assert(jumpPresence.animation === 'Armature|Jump_Loop', 'Remote jump animation was not replicated')
 
-  console.log(JSON.stringify({ status: 'pass', sameRoom: true, yawReplicated: true, sprintReplicated: true, jumpReplicated: true, invalidAnimationRejected: true }, null, 2))
+  console.log(JSON.stringify({ status: 'pass', sameRoom: true, yawReplicated: true, sprintReplicated: true, jumpReplicated: true, heldItemReplicated: true, invalidAnimationRejected: true }, null, 2))
 } finally {
   await Promise.allSettled(rooms.map((room) => room.leave()))
   server.kill('SIGTERM')

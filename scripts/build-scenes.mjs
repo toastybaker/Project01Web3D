@@ -4,11 +4,13 @@ import { fileURLToPath } from 'node:url'
 import * as THREE from 'three'
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
-import { TessellateModifier } from 'three/examples/jsm/modifiers/TessellateModifier.js'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
+import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js'
 import { NodeIO } from '@gltf-transform/core'
-import { EXTMeshGPUInstancing } from '@gltf-transform/extensions'
-import { dedup, instance, join } from '@gltf-transform/functions'
+import { EXTMeshGPUInstancing, EXTMeshoptCompression, EXTTextureWebP } from '@gltf-transform/extensions'
+import { dedup, instance, join, meshopt, textureCompress } from '@gltf-transform/functions'
+import { MeshoptEncoder } from 'meshoptimizer'
 import { createCanvas, ImageData as CanvasImageData } from '@napi-rs/canvas'
 import sharp from 'sharp'
 import { MINE_NODE_SITES } from '../shared/mine-nodes.js'
@@ -77,13 +79,15 @@ function material(name, color, options = {}) {
     transparent: options.transparent ?? false,
     opacity: options.opacity ?? 1,
     side: options.side ?? THREE.FrontSide,
+    vertexColors: options.vertexColors ?? false,
+    depthWrite: options.depthWrite ?? true,
   })
   value.name = name
   return value
 }
 
 const mats = {
-  ground: material('Ground', palette.moss, { flatShading: false }),
+  ground: material('Ground', palette.moss, { flatShading: false, vertexColors: true }),
   path: material('Path', palette.path),
   bark: material('Bark', palette.bark),
   barkLight: material('Bark Light', palette.barkLight),
@@ -99,17 +103,17 @@ const mats = {
   stoneDark: material('Dark Stone', palette.stoneDark),
   mineGround: material('Mine Ground', 0x77736b, { flatShading: false }),
   minePath: material('Mine Path', 0x887865, { flatShading: false }),
-  mineWall: material('Mine Wall', 0x6f6b64),
-  mineStrata: material('Mine Strata', 0x57534e),
+  mineWall: material('Mine Wall', 0x6f6b64, { flatShading: false }),
+  mineStrata: material('Mine Strata', 0x57534e, { flatShading: false }),
   stoneOre: material('Stone Ore Vein', 0xb6aa8d, { roughness: 0.72 }),
   crystal: material('Blue Crystal', 0x5f91a4, { roughness: 0.55 }),
   richOre: material('Rich Ore', 0xb78246, { roughness: 0.62, metalness: 0.1 }),
   caveWater: material('Cave Water', 0x527b82, { transparent: true, opacity: 0.76, roughness: 0.28, side: THREE.DoubleSide, flatShading: false }),
   parchment: material('Parchment', palette.parchment),
-  glassForage: material('Forage Portal', palette.forage, { transparent: true, opacity: 0.52, side: THREE.DoubleSide, flatShading: false }),
-  glassFarm: material('Farm Portal', palette.farm, { transparent: true, opacity: 0.45, side: THREE.DoubleSide, flatShading: false }),
-  glassMine: material('Mine Portal', palette.mine, { transparent: true, opacity: 0.48, side: THREE.DoubleSide, flatShading: false }),
-  glassHome: material('Home Portal', palette.parchment, { transparent: true, opacity: 0.48, side: THREE.DoubleSide, flatShading: false }),
+  glassForage: material('Forage Portal', palette.forage, { transparent: true, opacity: 0.34, depthWrite: false, roughness: 0.38, side: THREE.DoubleSide, flatShading: false }),
+  glassFarm: material('Farm Portal', palette.farm, { transparent: true, opacity: 0.32, depthWrite: false, roughness: 0.38, side: THREE.DoubleSide, flatShading: false }),
+  glassMine: material('Mine Portal', palette.mine, { transparent: true, opacity: 0.33, depthWrite: false, roughness: 0.38, side: THREE.DoubleSide, flatShading: false }),
+  glassHome: material('Home Portal', palette.parchment, { transparent: true, opacity: 0.31, depthWrite: false, roughness: 0.38, side: THREE.DoubleSide, flatShading: false }),
   fruit: material('Orchard Fruit', palette.fruit),
   fruitGold: material('Golden Orchard Fruit', palette.fruitGold),
   furnaceFire: material('Furnace Fire', 0xe28a32, { roughness: 0.42 }),
@@ -119,20 +123,34 @@ mats.furnaceFire.emissive = new THREE.Color(0xd26721)
 mats.furnaceFire.emissiveIntensity = 1.4
 
 const natureRoot = path.join(root, 'source-assets', '3d', 'nature-glb')
+const fantasyPropsRoot = path.join(root, 'source-assets', '3d', 'quaternius-fantasy-props')
+const simpleNatureRoot = path.join(root, 'source-assets', '3d', 'quaternius-simple-nature')
+const farmBuildingsRoot = path.join(root, 'source-assets', '3d', 'quaternius-farm-buildings')
 const natureIO = new NodeIO()
 const textureCache = new Map()
 
-async function dataTexture(texture) {
+async function dataTexture(texture, colorSpace = THREE.SRGBColorSpace) {
   if (!texture) return null
-  const cacheKey = texture.getName() || String(texture.getImage()?.byteLength ?? 0)
+  const cacheKey = `${texture.getName() || String(texture.getImage()?.byteLength ?? 0)}:${colorSpace}`
   if (textureCache.has(cacheKey)) return textureCache.get(cacheKey)
   const image = texture.getImage()
   if (!image) return null
-  const decoded = await sharp(image).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+  let decoded
+  try {
+    decoded = await sharp(image)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true })
+  } catch (error) {
+    // A few legacy nature GLBs advertise compressed normal payloads as PNG.
+    // Their base color remains valid; omit only the malformed auxiliary map.
+    if (colorSpace === THREE.SRGBColorSpace) throw error
+    return null
+  }
   const value = new THREE.DataTexture(new Uint8Array(decoded.data), decoded.info.width, decoded.info.height, THREE.RGBAFormat)
   value.name = cacheKey
   value.flipY = false
-  value.colorSpace = THREE.SRGBColorSpace
+  value.colorSpace = colorSpace
   value.wrapS = THREE.RepeatWrapping
   value.wrapT = THREE.RepeatWrapping
   value.needsUpdate = true
@@ -201,12 +219,134 @@ async function loadOfflineAsset(name, sourcePath = path.join(natureRoot, `${name
   return scene
 }
 
+async function loadOfflineObjAsset(name, sourcePath) {
+  const value = new OBJLoader().parse(await readFile(sourcePath, 'utf8'))
+  value.name = name
+  value.updateMatrixWorld(true)
+  const bounds = new THREE.Box3().setFromObject(value)
+  const center = bounds.getCenter(new THREE.Vector3())
+  value.position.set(-center.x, -bounds.min.y, -center.z)
+  value.traverse((object) => {
+    if (!object.isMesh) return
+    if (!object.geometry.attributes.normal) object.geometry.computeVertexNormals()
+    object.material = (Array.isArray(object.material) ? object.material : [object.material]).map((sourceMaterial) => (
+      /lea(?:f|ves)/i.test(sourceMaterial.name) ? mats.leafFresh : mats.bark
+    ))
+  })
+  return value
+}
+
+async function loadOfflineObjWithMtl(name, sourcePath, materialPath) {
+  const materialCreator = new MTLLoader().parse(await readFile(materialPath, 'utf8'), `${path.dirname(materialPath)}${path.sep}`)
+  materialCreator.preload()
+  const value = new OBJLoader().setMaterials(materialCreator).parse(await readFile(sourcePath, 'utf8'))
+  value.name = name
+  value.updateMatrixWorld(true)
+  const bounds = new THREE.Box3().setFromObject(value)
+  const center = bounds.getCenter(new THREE.Vector3())
+  value.position.set(-center.x, -bounds.min.y, -center.z)
+  value.traverse((object) => {
+    if (!object.isMesh) return
+    if (!object.geometry.attributes.normal) object.geometry.computeVertexNormals()
+    const sourceMaterials = Array.isArray(object.material) ? object.material : [object.material]
+    const converted = sourceMaterials.map((sourceMaterial) => {
+      const convertedMaterial = material(sourceMaterial.name || name, sourceMaterial.color?.getHex?.() ?? 0x777777, { flatShading: true })
+      convertedMaterial.color.copy(sourceMaterial.color)
+      return convertedMaterial
+    })
+    object.material = Array.isArray(object.material) ? converted : converted[0]
+  })
+  return value
+}
+
 const natureModels = {}
 for (const name of [
   'BirchTree_1', 'BirchTree_2', 'BirchTree_3', 'BirchTree_4', 'BirchTree_5',
   'MapleTree_1', 'MapleTree_2', 'MapleTree_3', 'MapleTree_4', 'MapleTree_5',
   'Bush', 'Bush_Large', 'Bush_Small', 'Grass_Large_Extruded', 'Flower_3_Clump',
 ]) natureModels[name] = await loadOfflineAsset(name)
+natureModels.NormalTree_5 = await loadOfflineObjAsset(
+  'NormalTree_5',
+  path.join(root, 'source-assets', '3d', 'quaternius-nature', 'OBJ', 'NormalTree_5.obj'),
+)
+
+const propModels = {}
+for (const name of [
+  'Stall_Empty', 'Stall_Cart_Empty',
+  'Barrel', 'Barrel_Apples',
+  'FarmCrate_Apple', 'FarmCrate_Carrot', 'FarmCrate_Empty',
+]) propModels[name] = await loadOfflineAsset(name, path.join(fantasyPropsRoot, `${name}.gltf`))
+
+const rockModels = {}
+for (const name of ['Rock1', 'Rock2', 'Rock3']) {
+  const rock = await loadOfflineObjAsset(name, path.join(simpleNatureRoot, `${name}.obj`))
+  rock.traverse((object) => {
+    if (object.isMesh) object.material = mats.mineWall
+  })
+  rockModels[name] = rock
+}
+
+const farmBuildingModels = {}
+for (const name of ['Barn', 'Windmill']) {
+  farmBuildingModels[name] = await loadOfflineObjWithMtl(
+    name,
+    path.join(farmBuildingsRoot, `${name}.obj`),
+    path.join(farmBuildingsRoot, `${name}.mtl`),
+  )
+}
+
+function authoredRock(name, position, scale = [1, 1, 1], rotation = [0, 0, 0], rockMaterial = mats.mineWall) {
+  const group = rockModels[name].clone(true)
+  group.name = `${name} Authored Rock`
+  group.position.set(...position)
+  group.scale.set(...scale)
+  group.rotation.set(...rotation)
+  group.traverse((object) => {
+    if (!object.isMesh) return
+    object.material = rockMaterial
+    object.castShadow = true
+    object.receiveShadow = true
+  })
+  return group
+}
+
+function farmBuildingAsset(name, position, scale = 1, rotation = 0) {
+  const group = farmBuildingModels[name].clone(true)
+  group.name = `${name} Farm Landmark`
+  group.position.set(...position)
+  group.scale.setScalar(scale)
+  group.rotation.y = rotation
+  group.traverse((object) => {
+    if (!object.isMesh) return
+    object.castShadow = true
+    object.receiveShadow = true
+  })
+  return group
+}
+
+function propAsset(name, position = [0, 0, 0], scale = 1, rotation = 0, clothTint = null) {
+  const group = propModels[name].clone(true)
+  group.name = name
+  group.position.set(...position)
+  group.scale.setScalar(scale)
+  group.rotation.y = rotation
+  const materialCopies = new Map()
+  group.traverse((object) => {
+    if (!object.isMesh) return
+    const materials = Array.isArray(object.material) ? object.material : [object.material]
+    const copies = materials.map((sourceMaterial) => {
+      if (materialCopies.has(sourceMaterial)) return materialCopies.get(sourceMaterial)
+      const copy = sourceMaterial.clone()
+      if (clothTint && /Banner|Cloth/i.test(copy.name)) copy.color.multiply(clothTint)
+      materialCopies.set(sourceMaterial, copy)
+      return copy
+    })
+    object.material = Array.isArray(object.material) ? copies : copies[0]
+    object.castShadow = true
+    object.receiveShadow = true
+  })
+  return group
+}
 
 function natureAsset(name, position, scale = 1, rotation = 0, colliderRadius = 0) {
   const group = natureModels[name].clone(true)
@@ -230,16 +370,30 @@ function natureTree(x, z, scale, rotation, heightAt, variant = 0) {
   if (variant % 10 < 6) {
     const green = [mats.leafFresh, mats.leafSage, mats.leafDeep][variant % 3]
     value.traverse((object) => {
-      if (object.isMesh && /leaves?/i.test(object.material?.name ?? '')) object.material = green
+      if (object.isMesh && /lea(?:f|ves)/i.test(object.material?.name ?? '')) object.material = green
     })
   }
   value.name = names[variant % names.length].startsWith('Maple') ? 'Woodland Maple' : 'Woodland Birch'
   return value
 }
 
+function broadleafTree(x, z, scale, rotation, heightAt, variant = 0) {
+  const value = natureAsset('NormalTree_5', [x, heightAt(x, z), z], scale, rotation, 0.34)
+  const green = [mats.leafFresh, mats.leafSage, mats.leafDeep][variant % 3]
+  value.traverse((object) => {
+    if (!object.isMesh) return
+    const materials = Array.isArray(object.material) ? object.material : [object.material]
+    object.material = materials.map((sourceMaterial) => /lea(?:f|ves)/i.test(sourceMaterial.name) ? green : mats.bark)
+  })
+  value.name = 'Woodland Broadleaf'
+  return value
+}
+
 function natureBush(x, z, scale, rotation, heightAt, variant = 0) {
-  const names = ['Bush', 'Bush_Large', 'Bush_Small']
-  const value = natureAsset(names[variant % names.length], [x, heightAt(x, z), z], scale, rotation)
+  // The source-kit bushes read as bright cubes beside the softer tree crowns.
+  // Reuse the established three-lobed shrub silhouette instead.
+  const value = shrub(x, z, scale * .72, variant % 5 === 4, heightAt(x, z))
+  value.rotation.y = rotation
   value.name = 'Woodland Understory'
   return value
 }
@@ -284,7 +438,7 @@ function fruitBirch(id, x, z, scale, rotation, heightAt, golden = false, variant
   group.name = golden ? 'Orange Grove Tree' : 'Apple Orchard Tree'
   const green = [mats.leafFresh, mats.leafSage, mats.leafDeep][(variant + (golden ? 1 : 0)) % 3]
   group.traverse((object) => {
-    if (object.isMesh && /leaves?/i.test(object.material?.name ?? '')) object.material = green
+    if (object.isMesh && /lea(?:f|ves)/i.test(object.material?.name ?? '')) object.material = green
   })
   const fruitMaterial = golden ? mats.fruitGold : mats.fruit
   group.updateMatrixWorld(true)
@@ -375,7 +529,7 @@ function wateredSoilTile(name, x, y, z, rush) {
   return tile
 }
 
-const forageTrail = [[0, 22], [1, 12], [-2, 0], [-8, -16], [-3, -34], [9, -52], [4, -72], [-12, -91], [-5, -112], [8, -132], [-2, -154], [10, -177], [2, -203]]
+const forageTrail = [[0, 22], [1, 12], [-2, 0], [-8, -16], [-3, -34], [5, -50], [2, -60], [0, -70], [-1, -84], [-7, -98], [-5, -112], [8, -132], [-2, -154], [10, -177], [2, -203]]
 const farmParcels = [
   [-54, -16], [-18, -14], [19, -17], [55, -13],
   [-53, -50], [-17, -49], [20, -53], [56, -48],
@@ -399,6 +553,20 @@ function trailCenterAt(z) {
   return forageTrail[forageTrail.length - 1][0]
 }
 
+function distanceToPolyline(x, z, points) {
+  let closest = Infinity
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const [ax, az] = points[index]
+    const [bx, bz] = points[index + 1]
+    const dx = bx - ax
+    const dz = bz - az
+    const lengthSquared = dx * dx + dz * dz
+    const t = lengthSquared ? THREE.MathUtils.clamp(((x - ax) * dx + (z - az) * dz) / lengthSquared, 0, 1) : 0
+    closest = Math.min(closest, Math.hypot(x - (ax + dx * t), z - (az + dz * t)))
+  }
+  return closest
+}
+
 function forageGroundHeight(x, z) {
   const trailDistance = Math.abs(x - trailCenterAt(z))
   const rolling = Math.sin(x * 0.055 + z * 0.018) * 0.7 + Math.cos(z * 0.047 - x * 0.026) * 0.62 + Math.sin((x + z) * 0.12) * 0.18
@@ -418,13 +586,28 @@ function terrain(radius = 34, heightAt = null, groundMaterial = mats.ground) {
   geometry.rotateX(-Math.PI / 2)
   const positions = geometry.attributes.position
   const uvs = geometry.attributes.uv
+  const colors = groundMaterial === mats.ground ? new Float32Array(positions.count * 3) : null
+  const tint = new THREE.Color()
   for (let i = 0; i < positions.count; i += 1) {
     const x = positions.getX(i)
     const z = positions.getZ(i)
     const y = heightAt ? heightAt(x, z) : Math.min(1, Math.hypot(x, z) / (radius * 0.75)) * (Math.sin(x * 0.38) + Math.cos(z * 0.31)) * 0.12
     positions.setY(i, y)
     uvs.setXY(i, uvs.getX(i) * (heightAt ? radius / 6 : 7), uvs.getY(i) * (heightAt ? radius / 6 : 7))
+    if (colors) {
+      // Broad, low-frequency colour variation makes the rolling ground read at
+      // play distance. It is deliberately stronger than the tiny texture grain,
+      // which otherwise made every outdoor area look like one flat green sheet.
+      const broad = Math.sin(x * .021 + z * .014) * .07 + Math.cos(z * .018 - x * .011) * .05
+      const mottled = Math.sin((x + z) * .073) * .02
+      const shade = 0.94 + broad + mottled
+      tint.setRGB(shade * .95, shade * 1.035, shade * .92)
+      colors[i * 3] = tint.r
+      colors[i * 3 + 1] = tint.g
+      colors[i * 3 + 2] = tint.b
+    }
   }
+  if (colors) geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
   geometry.computeVertexNormals()
   return mesh(geometry, groundMaterial, groundMaterial === mats.mineGround ? 'Mine Ground' : 'Woodland Ground')
 }
@@ -533,10 +716,10 @@ function fernPatch(x, z, scale = 1, rotation = 0) {
   return group
 }
 
-function fallenLog(x, z, length = 5.4, rotation = 0) {
+function fallenLog(x, z, length = 5.4, rotation = 0, heightAt = forageGroundHeight) {
   const group = new THREE.Group()
   group.name = 'Mossy Fallen Log Landmark'
-  group.position.set(x, forageGroundHeight(x, z), z)
+  group.position.set(x, heightAt(x, z), z)
   group.rotation.y = rotation
   group.userData.colliderRadius = length * 0.42
   const trunk = mesh(new THREE.CylinderGeometry(0.42, 0.55, length, 9), mats.bark, 'Fallen Tree Trunk')
@@ -581,10 +764,10 @@ function fruitTree(x, z, scale = 1, golden = false) {
   return group
 }
 
-function boulderFormation(x, z, scale = 1, rotation = 0) {
+function boulderFormation(x, z, scale = 1, rotation = 0, heightAt = forageGroundHeight) {
   const group = new THREE.Group()
   group.name = 'Natural Cliff Boulder'
-  group.position.set(x, forageGroundHeight(x, z), z)
+  group.position.set(x, heightAt(x, z), z)
   group.rotation.y = rotation
   group.userData.colliderRadius = 1.35 * scale
   ;[
@@ -643,30 +826,120 @@ function portal(kind, glass, position, rotation = 0) {
     collider.userData.colliderRadius = 0.8
     group.add(collider)
   }
-  const stoneGeometry = new THREE.DodecahedronGeometry(0.72, 1)
-  for (const side of [-1, 1]) {
-    for (let i = 0; i < 4; i += 1) {
-      const stone = mesh(stoneGeometry, i % 2 ? mats.stoneDark : mats.stone, 'Portal Stone')
-      stone.position.set(side * 2.03, 0.55 + i * 0.92, 0)
-      stone.scale.set(0.82, 0.9, 0.72)
-      stone.rotation.set(i * 0.2, i * 0.42, side * 0.06)
-      group.add(stone)
+  if (kind === 'Forage') {
+    // The forest destination is a living arch: two trunks, crossing limbs and
+    // a compact crown. It is readable by silhouette before its label appears.
+    for (const side of [-1, 1]) {
+      const trunk = mesh(new THREE.CylinderGeometry(.26, .43, 3.55, 7), mats.bark, 'Living Portal Trunk')
+      trunk.position.set(side * 1.86, 1.72, 0)
+      trunk.rotation.z = side * -.09
+      group.add(trunk)
+    }
+    group.add(
+      beamBetween([-1.92, 3.08, 0], [-.08, 4.18, 0], .23, mats.bark),
+      beamBetween([1.92, 3.08, 0], [.08, 4.18, 0], .23, mats.barkLight),
+    )
+    ;[[-1.55,3.72,.9],[0,4.28,1.05],[1.5,3.74,.86],[-.66,4.02,.72],[.7,4.02,.76]].forEach(([x,y,scale], index) => {
+      const crown = mesh(new THREE.DodecahedronGeometry(scale, 1), index % 2 ? mats.leafFresh : mats.leafDeep, 'Living Portal Crown')
+      crown.position.set(x, y, -.04)
+      crown.scale.set(1.15, .7, .7)
+      group.add(crown)
+    })
+    const leftUnderstory = shrub(-2.36, .18, .78, true, 0)
+    const rightUnderstory = shrub(2.42, -.08, .7, false, 0)
+    group.add(leftUnderstory, rightUnderstory)
+  } else if (kind === 'Farm') {
+    // A hewn timber gate ties the farm entrance to its fences and stalls while
+    // keeping a broad, snag-free opening.
+    for (const side of [-1, 1]) {
+      const post = mesh(new RoundedBoxGeometry(.48, 3.42, .56, 4, .12), mats.bark, 'Farm Gate Post')
+      post.position.set(side * 1.86, 1.7, 0)
+      group.add(post)
+    }
+    group.add(
+      beamBetween([-2.08, 3.35, 0], [2.08, 3.35, 0], .19, mats.barkLight),
+      beamBetween([-2.02, 3.43, 0], [0, 4.18, 0], .16, mats.bark),
+      beamBetween([2.02, 3.43, 0], [0, 4.18, 0], .16, mats.bark),
+    )
+    for (const side of [-1, 1]) {
+      const marker = mesh(new THREE.CylinderGeometry(.09, .12, 1.05, 7), mats.bark, 'Farm Gate Marker')
+      marker.position.set(side * 2.55, .52, .18)
+      const rail = beamBetween([side * 2.5, .72, .18], [side * 3.32, .72, .18], .075, mats.barkLight)
+      group.add(marker, rail)
+    }
+  } else {
+    // Mine and Home keep a carved-stone threshold. The single sculpted shell
+    // avoids the rejected necklace of identical pebble meshes.
+    const archShape = new THREE.Shape()
+    archShape.moveTo(-2.35, 0)
+    archShape.lineTo(-2.35, 3.02)
+    archShape.bezierCurveTo(-2.35, 4.47, -1.28, 5.16, 0, 5.18)
+    archShape.bezierCurveTo(1.28, 5.16, 2.35, 4.47, 2.35, 3.02)
+    archShape.lineTo(2.35, 0)
+    archShape.closePath()
+    const opening = new THREE.Path()
+    opening.moveTo(-1.5, 0.035)
+    opening.lineTo(1.5, 0.035)
+    opening.lineTo(1.5, 1.86)
+    opening.bezierCurveTo(1.5, 2.78, 0.78, 3.27, 0, 3.3)
+    opening.bezierCurveTo(-0.78, 3.27, -1.5, 2.78, -1.5, 1.86)
+    opening.closePath()
+    archShape.holes.push(opening)
+    const archGeometry = new THREE.ExtrudeGeometry(archShape, {
+      depth: 0.78,
+      bevelEnabled: true,
+      bevelSegments: 2,
+      bevelSize: 0.12,
+      bevelThickness: 0.12,
+      curveSegments: 14,
+      steps: 1,
+    })
+    archGeometry.translate(0, 0, -0.39)
+    group.add(mesh(archGeometry, kind === 'Mine' ? mats.stoneDark : mats.stone, 'Carved Portal Arch'))
+    const moss = mesh(new THREE.SphereGeometry(0.68, 10, 6), mats.leafDeep, 'Portal Moss')
+    moss.position.set(-1.12, 4.61, .42)
+    moss.scale.set(1.15, .18, .5)
+    moss.rotation.z = -.22
+    group.add(moss)
+    if (kind === 'Mine') {
+      ;[[-2.46,.54,.1,.84],[2.5,.5,-.08,.9],[-2.72,.24,.42,.58],[2.77,.25,.38,.62]].forEach(([x,y,z,scale], index) => {
+        const boulder = mesh(new THREE.DodecahedronGeometry(scale, 1), index % 2 ? mats.stone : mats.stoneDark, 'Mine Portal Boulder')
+        boulder.position.set(x, y, z)
+        boulder.scale.set(1.18, .76, .92)
+        boulder.rotation.set(index * .11, index * .77, index * -.04)
+        group.add(boulder)
+      })
     }
   }
-  for (let i = 0; i < 7; i += 1) {
-    const angle = (i / 6) * Math.PI
-    const stone = mesh(stoneGeometry, i % 2 ? mats.stone : mats.stoneDark, 'Arch Stone')
-    stone.position.set(Math.cos(angle) * 2.03, 3.3 + Math.sin(angle) * 1.72, 0)
-    stone.scale.set(0.8, 0.78, 0.7)
-    stone.rotation.z = -angle
+
+  // Uneven foot stones visually seat every threshold in the terrain.
+  const footStoneGeometry = new THREE.DodecahedronGeometry(0.72, 1)
+  ;[[-2.12, 0.29, 0.18, .9], [2.15, 0.27, -0.08, .82]].forEach(([x, y, z, scale], index) => {
+    const stone = mesh(footStoneGeometry, index % 2 ? mats.stoneDark : mats.stone, 'Portal Foot Stone')
+    stone.position.set(x, y, z)
+    stone.scale.set(scale * 1.15, scale * .7, scale * .86)
+    stone.rotation.set(index * .08, index * .73, index % 2 ? -.06 : .08)
     group.add(stone)
-  }
-  const veil = mesh(new RoundedBoxGeometry(3.15, 3.25, 0.06, 4, 0.65), glass, 'Portal Veil')
-  veil.position.set(0, 1.68, 0.1)
+  })
+  const veilShape = new THREE.Shape()
+  veilShape.moveTo(-1.5, 0)
+  veilShape.lineTo(1.5, 0)
+  veilShape.lineTo(1.5, 1.78)
+  veilShape.bezierCurveTo(1.5, 2.7, 0.78, 3.24, 0, 3.28)
+  veilShape.bezierCurveTo(-0.78, 3.24, -1.5, 2.7, -1.5, 1.78)
+  veilShape.closePath()
+  const veil = mesh(new THREE.ShapeGeometry(veilShape, 18), glass, 'Portal Veil')
+  veil.position.set(0, 0.08, 0.1)
   group.add(veil)
-  const icon = portalIcon(kind, glass)
-  icon.position.set(0, 5.3, 0)
-  icon.scale.setScalar(1.18)
+  const emblemMaterial = glass.clone()
+  emblemMaterial.name = `${kind} Emblem Color`
+  emblemMaterial.transparent = false
+  emblemMaterial.opacity = 1
+  emblemMaterial.depthWrite = true
+  emblemMaterial.roughness = .68
+  const icon = portalIcon(kind, emblemMaterial)
+  icon.position.set(0, kind === 'Forage' ? 4.02 : kind === 'Farm' ? 3.88 : 4.22, 0.48)
+  icon.scale.setScalar(kind === 'Forage' ? .66 : kind === 'Farm' ? .72 : .78)
   group.add(icon)
   return group
 }
@@ -742,17 +1015,24 @@ function shop(name = 'Common Shop', position = [8.1, 0, 6.4], rotation = -0.62, 
   group.name = name
   group.position.set(...position)
   group.rotation.y = rotation
-  const roof = mesh(new THREE.ConeGeometry(2.35, 1.08, 7), roofMaterial, 'Leafy Shop Roof')
-  roof.position.y = 3.18
-  roof.rotation.y = Math.PI / 7
-  const counter = mesh(new RoundedBoxGeometry(3.3, 0.82, 0.85, 5, 0.2), mats.barkLight, 'Shop Counter')
-  counter.position.set(0, 0.55, -1.05)
-  group.add(roof, counter)
-  for (const x of [-1.45, 1.45]) group.add(beamBetween([x, 0, -1.05], [x, 3.1, -1.05], 0.13))
-  const basket = mesh(new THREE.TorusGeometry(0.65, 0.12, 8, 12), mats.bark, 'Produce Basket')
-  basket.position.set(-0.8, 1.12, -1.08)
-  basket.rotation.x = Math.PI / 2
-  group.add(basket)
+  const cartStyle = /Market|Stand/.test(name)
+  const stall = propAsset(cartStyle ? 'Stall_Cart_Empty' : 'Stall_Empty', [0, 0, 0], cartStyle ? .98 : 1.12)
+  stall.name = `${name} Authored Stall`
+  group.add(stall)
+
+  // One restrained prop makes the stand's purpose readable at a glance. The
+  // labels remain authoritative, while the stall itself stays inside the same
+  // Quaternius visual family as the woodland assets.
+  const displayName = /Farm Shop/.test(name) ? 'FarmCrate_Carrot'
+    : /Produce|Forage Market/.test(name) ? 'Barrel_Apples'
+      : /Food Market/.test(name) ? 'FarmCrate_Apple'
+        : /Ore/.test(name) ? 'FarmCrate_Empty'
+          : /Common/.test(name) ? 'Barrel' : null
+  if (displayName) {
+    const display = propAsset(displayName, [-.5, .72, -.51], .46, -.08)
+    display.name = `${name} Display`
+    group.add(display)
+  }
   return group
 }
 
@@ -765,19 +1045,13 @@ function stockExchange(position = [-8, 0, 8], rotation = 0.18) {
   group.name = 'Stock Exchange Pavilion'
   group.position.set(...position)
   group.rotation.y = rotation
-  const counter = mesh(new RoundedBoxGeometry(3.35, 0.82, 0.92, 5, 0.22), mats.stoneDark, 'Exchange Counter')
-  counter.position.set(0, 0.58, -1)
-  const roof = mesh(new THREE.ConeGeometry(2.35, 0.9, 7), mats.leafDark, 'Exchange Pavilion Roof')
-  roof.position.set(0, 3.2, -0.35)
-  roof.rotation.y = Math.PI / 7
-  const lintel = mesh(new RoundedBoxGeometry(2.65, 0.18, 0.38, 5, 0.12), mats.richOre, 'Exchange Copper Lintel')
-  lintel.position.set(0, 2.82, 0.05)
-  group.add(counter, roof, lintel)
-  for (const x of [-1.45, 1.45]) group.add(beamBetween([x, 0, -0.9], [x, 3.05, -0.9], 0.14, mats.barkLight))
+  const stall = propAsset('Stall_Empty', [0, 0, 0], 1.12)
+  stall.name = 'Stock Exchange Authored Stall'
+  group.add(stall)
   const ring = mesh(new THREE.TorusGeometry(0.25, 0.055, 8, 20), mats.richOre, 'Animated_StockRing')
-  ring.position.set(0, 2.68, -0.72)
+  ring.position.set(0, 2.2, -0.58)
   const center = mesh(new THREE.OctahedronGeometry(0.12, 0), mats.parchment, 'Exchange Token')
-  center.position.set(0, 2.68, -0.72)
+  center.position.set(0, 2.2, -0.58)
   group.add(ring, center)
   return group
 }
@@ -1020,6 +1294,7 @@ function oreNode(id, x, z) {
   }
   group.add(mesh(mergeGeometries(boulderGeometries), mats.stoneOre, 'Ore Boulder'))
   group.add(mesh(mergeGeometries(veinGeometries), mats.richOre, 'Ore Vein'))
+  group.scale.setScalar(id.startsWith('RushOre') ? 1.16 : 1.34)
   return group
 }
 
@@ -1041,9 +1316,8 @@ function hayStack(x, z, rotation = 0) {
 
 function mineEntrance(x, z) {
   const group = new THREE.Group()
-  group.name = 'Old Quarry Entrance'
   group.position.set(x, mineGroundHeight(x, z), z)
-  group.name = 'Mine Timber Gate'
+  group.name = 'Old Quarry Entrance'
   group.add(beamBetween([-2.45, 0, 0], [-2.45, 4.45, 0], 0.24, mats.barkLight))
   group.add(beamBetween([2.45, 0, 0], [2.45, 4.45, 0], 0.24, mats.barkLight))
   group.add(beamBetween([-2.65, 4.35, 0], [2.65, 4.35, 0], 0.26, mats.barkLight))
@@ -1052,6 +1326,21 @@ function mineEntrance(x, z) {
     lamp.position.set(xOffset, 2.25, -0.1)
     group.add(lamp, beamBetween([xOffset, 0, 0], [xOffset, 2.1, 0], 0.09, mats.bark))
   }
+  // Authored rock outcrops rise from the terrain on either side. Keeping the
+  // opening clear overhead makes this read as a quarry cut leading into a
+  // larger cavern, rather than a freestanding ring of floating boulders.
+  ;[
+    ['Rock1', [-7.2, -.12, -.65], [2.7, 2.35, 2.45], [.02, .42, -.08], mats.mineWall],
+    ['Rock3', [-5.55, -.08, -1.05], [2.35, 2.48, 2.15], [.01, -.36, -.04], mats.mineStrata],
+    ['Rock2', [-4.05, -.04, -1.55], [1.72, 1.85, 1.68], [.04, .68, -.03], mats.mineWall],
+    ['Rock2', [-8.55, -.08, 1.05], [2.05, 1.55, 2.35], [-.02, -.2, .02], mats.mineStrata],
+    ['Rock1', [7.35, -.12, -.78], [2.62, 2.28, 2.42], [-.03, -.54, .07], mats.mineWall],
+    ['Rock3', [5.7, -.08, -1.18], [2.3, 2.42, 2.08], [-.02, .45, .04], mats.mineStrata],
+    ['Rock2', [4.1, -.04, -1.62], [1.76, 1.9, 1.7], [-.04, -.72, .03], mats.mineWall],
+    ['Rock1', [8.75, -.08, .92], [1.98, 1.48, 2.28], [.01, .28, -.03], mats.mineStrata],
+  ].forEach(([name, position, scale, rotation, rockMaterial]) => {
+    group.add(authoredRock(name, position, scale, rotation, rockMaterial))
+  })
   return group
 }
 
@@ -1129,6 +1418,7 @@ function maskedTerrain(name, bounds, step, heightAt, groundMaterial, includeCell
   const rows = Math.ceil((maxZ - minZ) / step)
   const positions = []
   const uvs = []
+  const colors = groundMaterial === mats.ground ? [] : null
   const indices = []
   for (let row = 0; row <= rows; row += 1) {
     const z = THREE.MathUtils.lerp(minZ, maxZ, row / rows)
@@ -1136,6 +1426,11 @@ function maskedTerrain(name, bounds, step, heightAt, groundMaterial, includeCell
       const x = THREE.MathUtils.lerp(minX, maxX, column / columns)
       positions.push(x, heightAt(x, z), z)
       uvs.push((x - minX) / 7, (z - minZ) / 7)
+      if (colors) {
+        const broad = Math.sin(x * .021 + z * .014) * .045 + Math.cos(z * .018 - x * .011) * .035
+        const shade = .94 + broad + Math.sin((x + z) * .073) * .014
+        colors.push(shade * .97, shade * 1.025, shade * .95)
+      }
     }
   }
   for (let row = 0; row < rows; row += 1) {
@@ -1153,6 +1448,7 @@ function maskedTerrain(name, bounds, step, heightAt, groundMaterial, includeCell
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
   geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  if (colors) geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
   geometry.setIndex(indices)
   geometry.computeVertexNormals()
   return mesh(geometry, groundMaterial, name)
@@ -1191,25 +1487,45 @@ function authoredCavern() {
     (x, z) => pointInPolygon(x, z, mineFootprint),
   ))
 
-  const roofFootprint = mineFootprint.filter(([, z]) => z <= -7)
-  const roofShape = new THREE.Shape()
-  roofFootprint.forEach(([x, z], index) => index ? roofShape.lineTo(x, z) : roofShape.moveTo(x, z))
-  roofShape.closePath()
-  const tessellate = new TessellateModifier(3.2, 7)
-  const roofGeometry = tessellate.modify(new THREE.ShapeGeometry(roofShape))
-  const roofPosition = roofGeometry.getAttribute('position')
-  for (let index = 0; index < roofPosition.count; index += 1) {
-    const x = roofPosition.getX(index)
-    const z = roofPosition.getY(index)
-    roofPosition.setXYZ(index, x, caveHeight(x, z) + Math.sin(x * 0.47 - z * 0.29) * 0.42 + Math.cos(x * 0.19 + z * 0.37) * 0.24, z)
-  }
-  roofGeometry.computeVertexNormals()
   const roofMaterial = mats.mineWall.clone()
   roofMaterial.name = 'Cavern Roof Stone'
   roofMaterial.side = THREE.DoubleSide
   roofMaterial.emissive = new THREE.Color(0x26231f)
   roofMaterial.emissiveIntensity = 0.18
-  group.add(mesh(roofGeometry, roofMaterial, 'Sealed Irregular Cavern Roof'))
+  group.add(maskedTerrain(
+    'Sealed Irregular Cavern Roof', [-68, 68, -255, 18], 1.75,
+    (x, z) => caveHeight(x, z) + Math.sin(x * .47 - z * .29) * .42 + Math.cos(x * .19 + z * .37) * .24,
+    roofMaterial,
+    (x, z) => pointInPolygon(x, z, mineFootprint),
+  ))
+
+  // A continuous low-poly shell sits behind the sculpted wall. The visible
+  // wall keeps its irregular silhouette, while tiny segment and roof joins no
+  // longer reveal the black scene void.
+  const shellPositions = []
+  const shellUvs = []
+  const shellIndices = []
+  for (let edge = 0; edge < mineFootprint.length; edge += 1) {
+    const [ax, az] = mineFootprint[edge]
+    const [bx, bz] = mineFootprint[(edge + 1) % mineFootprint.length]
+    const base = shellPositions.length / 3
+    const floorA = mineGroundHeight(ax, az) - .75
+    const floorB = mineGroundHeight(bx, bz) - .75
+    const roofA = caveHeight(ax, az) + 1.8
+    const roofB = caveHeight(bx, bz) + 1.8
+    shellPositions.push(ax, floorA, az, bx, floorB, bz, ax, roofA, az, bx, roofB, bz)
+    shellUvs.push(0, 0, 1, 0, 0, 2.4, 1, 2.4)
+    shellIndices.push(base, base + 1, base + 2, base + 1, base + 3, base + 2)
+  }
+  const shellGeometry = new THREE.BufferGeometry()
+  shellGeometry.setAttribute('position', new THREE.Float32BufferAttribute(shellPositions, 3))
+  shellGeometry.setAttribute('uv', new THREE.Float32BufferAttribute(shellUvs, 2))
+  shellGeometry.setIndex(shellIndices)
+  shellGeometry.computeVertexNormals()
+  const shellMaterial = mats.mineWall.clone()
+  shellMaterial.name = 'Mine Wall Backing'
+  shellMaterial.side = THREE.DoubleSide
+  group.add(mesh(shellGeometry, shellMaterial, 'Continuous Cavern Backing'))
 
   const wallPositions = []
   const wallUvs = []
@@ -1218,7 +1534,6 @@ function authoredCavern() {
   for (let edge = 0; edge < mineFootprint.length; edge += 1) {
     const [ax, az] = mineFootprint[edge]
     const [bx, bz] = mineFootprint[(edge + 1) % mineFootprint.length]
-    if (az > 10 && bz > 10) continue
     const length = Math.hypot(bx - ax, bz - az)
     const segments = Math.max(1, Math.ceil(length / 2.1))
     for (let part = 0; part < segments; part += 1) {
@@ -1240,8 +1555,8 @@ function authoredCavern() {
       for (let level = 0; level < 6; level += 1) {
         const ratio = level / 5
         wallPositions.push(
-          x0 + inward0.x * (offsets0[level] + seeded(cursor + level, 7710) * 0.4), THREE.MathUtils.lerp(f0 - 0.2, h0, ratio) + (seeded(cursor + level, 7750) - 0.5) * 0.7, z0 + inward0.y * offsets0[level],
-          x1 + inward1.x * (offsets1[level] + seeded(cursor + level, 7730) * 0.4), THREE.MathUtils.lerp(f1 - 0.2, h1, ratio) + (seeded(cursor + level, 7760) - 0.5) * 0.7, z1 + inward1.y * offsets1[level],
+          x0 + inward0.x * (offsets0[level] + seeded(cursor + level, 7710) * 0.4), THREE.MathUtils.lerp(f0 - 0.2, h0, ratio) + ratio * 1.05 + (seeded(cursor + level, 7750) - 0.5) * 0.7, z0 + inward0.y * offsets0[level],
+          x1 + inward1.x * (offsets1[level] + seeded(cursor + level, 7730) * 0.4), THREE.MathUtils.lerp(f1 - 0.2, h1, ratio) + ratio * 1.05 + (seeded(cursor + level, 7760) - 0.5) * 0.7, z1 + inward1.y * offsets1[level],
         )
         wallUvs.push(t0 * length / 3, ratio * 2.2, t1 * length / 3, ratio * 2.2)
       }
@@ -1403,11 +1718,20 @@ function lanternLandmark() {
   }
   const stump = mesh(new THREE.CylinderGeometry(0.58, 0.68, 0.72, 9), mats.barkLight, 'Meeting Stump')
   stump.position.y = 0.36
-  const post = mesh(new THREE.CylinderGeometry(0.1, 0.14, 2.25, 7), mats.bark, 'Lantern Post')
-  post.position.set(0, 1.55, 0)
-  const lamp = mesh(new THREE.OctahedronGeometry(0.28, 0), material('Lantern Amber', 0xe1a855, { roughness: 0.6 }), 'Amber Lantern')
-  lamp.position.set(0, 2.58, 0)
-  group.add(stump, post, lamp)
+  const post = mesh(new THREE.CylinderGeometry(0.11, 0.16, 2.45, 7), mats.bark, 'Lantern Post')
+  post.position.set(0, 1.62, 0)
+  const crossbar = beamBetween([0, 2.64, 0], [.74, 2.64, 0], .09, mats.barkLight)
+  const hanger = beamBetween([.68, 2.66, 0], [.68, 2.25, 0], .035, mats.stoneDark)
+  const lanternAmber = material('Lantern Amber', 0xe19b43, { roughness: .48 })
+  lanternAmber.emissive = new THREE.Color(0xc6651e)
+  lanternAmber.emissiveIntensity = 1.15
+  const lamp = mesh(new THREE.CylinderGeometry(.25, .29, .55, 6), lanternAmber, 'Warm Woodland Lantern')
+  lamp.position.set(.68, 2.02, 0)
+  const lampCap = mesh(new THREE.ConeGeometry(.34, .22, 6), mats.stoneDark, 'Lantern Cap')
+  lampCap.position.set(.68, 2.4, 0)
+  const lampBase = mesh(new THREE.CylinderGeometry(.29, .24, .12, 6), mats.stoneDark, 'Lantern Base')
+  lampBase.position.set(.68, 1.7, 0)
+  group.add(stump, post, crossbar, hanger, lamp, lampCap, lampBase)
   group.position.set(2.6, 0, 1.8)
   return group
 }
@@ -1494,6 +1818,26 @@ function hubScene() {
     scene.add(natureTree(x, z, scale, index * 0.79, hubGroundHeight, 2200 + index))
     scene.add(natureBush(x + (index % 2 ? 1.5 : -1.3), z - 0.8, 1.15 + (index % 3) * 0.16, index, hubGroundHeight, index))
   })
+  // A staggered canopy behind the portals closes the horizon while preserving
+  // the three clean portal sightlines. Large silhouettes add depth without
+  // adding the hundreds of extra small trees that hurt browser performance.
+  ;[
+    [-39,-43,3.28,1],[-30,-55,3.02,3],[-21,-63,3.36,5],[-9,-59,3.08,8],
+    [8,-62,3.34,6],[21,-64,3.08,5],[31,-54,3.42,3],[40,-43,3.16,1],
+  ].forEach(([x,z,scale,variant], index) => {
+    scene.add(natureTree(x, z, scale, index * 0.83 + 0.24, hubGroundHeight, variant))
+    if (index % 2 === 0) scene.add(natureBush(x + 1.8, z + 1.2, 1.3, index * .61, hubGroundHeight, 2700 + index))
+  })
+  // Large side silhouettes frame the playable clearing from the spawn camera.
+  // They sit outside all interaction routes and use fuller maple crowns, so
+  // they add composition rather than another evenly spaced row of trunks.
+  ;[
+    [-33,17,3.25,5],[-38,-3,3.48,3],[-34,-22,3.16,8],
+    [34,18,3.34,6],[39,-2,3.5,1],[35,-23,3.22,5],
+  ].forEach(([x,z,scale,variant], index) => {
+    scene.add(natureTree(x, z, scale, index * 1.07 + .3, hubGroundHeight, variant))
+    scene.add(natureBush(x + (index < 3 ? 2.2 : -2.2), z - 1.1, 1.45 + (index % 2) * .2, index * .73, hubGroundHeight, 2800 + index))
+  })
   for (let index = 0; index < 260; index += 1) {
     const x = -62 + seeded(index, 1881) * 124
     const z = -56 + seeded(index, 1889) * 116
@@ -1505,17 +1849,21 @@ function hubScene() {
     scene.add(natureFlowers(x + 0.8, z - 0.45, 0.46, index * 0.41, hubGroundHeight))
   })
   scene.add(
-    boulderFormation(-20, -31, 1.4, 0.28), boulderFormation(20, -31, 1.45, -0.32),
-    boulderFormation(-32, 2, 1.25, 0.14), boulderFormation(33, 1, 1.3, -0.18),
-    fallenLog(-18, 30, 5.4, 0.3), fallenLog(21, 34, 5.8, -0.36),
+    boulderFormation(-20, -31, 1.4, 0.28, hubGroundHeight), boulderFormation(20, -31, 1.45, -0.32, hubGroundHeight),
+    boulderFormation(-32, 2, 1.25, 0.14, hubGroundHeight), boulderFormation(33, 1, 1.3, -0.18, hubGroundHeight),
+    fallenLog(-18, 30, 5.4, 0.3, hubGroundHeight), fallenLog(21, 34, 5.8, -0.36, hubGroundHeight),
   )
   scene.add(
-    anchor('Spawn', [0, hubGroundHeight(0, 18), 18]),
+    // Start close enough that the lantern fork and all three destination
+    // silhouettes read immediately, without a long empty approach.
+    anchor('Spawn', [0, hubGroundHeight(0, 14), 14]),
     anchor('PortalForage', [0, hubGroundHeight(0, -28), -28]),
     anchor('PortalFarm', [-15, hubGroundHeight(-15, -22), -22]),
     anchor('PortalMine', [15, hubGroundHeight(15, -22), -22]),
     anchor('Shop', [commonFront[0], hubGroundHeight(...commonFront), commonFront[1]]),
     anchor('Stocks', [exchangeFront[0], hubGroundHeight(...exchangeFront), exchangeFront[1]]),
+    anchor('LabelShop', commonShop),
+    anchor('LabelStocks', exchange),
     anchor('Enhance', [5.05, hubGroundHeight(5.05, -1), -1]),
     anchor('LabelEnhance', [6.8, hubGroundHeight(6.8, -1), -1]),
     anchor('NpcShop', [commonNpc[0], hubGroundHeight(...commonNpc), commonNpc[1]]),
@@ -1534,42 +1882,73 @@ function forageScene() {
   scene.add(pathRibbon([[-8, -91], [-27, -98], [-40, -112]], 1.4, 'Old Stone Trail', forageGroundHeight))
   scene.add(pathRibbon([[0, -145], [25, -155], [48, -169], [68, -188]], 1.85, 'Deep Orchard Trail', forageGroundHeight))
   scene.add(pathRibbon([[-1, -158], [-24, -169], [-47, -184], [-69, -202]], 1.4, 'Fern Hollow Trail', forageGroundHeight))
-  const homeY = forageGroundHeight(0, -64)
-  const home = portal('Home', mats.glassHome, [0, homeY, -64], Math.PI)
+  const homePosition = [-16, forageGroundHeight(-16, -64), -64]
+  const home = portal('Home', mats.glassHome, homePosition, Math.PI / 2)
   home.name = 'Home Portal Landmark'
   scene.add(home)
-  const forageShopY = forageGroundHeight(9, -76)
-  const forageBuyerY = forageGroundHeight(-9, -76)
-  const forageShopPosition = [9, forageShopY, -76]
-  const forageBuyerPosition = [-9, forageBuyerY, -76]
+  const forageShopY = forageGroundHeight(5.9, -76)
+  const forageBuyerY = forageGroundHeight(-5.9, -76)
+  const forageShopPosition = [5.9, forageShopY, -76]
+  const forageBuyerPosition = [-5.9, forageBuyerY, -76]
   const forageShopRotation = Math.PI - 0.32
   const forageBuyerRotation = Math.PI + 0.32
   const forageShopFront = shopOffset(forageShopPosition, forageShopRotation, -1.78)
   const forageShopNpc = shopOffset(forageShopPosition, forageShopRotation, 0.3)
   const forageBuyerFront = shopOffset(forageBuyerPosition, forageBuyerRotation, -1.78)
   const forageBuyerNpc = shopOffset(forageBuyerPosition, forageBuyerRotation, 0.3)
-  scene.add(pathRibbon([[0,-66],[4,-71],[9,-76]], 1.25, 'Foraging Shop Path', forageGroundHeight))
-  scene.add(pathRibbon([[0,-66],[-4,-71],[-9,-76]], 1.25, 'Forage Market Path', forageGroundHeight))
+  scene.add(pathRibbon([[0,-70],[2.2,-72.5],[4.4,-74.5],[5.9,-76]], .82, 'Foraging Shop Path', forageGroundHeight))
+  scene.add(pathRibbon([[0,-70],[-2.2,-72.5],[-4.4,-74.5],[-5.9,-76]], .82, 'Forage Market Path', forageGroundHeight))
   scene.add(shop('Foraging Shop', forageShopPosition, forageShopRotation, mats.leafDark))
   scene.add(shop('Forage Market', forageBuyerPosition, forageBuyerRotation, mats.fruitGold))
 
-  // Jittered cells give the forest a consistent rhythm without obvious rows or
-  // dense copy-pasted groves. The playable trails and spawn clearing stay open.
-  let forestIndex = 0
-  for (let row = 0; row < 15; row += 1) {
-    for (let column = 0; column < 23; column += 1) {
-      const index = row * 23 + column
-      const x = -207 + column * 18.2 + (seeded(index, 3021) - 0.5) * 9.2
-      const z = 39 - row * 17.6 + (seeded(index, 3037) - 0.5) * 8.8
-      const center = trailCenterAt(z)
-      const nearMainTrail = Math.abs(x - center) < 7.4
-      const nearHome = Math.hypot(x, z + 64) < 13
-      const nearSpecialists = Math.hypot(x, z + 76) < 18
-      if (nearMainTrail || nearHome || nearSpecialists) continue
-      const scale = 1.04 + seeded(index, 3041) * 0.58
-      scene.add(natureTree(x, z, scale, seeded(index, 3049) * Math.PI * 2, forageGroundHeight, 3100 + index))
-      if (forestIndex % 2 === 0) scene.add(natureBush(x + 1.25, z - 0.9, 0.68 + seeded(index, 3053) * 0.42, index, forageGroundHeight, index))
-      forestIndex += 1
+  // Frame the arrival clearing as woodland without crowding its readable fork.
+  // Uneven pairs avoid the old evenly spaced perimeter while preserving clear
+  // sightlines to both specialists and the first distant fruit silhouettes.
+  ;[
+    [-25,-57,1.28,731], [22,-55,1.13,739], [-32,-71,1.18,743], [30,-75,1.34,751],
+    [-29,-91,1.38,757], [34,-92,1.16,761], [-18,-108,1.22,769], [24,-111,1.31,773],
+  ].forEach(([x,z,scale,variant], index) => {
+    scene.add(natureTree(x, z, scale * 1.16, seeded(index, 7771) * Math.PI * 2, forageGroundHeight, variant))
+    scene.add(natureBush(x + (index % 2 ? -1.8 : 1.7), z + (index % 3 - 1) * 1.1, .78 + (index % 3) * .12, index * .53, forageGroundHeight, variant + 19))
+  })
+
+  // Irregular woodland distribution, authored at build time. A grid remained
+  // visible even after scale and model changes, so accepted sites now use
+  // minimum spacing with real trail clearances. This creates continuous canopy
+  // rhythm with a few natural pockets instead of rows or isolated tree patches.
+  const sideTrails = [
+    [[-5, -14], [-17, -22], [-27, -37], [-43, -51]],
+    [[7, -48], [22, -54], [36, -67], [49, -78]],
+    [[-8, -91], [-27, -98], [-40, -112]],
+    [[0, -145], [25, -155], [48, -169], [68, -188]],
+    [[-1, -158], [-24, -169], [-47, -184], [-69, -202]],
+  ]
+  const forestSites = []
+  for (let candidate = 0; candidate < 5600 && forestSites.length < 660; candidate += 1) {
+    const x = -208 + seeded(candidate, 3021) * 416
+    const z = 40 - seeded(candidate, 3037) * 262
+    const nearRoute = distanceToPolyline(x, z, forageTrail) < 7.3 || sideTrails.some((trail) => distanceToPolyline(x, z, trail) < 5.6)
+    const nearHome = Math.hypot(x, z + 64) < 14
+    const nearSpecialists = Math.hypot(x, z + 76) < 19
+    const spacing = 7.1 + seeded(candidate, 3043) * 1.5
+    if (nearRoute || nearHome || nearSpecialists || forestSites.some(([px, pz]) => Math.hypot(x - px, z - pz) < spacing)) continue
+    const forestIndex = forestSites.length
+    forestSites.push([x, z])
+    const rotation = seeded(candidate, 3049) * Math.PI * 2
+    const broadleaf = seeded(candidate, 3053) < .57
+    scene.add(broadleaf
+      ? broadleafTree(x, z, 2.42 + seeded(candidate, 3059) * 1.02, rotation, forageGroundHeight, 3100 + candidate)
+      : natureTree(x, z, 1.52 + seeded(candidate, 3061) * .96, rotation, forageGroundHeight, 3100 + candidate))
+    if (forestIndex % 3 === 0) {
+      const underAngle = seeded(candidate, 3067) * Math.PI * 2
+      scene.add(natureBush(
+        x + Math.cos(underAngle) * 1.4,
+        z + Math.sin(underAngle) * 1.4,
+        .7 + seeded(candidate, 3079) * .45,
+        rotation + .7,
+        forageGroundHeight,
+        candidate,
+      ))
     }
   }
 
@@ -1621,14 +2000,14 @@ function forageScene() {
     return [THREE.MathUtils.clamp(x, -188, 188), z]
   })
   const apples = [
-    [3, -82], [-13, -87], [-18, -97], [20, -102],
+    [-10, -96], [20, -104], [-28, -121], [30, -132],
     ...orchardSites(-49, -44, 8, 6101),
     ...orchardSites(54, -117, 12, 6127),
     ...orchardSites(-64, -181, 12, 6151),
     ...distributedFruitSites(34, 6173),
   ]
   const oranges = [
-    [8, -89], [-15, -105], [23, -112],
+    [11, -99], [-24, -109], [27, -118],
     ...orchardSites(54, -69, 9, 6203),
     ...orchardSites(-52, -124, 12, 6229),
     ...distributedFruitSites(36, 6257),
@@ -1645,9 +2024,11 @@ function forageScene() {
   scene.add(
     anchor('Spawn', [0, forageGroundHeight(0, -69), -69]),
     anchor('GateDeep', [4, forageGroundHeight(4, -174), -174]),
-    anchor('Home', [0, homeY, -64]),
+    anchor('Home', homePosition),
     anchor('ForageShop', [forageShopFront[0], forageGroundHeight(...forageShopFront), forageShopFront[1]]),
     anchor('ForageBuyer', [forageBuyerFront[0], forageGroundHeight(...forageBuyerFront), forageBuyerFront[1]]),
+    anchor('LabelForageShop', forageShopPosition),
+    anchor('LabelForageBuyer', forageBuyerPosition),
     anchor('NpcForageShop', [forageShopNpc[0], forageGroundHeight(...forageShopNpc), forageShopNpc[1]]),
     anchor('NpcForageBuyer', [forageBuyerNpc[0], forageGroundHeight(...forageBuyerNpc), forageBuyerNpc[1]]),
     anchor('SecretSite0', [-43, forageGroundHeight(-43, -51), -51]),
@@ -1666,8 +2047,8 @@ function farmScene() {
   scene.name = 'Sunmeadow Farmstead'
   scene.add(terrain(118, farmGroundHeight))
   scene.add(pathRibbon([[0, 24], [0, 13], [0, 2], [0, -18], [0, -43], [0, -75]], 2.35, 'Farmstead Lane', farmGroundHeight))
-  scene.add(pathRibbon([[-79, 1], [-55, 0], [-18, -1], [19, -1], [56, 0], [79, 2]], 1.8, 'North Farm Lane', farmGroundHeight))
-  scene.add(pathRibbon([[-79, -32], [-54, -32], [-18, -32], [20, -32], [57, -32], [80, -31]], 1.8, 'South Farm Lane', farmGroundHeight))
+  scene.add(pathRibbon([[-79, 1], [-55, 0], [-18, -1], [19, -1], [56, 0], [79, 2]], 2.35, 'North Farm Lane', farmGroundHeight))
+  scene.add(pathRibbon([[-79, -32], [-54, -32], [-18, -32], [20, -32], [57, -32], [80, -31]], 2.35, 'South Farm Lane', farmGroundHeight))
   scene.add(pathRibbon([[-1, 13], [-4, 11], [-7, 9]], 1.4, 'Seed Shop Path', farmGroundHeight))
   scene.add(pathRibbon([[1, 13], [4, 11], [7, 9]], 1.4, 'Produce Stand Path', farmGroundHeight))
   scene.add(pathRibbon([[2, 13], [9, 12], [16, 10]], 1.35, 'Food Market Path', farmGroundHeight))
@@ -1676,15 +2057,15 @@ function farmScene() {
   farmParcels.forEach(([x, z], index) => scene.add(farmParcel(x, z, index)))
   farmParcels.forEach(([x, z], index) => {
     const laneZ = index < 4 ? -1 : -32
-    scene.add(pathRibbon([[x + 9.1, laneZ], [x + 9.1, z]], 1.45, `Farm ${index + 1} Entry Path`, farmGroundHeight))
+    scene.add(pathRibbon([[x + 9.1, laneZ], [x + 9.1, z]], 2.05, `Farm ${index + 1} Entry Path`, farmGroundHeight))
   })
   farmParcels.forEach(([x, z], index) => scene.add(farmFurnacePad(x - 8.8, z + 4.8, index)))
-  const farmShopY = farmGroundHeight(-7, 9)
-  const buyerY = farmGroundHeight(7, 9)
-  const foodBuyerY = farmGroundHeight(18, 9)
-  const farmShopPosition = [-7, farmShopY, 9]
-  const buyerPosition = [7, buyerY, 9]
-  const foodBuyerPosition = [18, foodBuyerY, 9]
+  const farmShopY = farmGroundHeight(-5.8, 9)
+  const buyerY = farmGroundHeight(5.8, 9)
+  const foodBuyerY = farmGroundHeight(15.5, 9)
+  const farmShopPosition = [-5.8, farmShopY, 9]
+  const buyerPosition = [5.8, buyerY, 9]
+  const foodBuyerPosition = [15.5, foodBuyerY, 9]
   const farmShopRotation = Math.PI + 0.16
   const buyerRotation = Math.PI - 0.16
   const foodBuyerRotation = Math.PI - 0.16
@@ -1698,11 +2079,16 @@ function farmScene() {
     shop('Farm Shop', farmShopPosition, farmShopRotation, mats.glassFarm),
     shop('Produce Stand', buyerPosition, buyerRotation, mats.leaf),
     shop('Food Market', foodBuyerPosition, foodBuyerRotation, mats.richOre),
+    farmBuildingAsset('Barn', [0, farmGroundHeight(0, -88), -88], 1.34, Math.PI),
+    farmBuildingAsset('Windmill', [74, farmGroundHeight(74, -82), -82], 1.12, -.18),
     hayStack(-78, -30, 0.35), hayStack(77, -69, -0.4), hayStack(10, -86, 0.12),
   )
 
   const farmClusters = [[-24, 9, 5, 4], [25, 7, 5, 4], [-42, 15, 7, 7], [42, 11, 7, 7], [-78, -7, 7, 9], [78, -36, 7, 9], [-78, -79, 7, 9], [78, -87, 7, 9], [-92, 31, 11, 18], [91, 27, 10, 17], [-102, -16, 11, 19], [101, -25, 11, 19], [-100, -70, 12, 20], [98, -77, 12, 20], [-66, -101, 11, 18], [65, -105, 11, 18], [-14, -106, 8, 15], [24, -90, 7, 11], [17, 38, 8, 14]]
-  farmClusters.forEach(([x, z, count, radius], index) => scatterCluster(scene, x, z, count, radius, farmGroundHeight, 903 + index * 23, 1.02))
+  farmClusters.forEach(([x, z, count, radius], index) => {
+    const boundaryWindbreak = Math.abs(x) > 70 || z < -82 || z > 24
+    scatterCluster(scene, x, z, count, radius, farmGroundHeight, 903 + index * 23, boundaryWindbreak ? 1.58 : 1.18)
+  })
   for (let index = 0; index < 150; index += 1) {
     const x = -103 + seeded(index, 1001) * 206
     const z = 32 - seeded(index, 1009) * 137
@@ -1720,6 +2106,9 @@ function farmScene() {
     anchor('FarmShop', [farmShopFront[0], farmGroundHeight(...farmShopFront), farmShopFront[1]]),
     anchor('ProduceBuyer', [buyerFront[0], farmGroundHeight(...buyerFront), buyerFront[1]]),
     anchor('FoodBuyer', [foodBuyerFront[0], farmGroundHeight(...foodBuyerFront), foodBuyerFront[1]]),
+    anchor('LabelFarmShop', farmShopPosition),
+    anchor('LabelProduceBuyer', buyerPosition),
+    anchor('LabelFoodBuyer', foodBuyerPosition),
     anchor('NpcFarmShop', [farmShopNpc[0], farmGroundHeight(...farmShopNpc), farmShopNpc[1]]),
     anchor('NpcProduceBuyer', [buyerNpc[0], farmGroundHeight(...buyerNpc), buyerNpc[1]]),
     anchor('NpcFoodBuyer', [foodBuyerNpc[0], farmGroundHeight(...foodBuyerNpc), foodBuyerNpc[1]]),
@@ -1748,29 +2137,27 @@ function farmScene() {
 function mineScene() {
   const scene = new THREE.Scene()
   scene.name = 'Stonewake Authored Cavern'
-  scene.add(mineExteriorTerrain(), authoredCavern())
-  scene.add(pathRibbon([[0, 43], [0, 34], [0, 25], [0, 18], [0, 8], [0, 2]], 2.45, 'Mine Approach', mineGroundHeight))
-  scene.add(mineEntrance(0, 18))
-  scene.add(portal('Home', mats.glassHome, [-16, mineGroundHeight(-16, 36), 36], Math.PI / 2))
-  const mineShopPosition = [-8.5, mineGroundHeight(-8.5, 25), 25]
-  const oreBuyerPosition = [8.5, mineGroundHeight(8.5, 25), 25]
-  const mineShopFront = shopOffset(mineShopPosition, -0.06, -1.78)
-  const mineShopNpc = shopOffset(mineShopPosition, -0.06, 0.3)
-  const oreBuyerFront = shopOffset(oreBuyerPosition, 0.06, -1.78)
-  const oreBuyerNpc = shopOffset(oreBuyerPosition, 0.06, 0.3)
+  scene.add(authoredCavern())
+  const homePosition = [-17, mineGroundHeight(-17, 9), 9]
+  scene.add(portal('Home', mats.glassHome, homePosition, Math.PI / 2))
+  const mineShopPosition = [-4.8, mineGroundHeight(-4.8, 2.5), 2.5]
+  const oreBuyerPosition = [4.8, mineGroundHeight(4.8, 2.5), 2.5]
+  const shopRotation = Math.PI
+  const mineShopFront = shopOffset(mineShopPosition, shopRotation, -1.78)
+  const mineShopNpc = shopOffset(mineShopPosition, shopRotation, 0.3)
+  const oreBuyerFront = shopOffset(oreBuyerPosition, shopRotation, -1.78)
+  const oreBuyerNpc = shopOffset(oreBuyerPosition, shopRotation, 0.3)
   scene.add(
-    shop('Mining Shop', mineShopPosition, -0.06, mats.glassMine),
-    shop('Ore Stand', oreBuyerPosition, 0.06, mats.richOre),
+    shop('Mining Shop', mineShopPosition, shopRotation, mats.glassMine),
+    shop('Ore Stand', oreBuyerPosition, shopRotation, mats.richOre),
   )
-  for (const [x, z, scale, rotation, variant] of [[-18,41,1.15,0.3,0],[19,43,1.3,-0.5,0],[-27,57,1.05,0.8,0],[28,60,1.2,-0.2,0],[-18,70,1.25,0.4,0],[20,72,1.1,-0.7,0]]) {
-    scene.add(natureTree(x, z, scale, rotation, mineGroundHeight, variant), natureBush(x + 2.2, z - 1.1, 0.9, rotation, mineGroundHeight, 0))
-  }
   for (const [x, z, scale, rotation] of [
     [-48, 1, 1.8, 0.2], [49, 0, 1.65, -0.5], [-58, -26, 2.1, 0.7], [57, -31, 1.85, -0.3],
     [-49, -47, 1.55, 1.1], [50, -48, 1.75, -0.8], [-59, -72, 2.05, 0.4], [59, -68, 1.75, -0.2],
     [-55, -96, 1.7, 0.8], [55, -94, 1.9, -0.6], [-46, -109, 1.45, 0.2], [47, -108, 1.6, -0.4],
     [-49, -133, 1.85, 0.9], [49, -136, 1.7, -0.7], [-34, -151, 1.45, 0.4], [35, -151, 1.55, -0.3],
     [-15, -34, 1.2, 0.5], [17, -35, 1.15, -0.4], [-18, -89, 1.25, 0.7], [19, -92, 1.2, -0.6],
+    [-15, -160, 1.02, 0.35], [16, -176, 1.08, -0.48], [-17, -194, .94, .62], [17, -211, 1.0, -.38], [-14, -230, .9, .26],
   ]) scene.add(mineBoulder(x, z, scale, rotation))
 
   for (const [x, z, width] of [[0,-28,4.8],[0,-78,4.2]]) {
@@ -1829,11 +2216,13 @@ function mineScene() {
     [-46,-104,1.25,93],[47,-106,1.1,94],[-19,-113,1.1,95],[20,-115,1.15,96],[-43,-132,1.2,97],[44,-134,1.25,98],
     [-23,-149,1.1,99],[24,-149,1.0,100],[-34,-169,1.15,101],[35,-172,1.1,102],[-18,-190,1.05,103],[20,-191,1.1,104],
     [-34,-210,1.2,105],[36,-216,1.15,106],[-8,-236,1.0,107],[12,-244,1.1,108],
+    [-10,-163,.92,109],[11,-181,.88,110],[-9,-201,.9,111],[10,-220,.86,112],[0,-239,.82,113],
   ]) scene.add(caveRubble(x, z, scale, seed))
   MINE_NODE_SITES.forEach(({ id, x, z }) => scene.add(oreNode(id, x, z)))
   scene.add(
-    anchor('Spawn', [0, mineGroundHeight(0, 34), 34]), anchor('GateDeep', [0, mineGroundHeight(0, -154), -154]), anchor('Home', [-16, mineGroundHeight(-16, 36), 36]),
+    anchor('Spawn', [0, mineGroundHeight(0, 13.4), 13.4]), anchor('GateDeep', [0, mineGroundHeight(0, -154), -154]), anchor('Home', homePosition),
     anchor('MineShop', [mineShopFront[0], mineGroundHeight(...mineShopFront), mineShopFront[1]]), anchor('OreBuyer', [oreBuyerFront[0], mineGroundHeight(...oreBuyerFront), oreBuyerFront[1]]),
+    anchor('LabelMineShop', mineShopPosition), anchor('LabelOreBuyer', oreBuyerPosition),
     anchor('NpcMineShop', [mineShopNpc[0], mineGroundHeight(...mineShopNpc), mineShopNpc[1]]), anchor('NpcOreBuyer', [oreBuyerNpc[0], mineGroundHeight(...oreBuyerNpc), oreBuyerNpc[1]]),
     anchor('SecretSite0', [-55, mineGroundHeight(-55, -40), -40]), anchor('SecretSite1', [56, mineGroundHeight(56, -98), -98]), anchor('SecretSite2', [-29, mineGroundHeight(-29, -231), -231]),
     ...MINE_NODE_SITES.map(({ id, x, z }) => anchor(id, [x, mineGroundHeight(x, z), z])),
@@ -1932,11 +2321,6 @@ function farmRushScene() {
       if (object.name.includes('Soil Bed')) object.position.y = 0.045
       if (object.name === 'Farm Gate Path') object.position.y = 0.035
     })
-    for (let furrow = -2; furrow <= 2; furrow += 1) {
-      const strip = mesh(new RoundedBoxGeometry(10.8, 0.035, 0.15, 3, 0.045), mats.soilFurrow, 'Kitchen Rush Tilled Furrow')
-      strip.position.set(0, 0.11, furrow * 2.05)
-      parcel.add(strip)
-    }
     scene.add(parcel)
     const furnace = farmFurnacePad(x - 8.8, z + 4.8, 80 + index)
     furnace.name = `Rush Farm Furnace ${index + 1}`
@@ -2024,8 +2408,21 @@ function forageRushScene() {
   const scene = forageScene()
   scene.name = 'Mosswood Forage Race'
   const nearSpawnResources = []
+  const mainWorldOnly = []
   scene.updateMatrixWorld(true)
   scene.traverse((object) => {
+    if (
+      object.name === 'Home Portal Landmark'
+      || object.name === 'Foraging Shop'
+      || object.name === 'Forage Market'
+      || object.name === 'Foraging Shop Path'
+      || object.name === 'Forage Market Path'
+      || object.name === 'Anchor_Home'
+      || object.name === 'Anchor_ForageShop'
+      || object.name === 'Anchor_ForageBuyer'
+      || object.name === 'Anchor_NpcForageShop'
+      || object.name === 'Anchor_NpcForageBuyer'
+    ) mainWorldOnly.push(object)
     if (object.name.startsWith('Resource_ForageApple')) object.name = object.name.replace('Resource_ForageApple', 'Resource_ForageRushApple')
     else if (object.name.startsWith('Resource_ForageOrange')) object.name = object.name.replace('Resource_ForageOrange', 'Resource_ForageRushOrange')
     else if (object.name.startsWith('Resource_ForageTruffle')) object.name = object.name.replace('Resource_ForageTruffle', 'Resource_ForageRushTruffle')
@@ -2036,6 +2433,7 @@ function forageRushScene() {
     else if (object.name.startsWith('Anchor_ForageDiscovery')) object.name = object.name.replace('Anchor_ForageDiscovery', 'Anchor_ForageRushDiscovery')
     if ((object.name.startsWith('Resource_ForageRush') || object.name.startsWith('Anchor_ForageRush')) && object.getWorldPosition(new THREE.Vector3()).distanceTo(new THREE.Vector3(0, 0, -69)) < 24) nearSpawnResources.push(object)
   })
+  mainWorldOnly.forEach((object) => object.parent?.remove(object))
   nearSpawnResources.forEach((object) => {
     if (object.name.startsWith('Resource_ForageRush') && object.parent && object.parent.name.includes('Fruit Tree')) object.parent.parent?.remove(object.parent)
     else object.parent?.remove(object)
@@ -2110,7 +2508,10 @@ async function exportScene(scene, filename) {
   const nextPath = `${outputPath}.next.glb`
   await writeFile(rawPath, Buffer.from(binary))
 
-  const io = new NodeIO().registerExtensions([EXTMeshGPUInstancing])
+  await MeshoptEncoder.ready
+  const io = new NodeIO()
+    .registerExtensions([EXTMeshGPUInstancing, EXTMeshoptCompression, EXTTextureWebP])
+    .registerDependencies({ 'meshopt.encoder': MeshoptEncoder })
   const document = await io.read(rawPath)
   const deferredWetTiles = filename === 'farm.glb'
     ? document.getRoot().listNodes().filter((node) => node.getName().startsWith('WateredSoil_')).map((node) => ({ name: node.getName(), translation: [...node.getTranslation()] }))
@@ -2122,14 +2523,12 @@ async function exportScene(scene, filename) {
   // Anchor_* nodes are deliberately empty, however: runtime interaction and
   // NPC placement read them by name. Preserve and restore them around the
   // mine optimization instead of relying on transform implementation details.
-  const deferredAnchors = filename === 'mine.glb' || filename === 'mining-rush.glb'
-    ? document.getRoot().listNodes().filter((node) => node.getName().startsWith('Anchor_')).map((node) => ({
-        name: node.getName(),
-        translation: [...node.getTranslation()],
-        rotation: [...node.getRotation()],
-        scale: [...node.getScale()],
+  const deferredAnchors = document.getRoot().listNodes().filter((node) => node.getName().startsWith('Anchor_')).map((node) => ({
+         name: node.getName(),
+         translation: [...node.getTranslation()],
+         rotation: [...node.getRotation()],
+         scale: [...node.getScale()],
       }))
-    : []
   if (deferredWetTiles.length) document.getRoot().listNodes().filter((node) => node.getName().startsWith('WateredSoil_')).forEach((node) => node.dispose())
   document.createExtension(EXTMeshGPUInstancing).setRequired(true)
   const woodlandSource = await readFile(path.join(root, 'public', 'assets', 'textures', 'woodland-ground-v1.png'))
@@ -2146,15 +2545,23 @@ async function exportScene(scene, filename) {
     .createTexture('Storybook Cave Stone V1')
     .setImage(await sharp(caveStoneSource).resize(1024, 1024).modulate({ brightness: 0.78, saturation: 0.58 }).tint('#888078').png({ compressionLevel: 9 }).toBuffer())
     .setMimeType('image/png')
+  const soilTexture = document
+    .createTexture('Storybook Tilled Soil V1')
+    .setImage(await sharp(caveStoneSource).resize(1024, 1024).modulate({ brightness: 0.62, saturation: 0.34 }).tint('#79533d').blur(0.35).png({ compressionLevel: 9 }).toBuffer())
+    .setMimeType('image/png')
   for (const mat of document.getRoot().listMaterials()) {
     if (mat.getName() === 'Ground') {
       const greenGround = filename === 'farm.glb' || filename === 'forage.glb' || filename === 'hub.glb' || filename === 'farm-rush.glb' || filename === 'forage-rush.glb'
-      mat.setBaseColorTexture(greenGround ? farmTexture : groundTexture).setBaseColorFactor(greenGround ? [0.9, 1, 0.82, 1] : [0.9, 0.9, 0.9, 1]).setRoughnessFactor(0.95).setMetallicFactor(0)
+      mat.setBaseColorTexture(greenGround ? farmTexture : groundTexture).setBaseColorFactor(greenGround ? [0.74, 0.9, 0.64, 1] : [0.9, 0.9, 0.9, 1]).setRoughnessFactor(0.95).setMetallicFactor(0)
     }
-    if (mat.getName() === 'Path') mat.setBaseColorTexture(groundTexture).setBaseColorFactor([0.72, 0.56, 0.38, 1]).setRoughnessFactor(1).setMetallicFactor(0)
-    if (mat.getName() === 'Mine Ground') mat.setBaseColorTexture(mineTexture).setBaseColorFactor([0.92, 0.9, 0.84, 1]).setRoughnessFactor(1).setMetallicFactor(0)
-    if (mat.getName() === 'Mine Path') mat.setBaseColorTexture(mineTexture).setBaseColorFactor([0.92, 0.82, 0.66, 1]).setRoughnessFactor(1).setMetallicFactor(0)
-    if (['Mine Wall', 'Mine Strata', 'Cavern Roof Stone', 'Cavern Perimeter Stone'].includes(mat.getName())) mat.setBaseColorTexture(mineTexture).setBaseColorFactor(mat.getName() === 'Mine Strata' ? [0.5, 0.48, 0.45, 1] : [0.68, 0.7, 0.66, 1]).setRoughnessFactor(1).setMetallicFactor(0)
+    if (mat.getName() === 'Path') mat.setBaseColorTexture(groundTexture).setBaseColorFactor([0.68, 0.59, 0.48, 1]).setRoughnessFactor(1).setMetallicFactor(0)
+    if (mat.getName() === 'Mine Ground') mat.setBaseColorTexture(mineTexture).setBaseColorFactor([0.64, 0.62, 0.58, 1]).setRoughnessFactor(1).setMetallicFactor(0)
+    if (mat.getName() === 'Mine Path') mat.setBaseColorTexture(mineTexture).setBaseColorFactor([0.68, 0.59, 0.48, 1]).setRoughnessFactor(1).setMetallicFactor(0)
+    if (['Mine Wall', 'Cavern Roof Stone', 'Cavern Perimeter Stone', 'Mine Wall Backing'].includes(mat.getName())) mat.setBaseColorTexture(mineTexture).setBaseColorFactor([0.58, 0.58, 0.55, 1]).setRoughnessFactor(1).setMetallicFactor(0)
+    if (mat.getName() === 'Mine Strata') mat.setBaseColorTexture(mineTexture).setBaseColorFactor([0.44, 0.43, 0.41, 1]).setRoughnessFactor(1).setMetallicFactor(0)
+    if (mat.getName() === 'Soil') mat.setBaseColorTexture(soilTexture).setBaseColorFactor([0.82, 0.72, 0.64, 1]).setRoughnessFactor(1).setMetallicFactor(0)
+    if (mat.getName() === 'Watered Soil') mat.setBaseColorTexture(soilTexture).setBaseColorFactor([0.53, 0.47, 0.43, 1]).setRoughnessFactor(0.96).setMetallicFactor(0)
+    if (mat.getName() === 'Tilled Soil Furrow') mat.setBaseColorTexture(soilTexture).setBaseColorFactor([0.42, 0.36, 0.32, 1]).setRoughnessFactor(1).setMetallicFactor(0)
   }
   // Event resources must keep their authored parent hierarchy so runtime state can
   // recolor/hide one player's ore or crop without affecting every matching mesh.
@@ -2170,6 +2577,9 @@ async function exportScene(scene, filename) {
     const targetScene = document.getRoot().listScenes()[0]
     deferredWetTiles.forEach(({ name, translation }) => targetScene.addChild(document.createNode(name).setMesh(deferredWetMesh).setTranslation(translation)))
   }
+  // Geometry compression includes a prune pass, so restore the deliberately
+  // empty interaction anchors only after it completes.
+  await document.transform(meshopt({ encoder: MeshoptEncoder, level: 'medium' }))
   if (deferredAnchors.length) {
     const targetScene = document.getRoot().listScenes()[0]
     const remainingNames = new Set(document.getRoot().listNodes().map((node) => node.getName()))
@@ -2178,6 +2588,12 @@ async function exportScene(scene, filename) {
       targetScene.addChild(document.createNode(name).setTranslation(translation).setRotation(rotation).setScale(scale))
     })
   }
+  // The source kits and authored terrain textures arrive as large embedded PNGs.
+  // WebP preserves their full dimensions and alpha while cutting scene transfer
+  // size substantially; modern browsers and Three's GLTFLoader support the
+  // required EXT_texture_webp extension directly.
+  document.createExtension(EXTTextureWebP).setRequired(true)
+  await document.transform(textureCompress({ encoder: sharp, targetFormat: 'webp', quality: 86, effort: 5 }))
   await io.write(nextPath, document)
   await rm(rawPath, { force: true })
   await rename(nextPath, outputPath)

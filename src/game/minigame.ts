@@ -272,16 +272,30 @@ function scheduleRoll(sessionSeed: number, eventIndex: number) {
   return value >>> 0
 }
 
-/** The full event order is deterministic at match start and never repeats consecutively. */
+/** The full event order is deterministic at match start, never repeats consecutively, and uses every event once per three-event set. */
 export function scheduledMinigame(milestone: number, sessionSeed = 9731, durationSeconds = 60 * 60): MinigameKind {
   const kinds: MinigameKind[] = ['mining', 'farm', 'forage']
   const milestones = minigameMilestones(durationSeconds)
   const exactIndex = milestones.indexOf(milestone)
   const nextIndex = milestones.findIndex((value) => value >= milestone)
   const eventIndex = exactIndex >= 0 ? exactIndex : Math.max(0, nextIndex)
-  let kindIndex = scheduleRoll(sessionSeed, 0) % kinds.length
-  for (let index = 1; index <= eventIndex; index += 1) kindIndex = (kindIndex + 1 + scheduleRoll(sessionSeed, index) % 2) % kinds.length
-  return kinds[kindIndex]
+  const targetSet = Math.floor(eventIndex / kinds.length)
+  let previous: MinigameKind | null = null
+  for (let setIndex = 0; setIndex <= targetSet; setIndex += 1) {
+    const set = [...kinds]
+    for (let index = set.length - 1; index > 0; index -= 1) {
+      const rollIndex = setIndex * kinds.length + (set.length - index)
+      const swapIndex = scheduleRoll(sessionSeed, rollIndex) % (index + 1)
+      ;[set[index], set[swapIndex]] = [set[swapIndex], set[index]]
+    }
+    if (previous && set[0] === previous) {
+      const swapIndex = set.findIndex((kind) => kind !== previous)
+      ;[set[0], set[swapIndex]] = [set[swapIndex], set[0]]
+    }
+    if (setIndex === targetSet) return set[eventIndex % kinds.length]
+    previous = set[set.length - 1]
+  }
+  return kinds[0]
 }
 
 export function minigameSchedule(durationSeconds: number, sessionSeed = 9731) {
@@ -370,8 +384,10 @@ export const FARM_RUSH_MAX_ORDERS = 3
 export const FARM_RUSH_ORDER_LIFETIME_MS = 40_000
 
 export type ForageRushKind = 'apple' | 'orange' | 'truffle' | 'discovery'
-export const FORAGE_RUSH_REQUIREMENTS: Record<ForageRushKind, number> = { apple: 12, orange: 12, truffle: 3, discovery: 1 }
+export const FORAGE_RUSH_REQUIREMENTS: Record<ForageRushKind, number> = { apple: 40, orange: 40, truffle: 3, discovery: 1 }
 export const FORAGE_RUSH_DELIVERY_POINTS: Record<ForageRushKind, number> = { apple: 120, orange: 120, truffle: 210, discovery: 320 }
+export const FORAGE_RUSH_COMPLETION_BONUS = 10_000
+export const FORAGE_RUSH_RESPAWN_MS = { fruit: 15_000, rare: 12_000 } as const
 
 export function miningRushOre(milestone: number, socketId: string, generation: number): MiningRushOre {
   // Each bay uses the same 25-node value sequence. The final number is the local socket,

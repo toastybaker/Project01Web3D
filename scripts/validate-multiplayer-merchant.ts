@@ -36,7 +36,7 @@ type Purchase = { requestId: string; ok: boolean; reason?: string; itemId?: Merc
 const port = 26_573
 const server = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
   cwd: process.cwd(),
-  env: { ...process.env, PORT: String(port) },
+  env: { ...process.env, PORT: String(port), TEST_STARTING_CASH: '1000000000' },
   stdio: ['pipe', 'pipe', 'pipe'],
 })
 const rooms: Room[] = []
@@ -66,7 +66,7 @@ try {
   let latestCycle = cycleA
   for (let index = 0; index < target.stock; index += 1) {
     const buyer = index % 2 ? buyerB : buyerA
-    const requestId = `buy-${index}`
+    const requestId = `merchant-buy-${index}`
     const resultPromise = message<Purchase>(buyer, 'merchant:result', (result) => result.requestId === requestId)
     const sharedPromise = message<MerchantCycle>(index % 2 ? buyerA : buyerB, 'merchant:snapshot', (cycle) => cycle.id === cycleA.id && (cycle.inventory.find((entry) => entry.id === target.id)?.stock ?? -1) === target.stock - index - 1)
     buyer.send('merchant:buy', { requestId, cycleId: cycleA.id, itemId: target.id })
@@ -81,8 +81,8 @@ try {
   const soldOut = await soldOutPromise
   assert(!soldOut.ok && soldOut.reason === 'Sold out', 'Merchant sold beyond global stock')
 
-  const retryPromise = message<Purchase>(buyerA, 'merchant:result', (result) => result.requestId === 'buy-0')
-  buyerA.send('merchant:buy', { requestId: 'buy-0', cycleId: cycleA.id, itemId: target.id })
+  const retryPromise = message<Purchase>(buyerA, 'merchant:result', (result) => result.requestId === 'merchant-buy-0')
+  buyerA.send('merchant:buy', { requestId: 'merchant-buy-0', cycleId: cycleA.id, itemId: target.id })
   const retry = await retryPromise
   assert(retry.ok && retry.itemId === target.id, 'Idempotent purchase retry changed result')
   assert(retry.cycle?.inventory.find((entry) => entry.id === target.id)?.stock === target.stock - 1, 'Retry did not return its original purchase snapshot')

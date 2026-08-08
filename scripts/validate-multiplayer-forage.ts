@@ -37,6 +37,16 @@ async function waitForServer(process: ChildProcessWithoutNullStreams) {
   })
 }
 
+async function moveAlong(room: Room, movement: Record<string, unknown>, from: [number, number], to: [number, number]) {
+  const distance = Math.hypot(to[0] - from[0], to[1] - from[1])
+  const steps = Math.max(1, Math.ceil(distance / 2))
+  for (let step = 1; step <= steps; step += 1) {
+    const progress = step / steps
+    room.send('move', { ...movement, position: [from[0] + (to[0] - from[0]) * progress, 0.86, from[1] + (to[1] - from[1]) * progress] })
+    await new Promise((resolve) => setTimeout(resolve, 65))
+  }
+}
+
 function regrowthSequence(room: Room, id: string, capacity: number, timeoutMs: number) {
   return new Promise<{ values: number[]; fullAt: number[]; times: number[] }>((resolve, reject) => {
     const values: number[] = []
@@ -80,7 +90,7 @@ assert(clientRequest?.type === 'forage:request' && (clientRequest.payload as { r
 setMultiplayerSender(null)
 
 const port = 26_576
-const testRegrowMs = 500
+const testRegrowMs = 10_000
 const originalWarn = console.warn
 console.warn = (...args: unknown[]) => {
   if (String(args[0]).includes('onMessage() not registered')) return
@@ -104,6 +114,7 @@ try {
   const snapshotB = messageWhere<ForageSnapshot>(playerB, 'forage:snapshot')
   playerA.send('lobby:ready', {})
   playerB.send('lobby:ready', {})
+  playerA.send('lobby:onboarding-ready', { ready: true })
   await Promise.all([snapshotA, snapshotB])
   const startedSnapshotA = messageWhere<ForageSnapshot>(playerA, 'forage:snapshot')
   const startedSnapshotB = messageWhere<ForageSnapshot>(playerB, 'forage:snapshot')
@@ -143,18 +154,19 @@ try {
   assert((await tooFar).id === 'ForageApple001', 'Remote forage-node harvest was not rejected')
 
   const partialTargetId = 'ForageApple001'
-  playerA.send('move', { ...movement, position: [-13, 0.86, -87] })
-  await new Promise((resolve) => setTimeout(resolve, 80))
-  const partialNode = messageWhere<ForageNode>(playerA, 'forage:node', (node) => node.id === partialTargetId && node.available === 4)
-  const partialCapacityAward = messageWhere<ForageAward>(playerA, 'forage:award', (award) => award.id === partialTargetId && award.quantity === 1)
+  await moveAlong(playerA, movement, [3, -82], [20, -104])
+  const partialCapacity = fruitTreeCapacity(partialTargetId)
+  const partialNode = messageWhere<ForageNode>(playerA, 'forage:node', (node) => node.id === partialTargetId && node.available === 0)
+  const partialCapacityAward = messageWhere<ForageAward>(playerA, 'forage:award', (award) => award.id === partialTargetId && award.quantity === partialCapacity)
   playerA.send('forage:request', { id: partialTargetId, item: 'apple', remainingCapacity: 1 })
   const [partiallyDepleted, oneSlotAward] = await Promise.all([partialNode, partialCapacityAward])
-  assert(partiallyDepleted.available === 4 && oneSlotAward.quantity === 1, 'One-slot harvest removed more fruit than the player could carry')
+  assert(partiallyDepleted.available === 0 && oneSlotAward.quantity === partialCapacity, 'Server trusted the client-supplied capacity instead of its authoritative inventory')
 
   const targetId = 'ForageApple002'
-  playerA.send('move', { ...movement, position: [-18, 0.86, -97] })
-  playerB.send('move', { ...movement, position: [-18, 0.86, -97] })
-  await new Promise((resolve) => setTimeout(resolve, 80))
+  await Promise.all([
+    moveAlong(playerA, movement, [20, -104], [-28, -121]),
+    moveAlong(playerB, movement, [3, -82], [-28, -121]),
+  ])
   const capacity = fruitTreeCapacity(targetId)
   const depletedA = messageWhere<ForageNode>(playerA, 'forage:node', (node) => node.id === targetId && node.available === 0)
   const depletedB = messageWhere<ForageNode>(playerB, 'forage:node', (node) => node.id === targetId && node.available === 0)
@@ -173,9 +185,10 @@ try {
   assert(raceNodeA.fullAt === raceNodeB.fullAt && raceNodeA.fullAt > Date.now(), 'Clients received different depletion clocks')
 
   const rareTargetId = 'ForageTruffle000'
-  playerA.send('move', { ...movement, position: [-112, 0.86, -66] })
-  playerB.send('move', { ...movement, position: [-112, 0.86, -66] })
-  await new Promise((resolve) => setTimeout(resolve, 80))
+  await Promise.all([
+    moveAlong(playerA, movement, [-28, -121], [-112, -66]),
+    moveAlong(playerB, movement, [-28, -121], [-112, -66]),
+  ])
   const rareNodeA = messageWhere<ForageNode>(playerA, 'forage:node', (node) => node.id === rareTargetId && node.available === 0)
   const rareNodeB = messageWhere<ForageNode>(playerB, 'forage:node', (node) => node.id === rareTargetId && node.available === 0)
   let rareAwards = 0
@@ -198,16 +211,15 @@ try {
   assert(joined.nodes[targetId]?.fullAt === raceNodeA.fullAt, 'Late joiner received a different regeneration clock')
   assert(joined.nodes[rareTargetId]?.available === 0, 'Late joiner missed the depleted rare forage state')
 
-  const firstRegrowthA = messageWhere<ForageNode>(playerA, 'forage:node', (node) => node.id === targetId && node.available === 1)
-  const firstRegrowthLate = messageWhere<ForageNode>(lateJoiner, 'forage:node', (node) => node.id === targetId && node.available === 1)
+  const firstRegrowthA = messageWhere<ForageNode>(playerA, 'forage:node', (node) => node.id === targetId && node.available === 1, testRegrowMs + 2_000)
+  const firstRegrowthLate = messageWhere<ForageNode>(lateJoiner, 'forage:node', (node) => node.id === targetId && node.available === 1, testRegrowMs + 2_000)
   const [oneFruitA, oneFruitLate] = await Promise.all([firstRegrowthA, firstRegrowthLate])
   assert(oneFruitA.fullAt === oneFruitLate.fullAt, 'Clients disagreed on the first regenerated fruit')
 
-  const redepletedA = messageWhere<ForageNode>(playerA, 'forage:node', (node) => node.id === targetId && node.available === 0 && node.fullAt > raceNodeA.fullAt)
-  const redepletedLate = messageWhere<ForageNode>(lateJoiner, 'forage:node', (node) => node.id === targetId && node.available === 0 && node.fullAt > raceNodeA.fullAt)
-  const partialAward = messageWhere<ForageAward>(playerA, 'forage:award', (award) => award.id === targetId && award.quantity === 1)
-  playerA.send('move', { ...movement, position: [-18, 0.86, -97] })
-  await new Promise((resolve) => setTimeout(resolve, 60))
+  const redepletedA = messageWhere<ForageNode>(playerA, 'forage:node', (node) => node.id === targetId && node.available === 0 && node.fullAt > raceNodeA.fullAt, 6_000)
+  const redepletedLate = messageWhere<ForageNode>(lateJoiner, 'forage:node', (node) => node.id === targetId && node.available === 0 && node.fullAt > raceNodeA.fullAt, 6_000)
+  const partialAward = messageWhere<ForageAward>(playerA, 'forage:award', (award) => award.id === targetId && award.quantity === 1, 6_000)
+  await moveAlong(playerA, movement, [-112, -66], [-28, -121])
   playerA.send('forage:request', { id: targetId, item: 'apple', remainingCapacity: 1 })
   const [secondDepletionA, secondDepletionLate, oneFruitAward] = await Promise.all([redepletedA, redepletedLate, partialAward])
   assert(oneFruitAward.quantity === 1, 'Harvest did not grant the currently available partial-tree count')

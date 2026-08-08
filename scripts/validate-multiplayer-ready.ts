@@ -32,7 +32,7 @@ console.warn = (...args: unknown[]) => {
   originalWarn(...args)
 }
 const server = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
-  cwd: process.cwd(), env: { ...process.env, PORT: String(port), TEST_ALLOW_EARLY_MINIGAME: '1' }, stdio: ['pipe', 'pipe', 'pipe'],
+  cwd: process.cwd(), env: { ...process.env, PORT: String(port), TEST_ALLOW_EARLY_MINIGAME: '1', TEST_ALLOW_SCORE_INJECTION: '1' }, stdio: ['pipe', 'pipe', 'pipe'],
 })
 const rooms: Room[] = []
 
@@ -43,6 +43,8 @@ try {
   const playerB = await client.joinOrCreate('woodland')
   rooms.push(playerA, playerB)
   playerA.send('lobby:ready', {}); playerB.send('lobby:ready', {})
+  playerA.send('lobby:onboarding-ready', { ready: true }); playerB.send('lobby:onboarding-ready', { ready: true })
+  await new Promise((resolve) => setTimeout(resolve, 80))
 
   const syncA = message<{ seed: number; startedAt: number; durationSeconds: number }>(playerA, 'match:sync')
   const syncB = message<{ seed: number; startedAt: number; durationSeconds: number }>(playerB, 'match:sync')

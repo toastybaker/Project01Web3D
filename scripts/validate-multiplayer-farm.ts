@@ -1,6 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { Client, type Room } from 'colyseus.js'
 
+const originalWarn = console.warn
+console.warn = (...args: unknown[]) => {
+  if (String(args[0]).includes('onMessage() not registered')) return
+  originalWarn(...args)
+}
+
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
 }
@@ -30,10 +36,20 @@ async function waitForServer(process: ChildProcessWithoutNullStreams) {
   })
 }
 
+async function moveAlong(room: Room, movement: Record<string, unknown>, from: [number, number], to: [number, number]) {
+  const distance = Math.hypot(to[0] - from[0], to[1] - from[1])
+  const steps = Math.max(1, Math.ceil(distance / 2))
+  for (let step = 1; step <= steps; step += 1) {
+    const progress = step / steps
+    room.send('move', { ...movement, position: [from[0] + (to[0] - from[0]) * progress, 0.86, from[1] + (to[1] - from[1]) * progress] })
+    await new Promise((resolve) => setTimeout(resolve, 70))
+  }
+}
+
 const port = 26_572
 const server = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
   cwd: process.cwd(),
-  env: { ...process.env, PORT: String(port), TEST_FARM_GROWTH_MS: '140', TEST_RAIN_COOLDOWN_MS: '0' },
+  env: { ...process.env, PORT: String(port), TEST_STARTING_CASH: '30000000', TEST_FARM_FIXTURES: '1', TEST_START_CLEAR_WEATHER: '1', TEST_FARM_GROWTH_MS: '140', TEST_RAIN_COOLDOWN_MS: '0' },
   stdio: ['pipe', 'pipe', 'pipe'],
 })
 const rooms: Room[] = []
@@ -104,10 +120,10 @@ try {
 
   const ownerUpdateA = message<{ farmId: number; ownerId: string }>(farmerA, 'farm:update', (update) => update.farmId === 0 && Boolean(update.ownerId))
   const ownerUpdateB = message<{ farmId: number; ownerId: string }>(farmerB, 'farm:update', (update) => update.farmId === 0 && Boolean(update.ownerId))
-  const resultA = message<{ requestId: string; ok: boolean }>(farmerA, 'farm:result', (result) => result.requestId === 'claim-a')
-  const resultB = message<{ requestId: string; ok: boolean }>(farmerB, 'farm:result', (result) => result.requestId === 'claim-b')
-  farmerA.send('farm:action', { requestId: 'claim-a', op: 'claim', farmId: 0 })
-  farmerB.send('farm:action', { requestId: 'claim-b', op: 'claim', farmId: 0 })
+  const resultA = message<{ requestId: string; ok: boolean }>(farmerA, 'farm:result', (result) => result.requestId === 'claim-a-01')
+  const resultB = message<{ requestId: string; ok: boolean }>(farmerB, 'farm:result', (result) => result.requestId === 'claim-b-01')
+  farmerA.send('farm:action', { requestId: 'claim-a-01', op: 'claim', farmId: 0 })
+  farmerB.send('farm:action', { requestId: 'claim-b-01', op: 'claim', farmId: 0 })
   const [claimA, claimB, broadcastA, broadcastB] = await Promise.all([resultA, resultB, ownerUpdateA, ownerUpdateB])
   assert(Number(claimA.ok) + Number(claimB.ok) === 1, 'Simultaneous claims did not resolve to one owner')
   assert(broadcastA.ownerId === broadcastB.ownerId, 'Clients received different farm owners')
@@ -116,10 +132,12 @@ try {
 
   const farmCenters = [[-54, -16], [-18, -14], [19, -17], [55, -13], [-53, -50], [-17, -49], [20, -53], [56, -48]] as const
   const farmsOwnedByA = broadcastA.ownerId === farmerA.sessionId ? [0] : []
+  let farmerAPosition: [number, number] = [-48.15, -9.75]
   for (let farmId = 1; farmsOwnedByA.length < 3; farmId += 1) {
     const [centerX, centerZ] = farmCenters[farmId]
-    farmerA.send('move', { ...movement, position: [centerX + 5.85, 0.86, centerZ + 6.25] })
-    await new Promise((resolve) => setTimeout(resolve, 80))
+    const target: [number, number] = [centerX + 5.85, centerZ + 6.25]
+    await moveAlong(farmerA, movement, farmerAPosition, target)
+    farmerAPosition = target
     const claim = message<{ requestId: string; ok: boolean; reason?: string }>(farmerA, 'farm:result', (result) => result.requestId === `leader-claim-${farmId}`)
     farmerA.send('farm:action', { requestId: `leader-claim-${farmId}`, op: 'claim', farmId })
     const claimed = await claim
@@ -129,27 +147,37 @@ try {
   const fourthFarmId = farmCenters.findIndex((_, farmId) => farmId > 0 && !farmsOwnedByA.includes(farmId))
   assert(fourthFarmId >= 0, 'Validator could not find a fourth farm target')
   const [fourthX, fourthZ] = farmCenters[fourthFarmId]
-  farmerA.send('move', { ...movement, position: [fourthX + 5.85, 0.86, fourthZ + 6.25] })
-  await new Promise((resolve) => setTimeout(resolve, 80))
+  const fourthTarget: [number, number] = [fourthX + 5.85, fourthZ + 6.25]
+  await moveAlong(farmerA, movement, farmerAPosition, fourthTarget)
+  farmerAPosition = fourthTarget
   const fourthClaim = message<{ requestId: string; ok: boolean; reason?: string }>(farmerA, 'farm:result', (result) => result.requestId === 'leader-fourth-farm')
   farmerA.send('farm:action', { requestId: 'leader-fourth-farm', op: 'claim', farmId: fourthFarmId })
   const fourth = await fourthClaim
   assert(!fourth.ok && fourth.reason === 'Farm limit reached', 'A player was able to claim a fourth farm')
 
   const plantPosition = { ...movement, position: [-58.97, 0.86, -20.97] }
-  owner.send('move', plantPosition)
-  intruder.send('move', plantPosition)
-  await new Promise((resolve) => setTimeout(resolve, 160))
+  const plantTarget: [number, number] = [-58.97, -20.97]
+  await Promise.all([
+    moveAlong(owner, movement, owner === farmerA ? farmerAPosition : [-48.15, -9.75], plantTarget),
+    moveAlong(intruder, movement, intruder === farmerA ? farmerAPosition : [-48.15, -9.75], plantTarget),
+  ])
   const denied = message<{ requestId: string; ok: boolean; reason?: string }>(intruder, 'farm:result', (result) => result.requestId === 'intruder-plant')
   intruder.send('farm:action', { requestId: 'intruder-plant', op: 'plant', farmId: 0, cellIndex: 0, crop: 'wheat' })
   assert(!(await denied).ok, 'Non-owner planted on another player farm')
 
-  const plantedA = message<{ farmId: number; cellIndex: number; cell: { stage: string; crop: string } }>(farmerA, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 0 && update.cell?.stage === 'watered')
-  const plantedB = message<{ farmId: number; cellIndex: number; cell: { stage: string; crop: string } }>(farmerB, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 0 && update.cell?.stage === 'watered')
+  const plantedA = message<{ farmId: number; cellIndex: number; cell: { stage: string; crop: string } }>(farmerA, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 0 && update.cell?.stage === 'planted')
+  const plantedB = message<{ farmId: number; cellIndex: number; cell: { stage: string; crop: string } }>(farmerB, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 0 && update.cell?.stage === 'planted')
   const plantResult = message<{ requestId: string; ok: boolean }>(owner, 'farm:result', (result) => result.requestId === 'owner-plant')
-  owner.send('farm:action', { requestId: 'owner-plant', op: 'plant', farmId: 0, cellIndex: 0, crop: 'wheat', watered: true })
+  owner.send('farm:action', { requestId: 'owner-plant', op: 'plant', farmId: 0, cellIndex: 0, crop: 'wheat' })
   const [ownerPlant, cellA, cellB] = await Promise.all([plantResult, plantedA, plantedB])
   assert(ownerPlant.ok && cellA.cell.crop === 'wheat' && cellB.cell.crop === 'wheat', 'Shared crop plant did not broadcast identically')
+
+  const wateredA = message<{ farmId: number; cellIndex: number; cell: { stage: string } }>(farmerA, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 0 && update.cell?.stage === 'watered')
+  const wateredB = message<{ farmId: number; cellIndex: number; cell: { stage: string } }>(farmerB, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 0 && update.cell?.stage === 'watered')
+  const waterResult = message<{ requestId: string; ok: boolean; account?: { inventory?: Record<string, number> } }>(owner, 'farm:result', (result) => result.requestId === 'owner-water')
+  owner.send('farm:action', { requestId: 'owner-water', op: 'water', farmId: 0, cellIndex: 0 })
+  const [ownerWater] = await Promise.all([waterResult, wateredA, wateredB])
+  assert(ownerWater.ok && ownerWater.account?.inventory?.['water-can'] === 1, 'Watering can was consumed or watering failed')
 
   const readyA = message<{ farmId: number; cellIndex: number; cell: { stage: string } }>(farmerA, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 0 && update.cell?.stage === 'ready')
   const readyB = message<{ farmId: number; cellIndex: number; cell: { stage: string } }>(farmerB, 'farm:update', (update) => update.farmId === 0 && update.cellIndex === 0 && update.cell?.stage === 'ready')

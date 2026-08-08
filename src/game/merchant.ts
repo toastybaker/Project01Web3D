@@ -19,6 +19,7 @@ export type MerchantItemDefinition = Readonly<{
   id: MerchantItemId
   name: string
   basePrice: number
+  balanceValue: number
   appearanceChance: number
   globalStock: number
   eligibleAfter: number
@@ -28,15 +29,15 @@ export type MerchantItemDefinition = Readonly<{
 const item = (definition: MerchantItemDefinition) => Object.freeze(definition)
 
 export const MERCHANT_ITEMS: Readonly<Record<MerchantItemId, MerchantItemDefinition>> = Object.freeze({
-  'mining-boost': item({ id: 'mining-boost', name: 'Mining Tonic', basePrice: 350_000, appearanceChance: .35, globalStock: 2, eligibleAfter: 0, commonFallback: true }),
-  'fortune-boost': item({ id: 'fortune-boost', name: 'Luck Tonic', basePrice: 450_000, appearanceChance: .30, globalStock: 2, eligibleAfter: 0, commonFallback: true }),
-  'cook-timer': item({ id: 'cook-timer', name: 'Cook Timer', basePrice: 325_000, appearanceChance: .25, globalStock: 2, eligibleAfter: 0, commonFallback: true }),
-  'rain-bottle': item({ id: 'rain-bottle', name: 'Rain Bottle', basePrice: 375_000, appearanceChance: .20, globalStock: 1, eligibleAfter: 0, commonFallback: false }),
-  'upgrade-coupon': item({ id: 'upgrade-coupon', name: '30% Upgrade Discount', basePrice: 450_000, appearanceChance: .15, globalStock: 1, eligibleAfter: .25, commonFallback: false }),
-  'cookbook-box': item({ id: 'cookbook-box', name: 'Recipe Box', basePrice: 450_000, appearanceChance: .25, globalStock: 1, eligibleAfter: 0, commonFallback: true }),
-  'upgrade-guard-4': item({ id: 'upgrade-guard-4', name: '+4 Protection', basePrice: 140_000, appearanceChance: .22, globalStock: 2, eligibleAfter: .15, commonFallback: false }),
-  'upgrade-guard-5': item({ id: 'upgrade-guard-5', name: '+5 Protection', basePrice: 550_000, appearanceChance: .14, globalStock: 1, eligibleAfter: .33, commonFallback: false }),
-  'upgrade-guard-6': item({ id: 'upgrade-guard-6', name: '+6 Protection', basePrice: 2_000_000, appearanceChance: .08, globalStock: 1, eligibleAfter: .60, commonFallback: false }),
+  'mining-boost': item({ id: 'mining-boost', name: 'Mining Tonic', basePrice: 350_000, balanceValue: 500_000, appearanceChance: .35, globalStock: 2, eligibleAfter: 0, commonFallback: true }),
+  'fortune-boost': item({ id: 'fortune-boost', name: 'Luck Tonic', basePrice: 450_000, balanceValue: 650_000, appearanceChance: .30, globalStock: 2, eligibleAfter: 0, commonFallback: true }),
+  'cook-timer': item({ id: 'cook-timer', name: 'Cook Timer', basePrice: 325_000, balanceValue: 450_000, appearanceChance: .25, globalStock: 2, eligibleAfter: 0, commonFallback: true }),
+  'rain-bottle': item({ id: 'rain-bottle', name: 'Rain Bottle', basePrice: 375_000, balanceValue: 500_000, appearanceChance: .20, globalStock: 1, eligibleAfter: 0, commonFallback: false }),
+  'upgrade-coupon': item({ id: 'upgrade-coupon', name: '30% Upgrade Discount', basePrice: 450_000, balanceValue: 600_000, appearanceChance: .15, globalStock: 1, eligibleAfter: .25, commonFallback: false }),
+  'cookbook-box': item({ id: 'cookbook-box', name: 'Recipe Box', basePrice: 450_000, balanceValue: 600_000, appearanceChance: .25, globalStock: 1, eligibleAfter: 0, commonFallback: true }),
+  'upgrade-guard-4': item({ id: 'upgrade-guard-4', name: '+4 Protection', basePrice: 120_000, balanceValue: 150_000, appearanceChance: .22, globalStock: 2, eligibleAfter: .15, commonFallback: false }),
+  'upgrade-guard-5': item({ id: 'upgrade-guard-5', name: '+5 Protection', basePrice: 550_000, balanceValue: 650_000, appearanceChance: .14, globalStock: 1, eligibleAfter: .33, commonFallback: false }),
+  'upgrade-guard-6': item({ id: 'upgrade-guard-6', name: '+6 Protection', basePrice: 2_000_000, balanceValue: 3_000_000, appearanceChance: .08, globalStock: 1, eligibleAfter: .60, commonFallback: false }),
 })
 
 export const MERCHANT_ITEM_IDS = Object.freeze(Object.keys(MERCHANT_ITEMS) as MerchantItemId[])
@@ -123,8 +124,11 @@ export function merchantStage(elapsedMs: number, matchDurationMs: number): Merch
 }
 
 export function merchantStageMultiplier(stage: MerchantStage) {
-  if (stage === 'middle') return 1.25
-  if (stage === 'final') return 1.5
+  // Scarcity is the reason to hunt the merchant. Prices only rise gently with
+  // match progress so a found offer remains a bargain rather than an exact EV
+  // exchange at the moment it becomes useful.
+  if (stage === 'middle') return 1.08
+  if (stage === 'final') return 1.16
   return 1
 }
 

@@ -1,7 +1,11 @@
 import { NodeIO } from '@gltf-transform/core'
-import { EXTMeshGPUInstancing } from '@gltf-transform/extensions'
+import { EXTMeshGPUInstancing, EXTMeshoptCompression, EXTTextureWebP, KHRMeshQuantization } from '@gltf-transform/extensions'
+import { MeshoptDecoder } from 'meshoptimizer'
 
-const io = new NodeIO().registerExtensions([EXTMeshGPUInstancing])
+await MeshoptDecoder.ready
+const io = new NodeIO()
+  .registerExtensions([EXTMeshGPUInstancing, EXTMeshoptCompression, EXTTextureWebP, KHRMeshQuantization])
+  .registerDependencies({ 'meshopt.decoder': MeshoptDecoder })
 for (const file of process.argv.slice(2)) {
   const document = await io.read(file)
   const root = document.getRoot()

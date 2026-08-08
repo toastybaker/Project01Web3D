@@ -13,7 +13,6 @@ export type GameSfx =
   | 'ready'
   | 'error'
   | 'jump'
-  | 'land'
   | 'footstep-grass'
   | 'footstep-stone'
 
@@ -41,7 +40,6 @@ const authoredSounds: Partial<Record<GameSfx, string[]>> = {
   ready: ['/assets/audio/sfx/handleCoins2.ogg'],
   error: ['/assets/audio/sfx/click5.ogg'],
   jump: ['/assets/audio/sfx/handleSmallLeather.ogg', '/assets/audio/sfx/handleSmallLeather2.ogg'],
-  land: ['/assets/audio/sfx/impactSoft_medium_002.ogg'],
   'footstep-grass': Array.from({ length: 5 }, (_, index) => `/assets/audio/sfx/footstep_grass_00${index}.ogg`),
   'footstep-stone': Array.from({ length: 5 }, (_, index) => `/assets/audio/sfx/footstep_concrete_00${index}.ogg`),
 }
@@ -83,7 +81,9 @@ export function playGameSfx(kind: GameSfx, volume = 0.5) {
       const sound = new Audio(file)
       sound.volume = Math.min(1, Math.max(0, volume)) * gain
       sound.playbackRate = rate
-      void sound.play().catch(() => playSynth(kind, volume))
+      // Never replace a missing recording with a synthetic beep. Those tones
+      // are deliberately only a last resort for effects with no authored file.
+      void sound.play().catch(() => undefined)
     }, delay))
     return
   }
@@ -95,14 +95,14 @@ export function playGameSfx(kind: GameSfx, volume = 0.5) {
     lastSoundIndex.set(kind, index)
     const sound = new Audio(authored[index])
     const footstep = kind.startsWith('footstep')
-    const gain = footstep ? 0.1 : kind === 'jump' ? 0.16 : kind === 'land' ? 0.25 : kind === 'ready' ? 0.28 : kind === 'water' ? 0.25 : kind === 'teleport' ? 0.3 : 0.46
+    const gain = footstep ? 0.065 : kind === 'jump' ? 0.16 : kind === 'ready' ? 0.28 : kind === 'water' ? 0.25 : kind === 'teleport' ? 0.3 : 0.46
     sound.volume = Math.min(1, Math.max(0, volume)) * gain
     sound.playbackRate = footstep ? 1.12 + Math.random() * 0.12 : 0.99 + Math.random() * 0.02
     if (footstep) {
       sound.currentTime = 0.12
       window.setTimeout(() => { sound.pause(); sound.currentTime = 0 }, 300)
     }
-    void sound.play().catch(() => playSynth(kind, volume))
+    void sound.play().catch(() => undefined)
     return
   }
   playSynth(kind, volume)
@@ -127,8 +127,6 @@ function playSynth(kind: GameSfx, volume: number) {
     tone(ctx, now, 210, 126, 0.12, level * 0.55, 'triangle')
   } else if (kind === 'jump') {
     tone(ctx, now, 180, 310, 0.11, level * 0.32, 'triangle')
-  } else if (kind === 'land') {
-    tone(ctx, now, 125, 76, 0.1, level * 0.42, 'triangle')
   } else if (kind === 'water') {
     tone(ctx, now, 730, 390, 0.13, level * 0.42, 'sine')
     tone(ctx, now + 0.07, 610, 350, 0.12, level * 0.3, 'sine')

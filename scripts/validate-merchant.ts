@@ -34,16 +34,20 @@ for (const id of MERCHANT_ITEM_IDS) {
   assert.equal(definition.name, expectedNames[id])
   assert(definition.appearanceChance > 0 && definition.appearanceChance < 1)
   assert(Number.isSafeInteger(definition.globalStock) && definition.globalStock > 0)
+  assert(definition.basePrice < definition.balanceValue, `${id} is not a bargain when found`)
+  assert(merchantPrice(id, 'final') <= definition.balanceValue, `${id} becomes overpriced late in the match`)
 }
 
 assert.equal(merchantStage(0, DEFAULT_MATCH_DURATION_MS), 'first')
 assert.equal(merchantStage(DEFAULT_MATCH_DURATION_MS / 3, DEFAULT_MATCH_DURATION_MS), 'middle')
 assert.equal(merchantStage(DEFAULT_MATCH_DURATION_MS * 2 / 3, DEFAULT_MATCH_DURATION_MS), 'final')
 assert.equal(merchantPrice('cook-timer', 'first'), 330_000)
-assert.equal(merchantPrice('cook-timer', 'middle'), 410_000)
-assert.equal(merchantPrice('cook-timer', 'final'), 490_000)
-assert.equal(merchantPrice('upgrade-guard-6', 'middle'), 2_500_000)
-assert.equal(merchantPrice('upgrade-guard-6', 'final'), 3_000_000)
+assert.equal(merchantPrice('cook-timer', 'middle'), 350_000)
+assert.equal(merchantPrice('cook-timer', 'final'), 380_000)
+assert.equal(merchantPrice('upgrade-guard-6', 'middle'), 2_160_000)
+assert.equal(merchantPrice('upgrade-guard-6', 'final'), 2_320_000)
+assert(merchantPrice('cookbook-box', 'final') < 600_000, 'merchant recipe box stopped being a bargain')
+assert(merchantPrice('upgrade-coupon', 'final') < 750_000, 'upgrade discount can no longer return more than its purchase price')
 
 const eligibilityThresholds: Partial<Record<MerchantItemId, number>> = {
   'upgrade-coupon': .25,
@@ -164,6 +168,10 @@ console.log(JSON.stringify({
   inventories: 'all nonempty and capped at four',
   firstEligibleCycleMinutes,
   guardMatchAppearances,
+  priceToValue: Object.fromEntries(MERCHANT_ITEM_IDS.map((id) => [id, {
+    first: Number((merchantPrice(id, 'first') / MERCHANT_ITEMS[id].balanceValue).toFixed(2)),
+    final: Number((merchantPrice(id, 'final') / MERCHANT_ITEMS[id].balanceValue).toFixed(2)),
+  }])),
   rawAppearanceRates: Object.fromEntries(MERCHANT_ITEM_IDS.map((id) => [id, Number((rawPassCounts[id] / eligibleRollCounts[id]).toFixed(4))])),
   status: 'passed',
 }, null, 2))

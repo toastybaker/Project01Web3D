@@ -14,7 +14,7 @@ Object.assign(globalThis, { localStorage: storage, window: { location: { search:
 const { useGameStore, inventoryLayout } = await import('../src/game/store')
 const { ITEMS } = await import('../src/game/items')
 const { activeRareForageIds, marketCorrectionMilestones } = await import('../src/game/config')
-const { FARM_RUSH_MAX_ORDERS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, farmRushOrders, minigameMilestones, minigameRewardPackage, minigameSchedule, scheduledMinigame } = await import('../src/game/minigame')
+const { FARM_RUSH_MAX_ORDERS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, FORAGE_RUSH_DELIVERY_POINTS, FORAGE_RUSH_REQUIREMENTS, farmRushOrders, minigameMilestones, minigameRewardPackage, minigameSchedule, scheduledMinigame } = await import('../src/game/minigame')
 
 assert.deepEqual(minigameMilestones(30 * 60), [20 * 60])
 assert.deepEqual(minigameMilestones(60 * 60), [20 * 60, 40 * 60])
@@ -53,6 +53,31 @@ useGameStore.setState(beforeOverlap)
 
 const permanentInventory = { 'water-can': 1, 'worn-pickaxe': 1, 'home-charm': 1, apple: 4 } as const
 const permanentHotbar = ['water-can', 'worn-pickaxe', null, null, null, null, null, null, 'home-charm'] as const
+
+function assertRestoredHotbarWithRewards(label: string) {
+  const state = useGameStore.getState()
+  permanentHotbar.forEach((item, index) => {
+    if (item) assert.equal(state.hotbar[index], item, `${label} moved an existing hotbar item`)
+  })
+  for (const [itemId, quantity] of Object.entries(state.lastMinigameResult?.items ?? {})) {
+    if (Number(quantity) > 0 && itemId !== 'gold-coins') assert(state.hotbar.some((item) => item === itemId), `${label} reward skipped the hotbar row`)
+  }
+}
+
+useGameStore.setState({
+  cash: 100_000,
+  inventory: { 'home-charm': 1 },
+  hotbar: [null, null, null, null, null, null, null, null, 'home-charm'],
+  inventoryOrder: Array(useGameStore.getState().inventoryOrder.length).fill(null),
+  shopKind: 'farm',
+  lobbyConnected: false,
+})
+useGameStore.getState().trade('wheat-seeds', 1)
+assert.equal(useGameStore.getState().hotbar[0], 'wheat-seeds', 'a purchased item fills the first available hotbar slot before the second inventory row')
+useGameStore.getState().addItem('apple', 1)
+assert.equal(useGameStore.getState().hotbar[1], 'apple', 'a newly gathered item fills the next available hotbar slot')
+const protectedTradeApplied = useGameStore.getState().applyPlayerTrade({ cash: 0, items: { 'home-charm': 1 } }, { cash: 0, items: {} })
+assert.equal(protectedTradeApplied, false, 'the Return Charm cannot enter a player trade')
 
 useGameStore.setState({
   inventory: { ...permanentInventory },
@@ -110,7 +135,7 @@ assert.equal(useGameStore.getState().rushCombo, 2, 'continuous mining advances c
 useGameStore.setState({ enhancementOpen: true })
 useGameStore.getState().finishMinigame(useGameStore.getState().rushScore, 3, 10_000_000)
 assert.equal(useGameStore.getState().enhancementOpen, false, 'event exit cannot reopen a stale enhancement modal')
-assert.deepEqual(useGameStore.getState().hotbar, permanentHotbar, 'mining restores the exact hotbar')
+assertRestoredHotbarWithRewards('mining')
 assert.equal(useGameStore.getState().selectedHotbar, 8, 'mining restores selected slot')
 assert.equal(useGameStore.getState().inventory['copper-ore'] ?? 0, 0, 'temporary mining rewards are deleted')
 const miningCashAfterReward = useGameStore.getState().cash
@@ -171,33 +196,36 @@ useGameStore.setState({
 useGameStore.getState().farmRushCook(lateOrder.recipe)
 assert.equal(useGameStore.getState().farmRushCooking[0]?.orderIndex, lateTicket.orderIndex, 'later order tickets use the same recipe sequence in the HUD and reducer')
 useGameStore.getState().finishMinigame(0, 4, 10_000_000)
-assert.deepEqual(useGameStore.getState().hotbar, permanentHotbar, 'farm restores the exact hotbar')
+assertRestoredHotbarWithRewards('farm')
 assert.deepEqual(useGameStore.getState().farmRushCooking, [], 'temporary cooking jobs are deleted after the event')
 
 enter('forage')
-useGameStore.getState().forageRushCollect('ForageRushApple0')
+useGameStore.getState().forageRushCollect('ForageRushApple000')
+const firstAppleAmount = useGameStore.getState().forageRushInventory.apple
 useGameStore.getState().forageRushDeliver('apple')
 assert.equal(useGameStore.getState().forageRushInventory.apple, 0, 'partial delivery immediately consumes held fruit')
-assert.equal(useGameStore.getState().forageRushProgress.apple, 3, 'partial delivery records objective progress')
-assert.equal(useGameStore.getState().forageRushScore, 30, 'partial delivery scores only the submitted share')
-for (let index = 1; index < 4; index += 1) useGameStore.getState().forageRushCollect(`ForageRushApple${index}`)
-assert.equal(useGameStore.getState().forageRushInventory.apple, 9, 'remaining apple sites fill the unfinished delivery requirement')
+assert.equal(useGameStore.getState().forageRushProgress.apple, firstAppleAmount, 'partial delivery records objective progress')
+assert.equal(useGameStore.getState().forageRushScore, Math.round(FORAGE_RUSH_DELIVERY_POINTS.apple * firstAppleAmount / FORAGE_RUSH_REQUIREMENTS.apple), 'partial delivery scores only the submitted share')
+for (let index = 1; useGameStore.getState().forageRushProgress.apple + useGameStore.getState().forageRushInventory.apple < FORAGE_RUSH_REQUIREMENTS.apple; index += 1) {
+  useGameStore.getState().forageRushCollect(`ForageRushApple${String(index).padStart(3, '0')}`)
+}
+const applesHeldBeforeFinalDelivery = useGameStore.getState().forageRushInventory.apple
 assert.equal(useGameStore.getState().inventory.apple, 4, 'event fruit remains isolated from permanent fruit')
 useGameStore.getState().forageRushDeliver('apple')
 assert.equal(useGameStore.getState().forageRushScore, 120, 'apple delivery awards points')
-assert.equal(useGameStore.getState().forageRushInventory.apple, 0, 'delivery consumes temporary fruit')
+assert.equal(useGameStore.getState().forageRushInventory.apple, Math.max(0, applesHeldBeforeFinalDelivery - (FORAGE_RUSH_REQUIREMENTS.apple - firstAppleAmount)), 'delivery consumes only the fruit needed by the objective')
 useGameStore.getState().forageRushDeliver('apple')
 assert.equal(useGameStore.getState().forageRushScore, 120, 'a delivery cannot score twice')
-for (let index = 0; index < 4; index += 1) useGameStore.getState().forageRushCollect(`ForageRushOrange${index}`)
-for (let index = 0; index < 3; index += 1) useGameStore.getState().forageRushCollect(`ForageRushTruffle${index}`)
-useGameStore.getState().forageRushCollect('ForageRushDiscovery0')
+for (let index = 0; useGameStore.getState().forageRushInventory.orange < FORAGE_RUSH_REQUIREMENTS.orange; index += 1) useGameStore.getState().forageRushCollect(`ForageRushOrange${String(index).padStart(3, '0')}`)
+for (let index = 0; index < FORAGE_RUSH_REQUIREMENTS.truffle; index += 1) useGameStore.getState().forageRushCollect(`ForageRushTruffle${String(index).padStart(3, '0')}`)
+useGameStore.getState().forageRushCollect('ForageRushDiscovery00')
 useGameStore.getState().forageRushDeliver('orange')
 useGameStore.getState().forageRushDeliver('truffle')
 useGameStore.getState().forageRushDeliver('discovery')
 assert(Object.values(useGameStore.getState().forageRushDelivered).every(Boolean), 'all four deliveries can complete')
 assert.equal(useGameStore.getState().forageRushScore, 770, 'delivery score total is stable')
 useGameStore.getState().finishMinigame(useGameStore.getState().forageRushScore, 2, 10_000_000)
-assert.deepEqual(useGameStore.getState().hotbar, permanentHotbar, 'forage restores the exact hotbar')
+assertRestoredHotbarWithRewards('forage')
 const forageRewardItems = useGameStore.getState().lastMinigameResult?.items ?? {}
 assert(Object.values(forageRewardItems).some((quantity) => Number(quantity) > 0), 'placed player receives a deterministic item reward')
 for (const [itemId, quantity] of Object.entries(forageRewardItems)) assert.equal(useGameStore.getState().inventory[itemId as keyof typeof ITEMS], quantity, `${itemId} reward entered permanent inventory incorrectly`)
@@ -205,11 +233,15 @@ assert.deepEqual(useGameStore.getState().forageRushInventory, { apple: 0, orange
 assert.equal(useGameStore.getState().inventory.apple, 4, 'permanent forage inventory is untouched')
 
 const rareSites = ['ForageRushTruffle000', 'ForageRushTruffle001', 'ForageRushTruffle020', 'ForageRushTruffle021', 'ForageRushDiscovery00', 'ForageRushDiscovery01', 'ForageRushDiscovery10']
-const firstRareRoll = activeRareForageIds(rareSites, true, 77, 0, 1_000)
-const secondRareRoll = activeRareForageIds(rareSites, true, 77, 0, 35_000)
-assert.equal([...firstRareRoll].filter((id) => id.startsWith('ForageRushTruffle')).length, 2, 'race keeps two rotating truffle opportunities active')
-assert.equal([...firstRareRoll].filter((id) => id.startsWith('ForageRushDiscovery')).length, 1, 'race keeps one rotating fossil opportunity active')
-assert.notDeepEqual([...firstRareRoll].sort(), [...secondRareRoll].sort(), 'rare event locations rotate between timed rolls')
+const firstRareRoll = activeRareForageIds(rareSites, true, 77, 0, 1_000, 2, 20 * 60)
+const secondRareRoll = activeRareForageIds(rareSites, true, 77, 0, 35_000, 2, 20 * 60)
+const replacementRareRoll = activeRareForageIds(rareSites, true, 77, 0, 35_000, 2, 20 * 60 + 1)
+assert.equal([...firstRareRoll].filter((id) => id.startsWith('ForageRushTruffle')).length, 3, 'two-player race keeps three truffle opportunities active')
+assert.equal([...firstRareRoll].filter((id) => id.startsWith('ForageRushDiscovery')).length, 1, 'two-player race keeps one fossil opportunity active')
+assert.deepEqual([...firstRareRoll].sort(), [...secondRareRoll].sort(), 'a visible rare roll is not changed by the wall clock')
+assert.notDeepEqual([...firstRareRoll].sort(), [...replacementRareRoll].sort(), 'advancing the server-owned spawn generation can choose new rare locations')
+const crowdedRareRoll = activeRareForageIds(rareSites, true, 77, 0, 35_000, 6, 20 * 60)
+assert.equal([...crowdedRareRoll].filter((id) => id.startsWith('ForageRushTruffle')).length, 4, 'rare opportunities scale up to the available sites for a crowded race')
 
 const rareCollectedAt = Date.now()
 useGameStore.setState({ minigameOpen: false, matchStartedAt: rareCollectedAt - 1_000, inventory: { ...permanentInventory }, collectedForage: {} })

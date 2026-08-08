@@ -110,8 +110,8 @@ const RARE_FORAGE_ROLLS = {
     discovery: { seconds: 240, chance: 0.38, count: 1 },
   },
   rush: {
-    truffle: { seconds: 20, chance: 1, count: 2 },
-    discovery: { seconds: 30, chance: 1, count: 1 },
+    truffle: { seconds: 12, chance: 1, count: 3 },
+    discovery: { seconds: 12, chance: 1, count: 1 },
   },
 } as const
 
@@ -121,7 +121,15 @@ function rareHash(value: string) {
   return (hash >>> 0) / 4294967296
 }
 
-export function activeRareForageIds(ids: string[], rush: boolean, sessionSeed: number, matchStartedAt: number, now = Date.now()) {
+export function activeRareForageIds(
+  ids: string[],
+  rush: boolean,
+  sessionSeed: number,
+  matchStartedAt: number,
+  now = Date.now(),
+  participantCount = 1,
+  eventKey = 0,
+) {
   const active = new Set<string>()
   const mode = rush ? 'rush' : 'main'
   for (const kind of ['truffle', 'discovery'] as const) {
@@ -129,14 +137,24 @@ export function activeRareForageIds(ids: string[], rush: boolean, sessionSeed: n
     const candidates = ids.filter((id) => id.startsWith(prefix)).sort()
     if (!candidates.length) continue
     const settings = RARE_FORAGE_ROLLS[mode][kind]
-    const cycle = Math.max(0, Math.floor((now - matchStartedAt) / (settings.seconds * 1000)))
+    // Main-world finds move between sites on their normal world cadence. Rush
+    // uses eventKey as a server-owned spawn generation: the wall clock never
+    // changes a visible event find, while a collected find advances its own
+    // generation and can be rolled into a different designated location.
+    const cycle = rush ? Math.max(0, Math.floor(eventKey)) : Math.max(0, Math.floor((now - matchStartedAt) / (settings.seconds * 1000)))
     if (rareHash(`${sessionSeed}:${mode}:${kind}:${cycle}:chance`) >= settings.chance) continue
     const ranked = [...candidates].sort((a, b) => rareHash(`${sessionSeed}:${mode}:${kind}:${cycle}:${a}`) - rareHash(`${sessionSeed}:${mode}:${kind}:${cycle}:${b}`))
     if (settings.count === 1 && cycle > 0 && ranked.length > 1) {
       const previous = [...candidates].sort((a, b) => rareHash(`${sessionSeed}:${mode}:${kind}:${cycle - 1}:${a}`) - rareHash(`${sessionSeed}:${mode}:${kind}:${cycle - 1}:${b}`))[0]
       if (ranked[0] === previous) [ranked[0], ranked[1]] = [ranked[1], ranked[0]]
     }
-    ranked.slice(0, settings.count).forEach((id) => active.add(id))
+    const players = Math.max(1, Math.min(6, Math.floor(participantCount) || 1))
+    const activeCount = rush
+      ? kind === 'truffle'
+        ? Math.max(settings.count, players + 1)
+        : Math.max(settings.count, Math.ceil(players / 2))
+      : settings.count
+    ranked.slice(0, Math.min(candidates.length, activeCount)).forEach((id) => active.add(id))
   }
   return active
 }

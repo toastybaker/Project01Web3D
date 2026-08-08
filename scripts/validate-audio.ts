@@ -27,6 +27,6 @@ assert.equal(musicVolume(1, 0, MUSIC_TRACKS.hub), 0)
 assert.equal(musicVolume(2, 2, MUSIC_TRACKS.farm), 1)
 assert.equal(collectionSfx('forage', false, 'mining'), 'forage', 'stale minigame kind must not route forage to mining audio')
 assert.equal(collectionSfx('farm', true, 'mining'), 'mine-complete', 'active mining event must use mining audio')
-assert.equal(ambienceVolume(.55, .38, false) * 2, ambienceVolume(.55, .38, true), 'forest ambience should be half the cave gain')
+assert(ambienceVolume(.55, .38, false) < ambienceVolume(.55, .38, true) / 3, 'outdoor bird peaks are not sufficiently recessed')
 
 console.log('Audio: zone, event, results routing and measured per-track gains passed.')
