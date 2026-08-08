@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as THREE from 'three'
@@ -1980,38 +1980,19 @@ function forageScene() {
     fallenLog(-17, -160, 5.6, 0.31),
   )
 
-  const orchardSites = (cx, cz, count, salt) => Array.from({ length: count }, (_, index) => {
-    const column = index % 5
-    const row = Math.floor(index / 5)
-    return [
-      cx + (column - 2) * 8.4 + (seeded(index, salt) - 0.5) * 3.6,
-      cz + (row - 1.5) * 8.8 + (seeded(index, salt + 1) - 0.5) * 3.8,
-    ]
-  })
-  const distributedFruitSites = (count, salt) => Array.from({ length: count }, (_, index) => {
-    const columns = 7
-    const rows = Math.ceil(count / columns)
+  const fruitSites = Array.from({ length: 130 }, (_, index) => {
+    const columns = 13
+    const rows = 10
     const column = index % columns
     const row = Math.floor(index / columns)
-    let x = -174 + (348 * (column + 0.5)) / columns + (seeded(index, salt) - 0.5) * 16
-    const z = -22 - (178 * (row + 0.5)) / rows + (seeded(index, salt + 1) - 0.5) * 13
+    let x = -174 + (348 * (column + 0.5)) / columns + (seeded(index, 6173) - 0.5) * 9
+    const z = -22 - (178 * (row + 0.5)) / rows + (seeded(index, 6174) - 0.5) * 7
     const trail = trailCenterAt(z)
     if (Math.abs(x - trail) < 9) x += x <= trail ? -13 : 13
     return [THREE.MathUtils.clamp(x, -188, 188), z]
   })
-  const apples = [
-    [-10, -96], [20, -104], [-28, -121], [30, -132],
-    ...orchardSites(-49, -44, 8, 6101),
-    ...orchardSites(54, -117, 12, 6127),
-    ...orchardSites(-64, -181, 12, 6151),
-    ...distributedFruitSites(34, 6173),
-  ]
-  const oranges = [
-    [11, -99], [-24, -109], [27, -118],
-    ...orchardSites(54, -69, 9, 6203),
-    ...orchardSites(-52, -124, 12, 6229),
-    ...distributedFruitSites(36, 6257),
-  ]
+  const apples = fruitSites.filter((_, index) => index % 2 === 0 || index >= 120)
+  const oranges = fruitSites.filter((_, index) => index % 2 === 1 && index < 120)
   const regularOrchardTrees = []
   const truffles = [[-112,-66],[97,-104],[-78,-204],[126,-167],[34,-151]]
   const discoveries = [[-178,-185],[164,-201],[-139,-16]]
@@ -2596,7 +2577,16 @@ async function exportScene(scene, filename) {
   await document.transform(textureCompress({ encoder: sharp, targetFormat: 'webp', quality: 86, effort: 5 }))
   await io.write(nextPath, document)
   await rm(rawPath, { force: true })
-  await rename(nextPath, outputPath)
+  try {
+    await rename(nextPath, outputPath)
+  } catch (error) {
+    // Windows can reject an otherwise valid atomic replacement while the
+    // development server has served the old GLB. Copying over the exact file
+    // keeps scene generation usable without stopping the running preview.
+    if (!(error instanceof Error) || !('code' in error) || error.code !== 'EPERM') throw error
+    await copyFile(nextPath, outputPath)
+    await rm(nextPath, { force: true })
+  }
   console.log(`Authored ${filename}`)
 }
 

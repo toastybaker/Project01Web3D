@@ -26,8 +26,8 @@ export type BrokerNote = { id: string; title: string; text: string; round: numbe
 export type CookJob = { id: string; recipe: RecipeId; quantity: number; furnaceIndex: number; readyAt: number }
 export type RushNodeState = { generation: number; readyAt: number }
 export type MineNodeState = { generation: number; readyAt: number }
-export type SharedForageNode = { id: string; item: 'apple' | 'orange' | 'truffle' | 'natural-discovery'; capacity: number; available: number; fullAt: number }
-export type SharedForageSnapshot = { regrowMs: number; nodes: Record<string, SharedForageNode> }
+export type SharedForageNode = { id: string; item: 'apple' | 'orange' | 'truffle' | 'natural-discovery'; capacity: number; available: number; fullAt: number; serverNow?: number }
+export type SharedForageSnapshot = { regrowMs: number; serverNow?: number; nodes: Record<string, SharedForageNode> }
 export type SharedForageAward = SharedForageNode & { quantity: number }
 type MinigameSnapshot = { zone: ZoneId; playerPosition: Vec3; hotbar: Array<ItemId | null>; selectedHotbar: number; inventoryOpen: boolean; startedAt: number }
 export type FarmRushCooking = Array<{ orderIndex: number; recipe: RecipeId; readyAt: number }>
@@ -69,6 +69,7 @@ type Stats = { foraged: number; mined: number; harvested: number; sold: number }
 export type WeatherKind = 'clear' | 'rain' | 'mist' | 'sunny' | 'breeze'
 export type Language = 'en' | 'ko'
 export type GraphicsMode = 'auto' | 'low' | 'medium' | 'high'
+export type SprintMode = 'toggle' | 'hold'
 type MarketRates = { crop: number; forage: number; ore: number }
 export type SecretDeal = { give: ItemId; quantity: number; payout: number; title: string }
 
@@ -269,6 +270,7 @@ const savedSensitivity = (() => {
 })()
 const savedInvertY = localStorage.getItem('project01-camera-invert-y') === '1'
 const savedShiftLock = localStorage.getItem('project01-shift-lock') === '1'
+const savedSprintMode: SprintMode = localStorage.getItem('project01-sprint-mode') === 'hold' ? 'hold' : 'toggle'
 const savedGraphicsMode = (() => {
   const value = query.get('graphics') ?? localStorage.getItem('project01-graphics')
   if (value === 'quality') return 'high'
@@ -329,6 +331,7 @@ type GameState = {
   deedPurchasePending: boolean
   collectedForage: Record<string, number>
   sharedForageOnline: boolean
+  sharedForageAvailability: Record<string, number>
   forageAwardFullAt: Record<string, number>
   minedNodes: Record<string, number>
   mineGenerations: Record<string, number>
@@ -355,6 +358,7 @@ type GameState = {
   cameraSensitivity: number
   cameraInvertY: boolean
   shiftLocked: boolean
+  sprintMode: SprintMode
   graphicsMode: GraphicsMode
   language: Language
   selectedHotbar: number
@@ -469,6 +473,7 @@ type GameState = {
   setCameraSensitivity: (value: number) => void
   setCameraInvertY: (value: boolean) => void
   setShiftLocked: (locked: boolean) => void
+  setSprintMode: (mode: SprintMode) => void
   setGraphicsMode: (mode: GraphicsMode) => void
   setLanguage: (language: Language) => void
   setSelectedHotbar: (index: number) => void
@@ -670,7 +675,7 @@ const tutorialSnapshotKeys = [
   'foodPriceHistory', 'marketCorrectionsApplied', 'marketCorrectionName', 'marketCorrectionSeconds',
   'enhancements', 'miningBoostUntil', 'fortuneBoostCharges', 'selectedHotbar', 'sharedFarmOnline',
   'sharedFarmSelfId', 'farmOwners', 'sharedFarmCells', 'sharedDeedOnline', 'personalDeedAvailable',
-  'globalDeedsRemaining', 'sharedForageOnline', 'sharedMarketOnline', 'marketRevision',
+  'globalDeedsRemaining', 'sharedForageOnline', 'sharedForageAvailability', 'sharedMarketOnline', 'marketRevision',
 ] as const satisfies ReadonlyArray<keyof GameState>
 
 let tutorialSnapshot: Partial<GameState> | null = null
@@ -775,6 +780,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   deedPurchasePending: false,
   collectedForage: {},
   sharedForageOnline: false,
+  sharedForageAvailability: {},
   forageAwardFullAt: {},
   minedNodes: {},
   mineGenerations: {},
@@ -801,6 +807,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   cameraSensitivity: savedSensitivity,
   cameraInvertY: savedInvertY,
   shiftLocked: savedShiftLock,
+  sprintMode: savedSprintMode,
   graphicsMode: savedGraphicsMode,
   language: query.get('lang') === 'ko' || (query.get('lang') !== 'en' && localStorage.getItem('project01-language') === 'ko') ? 'ko' : 'en',
   selectedHotbar: 0,
@@ -954,6 +961,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       sharedFarmCells: {},
       sharedDeedOnline: false,
       sharedForageOnline: false,
+      sharedForageAvailability: {},
       sharedMarketOnline: false,
       shopOpen: false,
       stockOpen: false,
@@ -1333,7 +1341,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const state = get()
     const now = Date.now()
     const storedReadyAt = state.collectedForage[id] ?? 0
-    const availableFruit = forageSiteAvailability(id, storedReadyAt, now)
+    const availableFruit = state.sharedForageOnline ? state.sharedForageAvailability[id] ?? 0 : forageSiteAvailability(id, storedReadyAt, now)
     if (availableFruit <= 0) return
     const basket = (state.inventory['master-basket'] ?? 0) > 0 ? 'master-basket'
       : (state.inventory['reinforced-basket'] ?? 0) > 0 ? 'reinforced-basket'
@@ -1384,28 +1392,35 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (state.tutorialActive) return state
     if (!snapshot?.nodes || !Number.isFinite(snapshot.regrowMs)) return state
     const collectedForage = Object.fromEntries(Object.entries(state.collectedForage).filter(([id]) => !id.startsWith('ForageApple') && !id.startsWith('ForageOrange') && !id.startsWith('ForageTruffle') && !id.startsWith('ForageDiscovery')))
+    const localNow = Date.now()
+    const serverNow = Number.isFinite(snapshot.serverNow) ? Number(snapshot.serverNow) : localNow
     for (const node of Object.values(snapshot.nodes)) {
       if (!node?.id || (node.item !== 'apple' && node.item !== 'orange' && node.item !== 'truffle' && node.item !== 'natural-discovery') || !Number.isFinite(node.fullAt)) continue
-      if (node.fullAt > 0) collectedForage[node.id] = node.fullAt
+      if (node.fullAt > 0) collectedForage[node.id] = localNow + Math.max(0, node.fullAt - serverNow)
     }
-    return { sharedForageOnline: true, collectedForage }
+    return { sharedForageOnline: true, sharedForageAvailability: Object.fromEntries(Object.values(snapshot.nodes).map((node) => [node.id, Math.max(0, Math.floor(Number(node.available) || 0))])), collectedForage }
   }),
   syncForageNode: (node) => set((state) => {
     if (state.tutorialActive) return state
     if (!node?.id || (node.item !== 'apple' && node.item !== 'orange' && node.item !== 'truffle' && node.item !== 'natural-discovery') || !Number.isFinite(node.fullAt)) return state
     const collectedForage = { ...state.collectedForage }
-    if (node.fullAt > 0) collectedForage[node.id] = node.fullAt
+    const sharedForageAvailability = { ...state.sharedForageAvailability, [node.id]: Math.max(0, Math.floor(Number(node.available) || 0)) }
+    const serverNow = Number.isFinite(node.serverNow) ? Number(node.serverNow) : Date.now()
+    if (node.fullAt > 0) collectedForage[node.id] = Date.now() + Math.max(0, node.fullAt - serverNow)
     else delete collectedForage[node.id]
-    return { sharedForageOnline: true, collectedForage }
+    return { sharedForageOnline: true, sharedForageAvailability, collectedForage }
   }),
   awardForageNode: (award) => set((state) => {
     if (state.tutorialActive) return state
     if (!award?.id || (award.item !== 'apple' && award.item !== 'orange' && award.item !== 'truffle' && award.item !== 'natural-discovery') || !Number.isFinite(award.fullAt) || !Number.isFinite(award.quantity)) return state
-    if ((state.forageAwardFullAt[award.id] ?? 0) >= award.fullAt) return state
+    const serverNow = Number.isFinite(award.serverNow) ? Number(award.serverNow) : Date.now()
+    const localFullAt = award.fullAt > 0 ? Date.now() + Math.max(0, award.fullAt - serverNow) : 0
+    if ((state.forageAwardFullAt[award.id] ?? 0) >= localFullAt) return state
     if (consumeAuthoritativeAction('forage', award.id)) return {
       sharedForageOnline: true,
-      collectedForage: { ...state.collectedForage, [award.id]: award.fullAt },
-      forageAwardFullAt: { ...state.forageAwardFullAt, [award.id]: award.fullAt },
+      sharedForageAvailability: { ...state.sharedForageAvailability, [award.id]: Math.max(0, Math.floor(Number(award.available) || 0)) },
+      collectedForage: { ...state.collectedForage, [award.id]: localFullAt },
+      forageAwardFullAt: { ...state.forageAwardFullAt, [award.id]: localFullAt },
       toast: `+${Math.max(1, Math.floor(Number(award.quantity) || 1))} ${ITEMS[award.item].name}`,
     }
     const basket = (state.inventory['master-basket'] ?? 0) > 0 ? 'master-basket'
@@ -1418,7 +1433,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     const capacity = basket === 'hand' ? BASKET_CONFIG.hand.capacity : enhancedBasketCapacity(basket, basketLevel)
     const storageRemaining = isFruitTree ? Math.max(0, capacity - fruitStored) : Number.MAX_SAFE_INTEGER
     const baseYield = Math.min(Math.max(0, Math.floor(award.quantity)), storageRemaining)
-    if (baseYield <= 0) return { collectedForage: { ...state.collectedForage, [award.id]: award.fullAt }, forageAwardFullAt: { ...state.forageAwardFullAt, [award.id]: award.fullAt }, toast: 'Fruit storage full' }
+    if (baseYield <= 0) return {
+      sharedForageOnline: true,
+      sharedForageAvailability: { ...state.sharedForageAvailability, [award.id]: Math.max(0, Math.floor(Number(award.available) || 0)) },
+      collectedForage: { ...state.collectedForage, [award.id]: localFullAt },
+      forageAwardFullAt: { ...state.forageAwardFullAt, [award.id]: localFullAt },
+      toast: 'Fruit storage full',
+    }
     const bonus = basket === 'hand' ? 0 : enhancedYield(basket, basketLevel + (boosted ? 1 : 0)) - 1
     const quantity = Math.min(baseYield + bonus, storageRemaining)
     const seedDrop = Math.random() < FORAGE_CONFIG.seedDropChance
@@ -1427,11 +1448,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (seedDrop) inventory[seed] = (inventory[seed] ?? 0) + 1
     return {
       sharedForageOnline: true,
+      sharedForageAvailability: { ...state.sharedForageAvailability, [award.id]: Math.max(0, Math.floor(Number(award.available) || 0)) },
       inventory,
       fortuneBoostCharges: boosted ? { ...state.fortuneBoostCharges, [basket]: Math.max(0, (state.fortuneBoostCharges[basket] ?? 0) - 1) } : state.fortuneBoostCharges,
       hotbar: hotbarWithNewItem(state.hotbar, state.inventory, award.item),
-      collectedForage: { ...state.collectedForage, [award.id]: award.fullAt },
-      forageAwardFullAt: { ...state.forageAwardFullAt, [award.id]: award.fullAt },
+      collectedForage: { ...state.collectedForage, [award.id]: localFullAt },
+      forageAwardFullAt: { ...state.forageAwardFullAt, [award.id]: localFullAt },
       stats: { ...state.stats, foraged: state.stats.foraged + quantity },
       toast: `+${quantity} ${ITEMS[award.item].name}${bonus ? `  +${bonus} Fortune` : ''}${seedDrop ? '  +Seed' : ''}`,
     }
@@ -1538,6 +1560,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   setShiftLocked: (shiftLocked) => {
     localStorage.setItem('project01-shift-lock', shiftLocked ? '1' : '0')
     set({ shiftLocked })
+  },
+  setSprintMode: (sprintMode) => {
+    localStorage.setItem('project01-sprint-mode', sprintMode)
+    set({ sprintMode })
   },
   setGraphicsMode: (graphicsMode) => {
     localStorage.setItem('project01-graphics', graphicsMode)

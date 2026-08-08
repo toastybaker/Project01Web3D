@@ -101,7 +101,6 @@ function MineSync() {
     const offDenied = onMultiplayer('mine:denied', (raw) => {
       const reason = (raw as { reason?: string })?.reason
       if (reason === 'tier') setToast('Pickaxe tier too low')
-      else if (reason === 'too-far') setToast('Move closer')
     })
     return () => { offSnapshot(); offNode(); offAward(); offDenied() }
   }, [awardNode, setToast, syncNode, syncSnapshot])
@@ -1266,6 +1265,66 @@ function Crosshair() {
   return locked ? <div className="crosshair" aria-hidden="true"><i /><i /></div> : null
 }
 
+type ChatEntry = { id: string; nickname: string; text: string; sentAt: number }
+
+function GameChat() {
+  const tutorialActive = useGameStore((state) => state.tutorialActive)
+  const minigameOpen = useGameStore((state) => state.minigameOpen)
+  const nickname = useGameStore((state) => state.nickname)
+  const language = useGameStore((state) => state.language)
+  const [messages, setMessages] = useState<ChatEntry[]>([])
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [now, setNow] = useState(Date.now())
+  const input = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    const valid = (entry: unknown): entry is ChatEntry => Boolean(entry && typeof entry === 'object'
+      && typeof (entry as ChatEntry).id === 'string'
+      && typeof (entry as ChatEntry).nickname === 'string'
+      && typeof (entry as ChatEntry).text === 'string'
+      && Number.isFinite((entry as ChatEntry).sentAt))
+    const merge = (entry: ChatEntry) => setMessages((current) => [...current.filter((message) => message.id !== entry.id), entry].sort((a, b) => a.sentAt - b.sentAt).slice(-40))
+    const offSnapshot = onMultiplayer('chat:snapshot', (raw) => {
+      if (Array.isArray(raw)) setMessages(raw.filter(valid).slice(-40))
+    })
+    const offMessage = onMultiplayer('chat:message', (raw) => { if (valid(raw)) merge(raw) })
+    return () => { offSnapshot(); offMessage() }
+  }, [])
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    const key = (event: KeyboardEvent) => {
+      if (tutorialActive) return
+      if (event.code === 'Enter' && !open && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLTextAreaElement)) {
+        event.preventDefault()
+        setOpen(true)
+        window.requestAnimationFrame(() => input.current?.focus())
+      } else if (event.code === 'Escape' && open) {
+        setOpen(false)
+        setDraft('')
+      }
+    }
+    window.addEventListener('keydown', key)
+    return () => { window.clearInterval(timer); window.removeEventListener('keydown', key) }
+  }, [open, tutorialActive])
+  if (tutorialActive) return null
+  const visible = open ? messages.slice(-8) : messages.filter((message) => now - message.sentAt < 10_000).slice(-4)
+  const submit = () => {
+    const text = draft.replace(/[\u0000-\u001f\u007f<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 140)
+    if (!text) return
+    if (!sendMultiplayer('chat:send', { text })) {
+      setMessages((current) => [...current, { id: `local-${Date.now()}`, nickname, text, sentAt: Date.now() }].slice(-40))
+    }
+    setDraft('')
+  }
+  return <section className={`game-chat ${open ? 'open' : ''} ${minigameOpen ? 'event' : ''}`} aria-label={language === 'ko' ? '채팅' : 'Chat'}>
+    <div className="chat-history">{visible.map((message) => <div className={!open && now - message.sentAt > 7_000 ? 'fading' : ''} key={message.id}><strong data-no-localize>{message.nickname}</strong><span data-no-localize>{message.text}</span></div>)}</div>
+    {open && <input ref={input} maxLength={140} value={draft} placeholder={language === 'ko' ? '메시지 입력…' : 'Message…'} onChange={(event) => setDraft(event.currentTarget.value)} onKeyDown={(event) => {
+      if (event.key === 'Enter') { event.preventDefault(); submit() }
+      if (event.key === 'Escape') { event.preventDefault(); setOpen(false); setDraft('') }
+    }} />}
+  </section>
+}
+
 function MenuPanel() {
   const { language, t } = useLocale()
   const open = useGameStore((state) => state.menuOpen)
@@ -1278,6 +1337,8 @@ function MenuPanel() {
   const setInvertY = useGameStore((state) => state.setCameraInvertY)
   const shiftLocked = useGameStore((state) => state.shiftLocked)
   const setShiftLocked = useGameStore((state) => state.setShiftLocked)
+  const sprintMode = useGameStore((state) => state.sprintMode)
+  const setSprintMode = useGameStore((state) => state.setSprintMode)
   const graphicsMode = useGameStore((state) => state.graphicsMode)
   const setGraphicsMode = useGameStore((state) => state.setGraphicsMode)
   const setLanguage = useGameStore((state) => state.setLanguage)
@@ -1297,6 +1358,7 @@ function MenuPanel() {
           <label className="volume-row" key={channel}><span>{t(channel.toUpperCase())}</span><input type="range" min="0" max="1" step="0.01" value={volumes[channel]} onChange={(event) => setVolume(channel, Number(event.target.value))} /><output>{Math.round(volumes[channel] * 100)}%</output></label>
         ))}
         <label className="volume-row"><span>{t('SENSITIVITY')}</span><input aria-label="Camera sensitivity" type="range" min="0.35" max="1.8" step="0.05" value={sensitivity} onChange={(event) => setSensitivity(Number(event.target.value))} /></label>
+        <div className="language-row"><span>{t('SPRINT MODE')}</span><div><button className={sprintMode === 'toggle' ? 'active' : ''} onClick={() => setSprintMode('toggle')}>{t('TOGGLE')}</button><button className={sprintMode === 'hold' ? 'active' : ''} onClick={() => setSprintMode('hold')}>{t('HOLD')}</button></div></div>
         <div className="camera-options"><button className={shiftLocked ? 'active' : ''} onClick={() => setShiftLocked(!shiftLocked)}>{t('SHIFT LOCK')}</button><button className={invertY ? 'active' : ''} onClick={() => setInvertY(!invertY)}>{t('INVERT Y')}</button></div>
         {!minigameOpen && <button className="guide-open-button" onClick={() => openGuide(true)}>{t('HOW TO PLAY')}</button>}
         {sessionStarted && (!minigameOpen || minigameKind === 'farm') && <button className="cookbook-open" onClick={() => openCookbook(true)}>{t('RECIPES')}</button>}
@@ -1947,9 +2009,9 @@ function Interface() {
       window.removeEventListener('blur', resetMining)
     }
   }, [setCookbookOpen, setEnhancementOpen, setGuideOpen, setLotteryOpen, setMenuOpen, setPlayerPanelOpen, setProgress, setSecretOpen, setSelected, setShopOpen, setStockOpen, setTicketInspectOpen, setToast, setTravelOpen, setZone, toggleInventory])
-  if (!sessionStarted && !tutorialActive) return <div className="interface"><LobbyPanel /><PlayerTradePanel /><MenuPanel /><OnboardingPanelV2 /><Toast /></div>
-  if (minigameOpen) return <div className="interface">{minigameActive && <><Crosshair /><InteractionPrompt /></>}<MinigameWorldHud /><EventUtilityDock /><Hotbar /><InventoryPanel /><PlayerTradePanel /><MenuPanel /><CookbookPanel /><Toast /></div>
-  return <div className="interface"><HUD /><Crosshair /><InteractionPrompt /><ForageCapacity /><ActiveEffects /><Hotbar /><InventoryPanel /><ItemUsePanel /><ShopPanel /><LotteryPanel /><TicketInspectPanel /><NoteInspectPanel /><TravelPanel /><SecretDealPanel /><StocksPanel /><PlayerTradePanel /><MenuPanel /><CookbookPanel /><EnhancementPanel /><ResultsPanel /><MinigameResultCard /><OnboardingPanelV2 /><Toast /></div>
+  if (!sessionStarted && !tutorialActive) return <div className="interface"><LobbyPanel /><GameChat /><PlayerTradePanel /><MenuPanel /><OnboardingPanelV2 /><Toast /></div>
+  if (minigameOpen) return <div className="interface">{minigameActive && <><Crosshair /><InteractionPrompt /></>}<MinigameWorldHud /><EventUtilityDock /><Hotbar /><InventoryPanel /><GameChat /><PlayerTradePanel /><MenuPanel /><CookbookPanel /><Toast /></div>
+  return <div className="interface"><HUD /><Crosshair /><InteractionPrompt /><ForageCapacity /><ActiveEffects /><Hotbar /><InventoryPanel /><ItemUsePanel /><ShopPanel /><LotteryPanel /><TicketInspectPanel /><NoteInspectPanel /><TravelPanel /><SecretDealPanel /><StocksPanel /><GameChat /><PlayerTradePanel /><MenuPanel /><CookbookPanel /><EnhancementPanel /><ResultsPanel /><MinigameResultCard /><OnboardingPanelV2 /><Toast /></div>
 }
 
 export function App() {

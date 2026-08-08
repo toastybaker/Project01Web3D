@@ -20,13 +20,13 @@ import { ITEMS, type ItemId } from './items'
 
 const SCENES: Record<ZoneId, string> = {
   hub: '/assets/3d/scenes/hub.glb?v=29',
-  forage: '/assets/3d/scenes/forage.glb?v=37',
+  forage: '/assets/3d/scenes/forage.glb?v=38',
   farm: '/assets/3d/scenes/farm.glb?v=27',
   mine: '/assets/3d/scenes/mine.glb?v=48',
 }
 const MINING_RUSH_SCENE = '/assets/3d/scenes/mining-rush.glb?v=17'
 const FARM_RUSH_SCENE = '/assets/3d/scenes/farm-rush.glb?v=17'
-const FORAGE_RUSH_SCENE = '/assets/3d/scenes/forage-rush.glb?v=18'
+const FORAGE_RUSH_SCENE = '/assets/3d/scenes/forage-rush.glb?v=19'
 const MINIGAME_SCENES: Record<MinigameKind, string> = { mining: MINING_RUSH_SCENE, farm: FARM_RUSH_SCENE, forage: FORAGE_RUSH_SCENE }
 const EMPTY_RESOURCE_IDS = new Set<string>()
 const livePlayerPosition = new THREE.Vector3(0, 0.86, 14)
@@ -385,6 +385,7 @@ function SceneLighting({ reduced = false }: { reduced?: boolean }) {
         shadow-camera-far={high ? 118 : 96}
         shadow-bias={-0.00008}
         shadow-normalBias={0.025}
+        shadow-radius={high ? 2.25 : 1.25}
       />
       {zone === 'hub' && <pointLight color="#efb25d" intensity={3.2} distance={10} decay={2} position={[2.6, 2.5, 1.8]} />}
       {mineLike && Array.from({ length: mineLightCount }, (_, index) => <pointLight key={index} ref={(light) => { if (light) mineLights.current[index] = light }} color="#efbd79" intensity={0} distance={34} decay={2} />)}
@@ -602,13 +603,15 @@ function MaterialEnvironment() {
     const room = new RoomEnvironment()
     const texture = generator.fromScene(room, .04).texture
     scene.environment = texture
-    scene.environmentIntensity = zone === 'mine' ? (graphicsMode === 'high' ? .18 : .16) : graphicsMode === 'high' ? .36 : .28
     return () => {
       if (scene.environment === texture) scene.environment = null
       texture.dispose()
       generator.dispose()
     }
-  }, [gl, graphicsMode, scene, zone])
+  }, [gl, graphicsMode, scene])
+  useEffect(() => {
+    scene.environmentIntensity = zone === 'mine' ? (graphicsMode === 'high' ? .18 : .16) : graphicsMode === 'high' ? .36 : .28
+  }, [graphicsMode, scene, zone])
   return null
 }
 
@@ -906,6 +909,8 @@ function EnvironmentScene({ reduced = false }: { reduced?: boolean }) {
   const minedNodes = useGameStore((state) => state.minedNodes)
   const mineGenerations = useGameStore((state) => state.mineGenerations)
   const collectedForage = useGameStore((state) => state.collectedForage)
+  const sharedForageOnline = useGameStore((state) => state.sharedForageOnline)
+  const sharedForageAvailability = useGameStore((state) => state.sharedForageAvailability)
   const setAnchors = useGameStore((state) => state.setAnchors)
   const setColliders = useGameStore((state) => state.setColliders)
   const setSceneReady = useGameStore((state) => state.setSceneReady)
@@ -1080,8 +1085,11 @@ function EnvironmentScene({ reduced = false }: { reduced?: boolean }) {
       nextResourceRefresh.current = state.clock.elapsedTime + .2
       let fruitBatchChanged = false
       const changedOres: THREE.Object3D[] = []
+      const rushForage = minigameOpen && minigameKind === 'forage'
       const activeRares = rareResourceIds.length
-        ? visibleRareForageIds(rareResourceIds, minigameOpen && minigameKind === 'forage', forageRushRareSnapshot, sessionSeed, matchStartedAt, now, lobbyPlayerCount, minigameMilestone)
+        ? !rushForage && sharedForageOnline
+          ? new Set(rareResourceIds.filter((id) => (sharedForageAvailability[id] ?? 0) > 0))
+          : visibleRareForageIds(rareResourceIds, rushForage, forageRushRareSnapshot, sessionSeed, matchStartedAt, now, lobbyPlayerCount, minigameMilestone)
         : EMPTY_RESOURCE_IDS
       for (const object of resourceObjects) {
         const id = object.name.slice(9)
@@ -1099,7 +1107,11 @@ function EnvironmentScene({ reduced = false }: { reduced?: boolean }) {
         }
         const rushNode = rushNodes[id] ?? { generation: 0, readyAt: 0 }
         const readyAt = id.startsWith('RushOre') ? rushNode.readyAt : minedNodes[id] ?? 0
-        const forageAvailable = id.startsWith('Forage') ? forageSiteAvailability(id, collectedForage[id] ?? 0, now) : 0
+        const forageAvailable = id.startsWith('Forage')
+          ? !id.startsWith('ForageRush') && sharedForageOnline
+            ? sharedForageAvailability[id] ?? 0
+            : forageSiteAvailability(id, collectedForage[id] ?? 0, now)
+          : 0
         const rareActive = !id.startsWith('ForageTruffle') && !id.startsWith('ForageDiscovery') || activeRares.has(id)
         object.visible = id.startsWith('Forage') ? forageAvailable > 0 && rareActive : readyAt <= now
         if (object.visible) {
@@ -1410,7 +1422,7 @@ function AnimatedCharacter({ src, height, position, rotation, animation, castSha
   return <group ref={group} position={position} rotation={rotation}><primitive object={normalized} /><HeldItemAttachment character={normalized} item={heldItem} mining={animation === 'TreeChopping_Loop'} /></group>
 }
 
-type PeerPresence = { id: string; nickname: string; zone: ZoneId; position: [number, number, number]; yaw?: number; animation?: string; heldItem?: ItemId | null; cash: number; progressValue?: number; stats: { foraged: number; mined: number; harvested: number; sold: number }; seenAt: number; minigameOpen?: boolean; minigameKind?: MinigameKind; minigameMilestone?: number; minigameScore?: number; eventBay?: number }
+type PeerPresence = { id: string; nickname: string; zone: ZoneId; position: [number, number, number]; yaw?: number; animation?: string; heldItem?: ItemId | null; cash: number; progressValue?: number; stats: { foraged: number; mined: number; harvested: number; sold: number }; seenAt: number; tutorialActive?: boolean; minigameOpen?: boolean; minigameKind?: MinigameKind; minigameMilestone?: number; minigameScore?: number; eventBay?: number }
 
 const PEER_IDLE = 'Armature|Idle_Loop'
 const PEER_ANIMATIONS = new Set([
@@ -1464,7 +1476,7 @@ function RemotePlayer({ peer }: { peer: PeerPresence }) {
       snapshots.current = [{ position: next, yaw: nextYaw, animation: nextAnimation, receivedAt: now }]
       return
     }
-    snapshots.current = [...snapshots.current, { position: next, yaw: nextYaw, animation: nextAnimation, receivedAt: now }].slice(-3)
+    snapshots.current = [...snapshots.current, { position: next, yaw: nextYaw, animation: nextAnimation, receivedAt: now }].slice(-5)
   }, [peer.animation, peer.position, peer.yaw])
 
   useFrame(() => {
@@ -1481,7 +1493,8 @@ function RemotePlayer({ peer }: { peer: PeerPresence }) {
     const alpha = from === to ? 1 : THREE.MathUtils.clamp((renderAt - from.receivedAt) / span, 0, 1)
     rendered.current.copy(from.position).lerp(to.position, alpha)
     renderedYaw.current = from.yaw + shortestAngle(from.yaw, to.yaw) * alpha
-    const nextAnimation = alpha < .5 ? from.animation : to.animation
+    const latest = buffer.at(-1)
+    const nextAnimation = latest && performance.now() - latest.receivedAt > 450 ? PEER_IDLE : alpha < .5 ? from.animation : to.animation
     if (nextAnimation !== animationRef.current) {
       animationRef.current = nextAnimation
       setAnimation(nextAnimation)
@@ -1507,6 +1520,7 @@ function liveMinigameScore(state: ReturnType<typeof useGameStore.getState>) {
 
 function MultiplayerPresence() {
   const zone = useGameStore((state) => state.zone)
+  const tutorialActive = useGameStore((state) => state.tutorialActive)
   const minigameOpen = useGameStore((state) => state.minigameOpen)
   const minigameKind = useGameStore((state) => state.minigameKind)
   const minigameMilestone = useGameStore((state) => state.minigameMilestone)
@@ -1538,7 +1552,7 @@ function MultiplayerPresence() {
       channel.onmessage = (event: MessageEvent<PeerPresence & { leave?: boolean }>) => event.data.leave ? removePeer(event.data.id) : mergePeer(event.data)
       const publish = () => {
         const state = useGameStore.getState()
-        channel.postMessage({ id: peerId.current, nickname: state.nickname, zone: state.zone, position: state.playerPosition, yaw: state.playerYaw, animation: state.playerAnimation, heldItem: heldItemForState(state), cash: state.cash, progressValue: economyProgressValue(state), stats: state.stats, minigameOpen: state.minigameOpen, minigameKind: state.minigameKind, minigameMilestone: state.minigameMilestone, minigameScore: liveMinigameScore(state), eventBay: state.eventBay, seenAt: Date.now() })
+        channel.postMessage({ id: peerId.current, nickname: state.nickname, zone: state.zone, position: state.playerPosition, yaw: state.playerYaw, animation: state.playerAnimation, heldItem: heldItemForState(state), cash: state.cash, progressValue: economyProgressValue(state), stats: state.stats, tutorialActive: state.tutorialActive, minigameOpen: state.minigameOpen, minigameKind: state.minigameKind, minigameMilestone: state.minigameMilestone, minigameScore: liveMinigameScore(state), eventBay: state.eventBay, seenAt: Date.now() })
       }
       publish()
       const timer = window.setInterval(publish, 100)
@@ -1566,14 +1580,14 @@ function MultiplayerPresence() {
         room.onMessage('minigame:bay', (message: { bay?: number }) => { if (Number.isFinite(message.bay)) setEventBay(Number(message.bay)) })
         room.onMessage('presence:move', (message: PeerPresence) => mergePeer(message))
         room.onMessage('presence:leave', (id: string) => removePeer(id))
-        for (const type of ['trade:request', 'trade:opened', 'trade:update', 'trade:cancel', 'trade:commit', 'minigame:ready-state', 'minigame:start', 'minigame:ending', 'minigame:result', 'minigame:forage', 'minigame:forage-award', 'mine:snapshot', 'mine:node', 'mine:award', 'mine:denied', 'forage:snapshot', 'forage:node', 'forage:award', 'forage:denied', 'farm:snapshot', 'farm:update', 'farm:result', 'cook:result', 'deed:snapshot', 'deed:stock', 'deed:result', 'merchant:snapshot', 'merchant:result', 'market:snapshot', 'market:result']) room.onMessage(type, (payload: unknown) => emitMultiplayer(type, payload))
+        for (const type of ['chat:snapshot', 'chat:message', 'trade:request', 'trade:opened', 'trade:update', 'trade:cancel', 'trade:commit', 'minigame:ready-state', 'minigame:start', 'minigame:ending', 'minigame:result', 'minigame:forage', 'minigame:forage-award', 'mine:snapshot', 'mine:node', 'mine:award', 'mine:denied', 'forage:snapshot', 'forage:node', 'forage:award', 'forage:denied', 'farm:snapshot', 'farm:update', 'farm:result', 'cook:result', 'deed:snapshot', 'deed:stock', 'deed:result', 'merchant:snapshot', 'merchant:result', 'market:snapshot', 'market:result']) room.onMessage(type, (payload: unknown) => emitMultiplayer(type, payload))
         setMultiplayerSender((type, payload) => room.send(type, payload))
         room.send('lobby:ready', {})
         room.send('lobby:onboarding-ready', { ready: useGameStore.getState().guideComplete })
         room.send('minigame:result:request', {})
         const publish = () => {
           const state = useGameStore.getState()
-          room.send('move', { zone: state.zone, position: state.playerPosition, yaw: state.playerYaw, animation: state.playerAnimation, heldItem: heldItemForState(state), nickname: state.nickname, cash: state.cash, progressValue: economyProgressValue(state), stats: state.stats, minigameOpen: state.minigameOpen, minigameKind: state.minigameKind, minigameMilestone: state.minigameMilestone, minigameScore: liveMinigameScore(state), eventBay: state.eventBay })
+          room.send('move', { zone: state.zone, position: state.playerPosition, yaw: state.playerYaw, animation: state.playerAnimation, heldItem: heldItemForState(state), nickname: state.nickname, cash: state.cash, progressValue: economyProgressValue(state), stats: state.stats, tutorialActive: state.tutorialActive, minigameOpen: state.minigameOpen, minigameKind: state.minigameKind, minigameMilestone: state.minigameMilestone, minigameScore: liveMinigameScore(state), eventBay: state.eventBay })
         }
         publish()
         const timer = window.setInterval(publish, 100)
@@ -1583,13 +1597,13 @@ function MultiplayerPresence() {
       }
     }
     void connect()
-    const prune = window.setInterval(() => setPeers((current) => Object.fromEntries(Object.entries(current).filter(([, peer]) => Date.now() - peer.seenAt < 2500))), 750)
+    const prune = window.setInterval(() => setPeers((current) => Object.fromEntries(Object.entries(current).filter(([, peer]) => Date.now() - peer.seenAt < 6000))), 1000)
     return () => { disposed = true; window.clearInterval(prune); stopPresence?.(); setOnlinePlayers([]) }
   }, [setEventBay, setLobbyState, setOnlinePlayers, syncMatch])
 
-  const visiblePeers = Object.values(peers).filter((peer) => minigameOpen
+  const visiblePeers = tutorialActive ? [] : Object.values(peers).filter((peer) => !peer.tutorialActive && (minigameOpen
     ? peer.minigameOpen && peer.minigameKind === minigameKind && peer.minigameMilestone === minigameMilestone
-    : !peer.minigameOpen && peer.zone === zone)
+    : !peer.minigameOpen && peer.zone === zone))
   return <>{visiblePeers.map((peer) => <RemotePlayer key={peer.id} peer={peer} />)}</>
 }
 
@@ -1600,6 +1614,7 @@ function Player() {
   const horizontalVelocity = useRef(new THREE.Vector3())
   const verticalVelocity = useRef(0)
   const keys = useRef<Record<string, boolean>>({})
+  const sprintToggled = useRef(false)
   const yaw = useRef(0)
   const pitch = useRef(0.08)
   const shiftLock = useRef(false)
@@ -1781,19 +1796,23 @@ function Player() {
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || (event.target instanceof HTMLElement && event.target.isContentEditable)) return
       const live = useGameStore.getState()
       keys.current[event.code] = true
+      if ((event.code === 'ShiftLeft' || event.code === 'ShiftRight') && live.sprintMode === 'toggle' && !event.repeat) sprintToggled.current = !sprintToggled.current
       const cameraToggleLocked = live.guideOpen || live.lobbySettingsOpen || live.shopOpen || live.stockOpen || live.inventoryOpen || live.menuOpen || live.playerPanelOpen || live.lotteryOpen || live.ticketInspectOpen || live.noteInspectOpen || live.travelOpen || live.secretOpen || live.cookbookOpen || live.enhancementOpen || Boolean(live.itemUseOpen) || live.sessionComplete
       if (event.code === 'KeyQ' && !event.repeat && (!cameraToggleLocked || shiftLock.current)) {
         shiftLock.current = !shiftLock.current
         setShiftLocked(shiftLock.current)
         gl.domElement.style.cursor = shiftLock.current ? 'none' : ''
         if (shiftLock.current) {
-          try {
-            const request = gl.domElement.requestPointerLock?.()
-            if (request instanceof Promise) void request.catch(() => undefined)
-          } catch {
-            // Embedded browsers may reject pointer lock; shift-lock camera input still works without it.
+          if (document.pointerLockElement !== gl.domElement) {
+            try {
+              const request = gl.domElement.requestPointerLock?.()
+              if (request instanceof Promise) void request.catch(() => undefined)
+            } catch {
+              // Embedded browsers may reject pointer lock; shift-lock camera input still works without it.
+            }
           }
         }
         else if (document.pointerLockElement === gl.domElement) document.exitPointerLock()
@@ -1807,11 +1826,16 @@ function Player() {
       }
     }
     const up = (event: KeyboardEvent) => { keys.current[event.code] = false }
-    const clearInput = () => { keys.current = {} }
+    const clearInput = () => { keys.current = {}; sprintToggled.current = false }
     const move = (event: PointerEvent) => {
       if (shiftLock.current || event.buttons === 2) {
-        yaw.current -= event.movementX * 0.004 * sensitivity.current
-        const vertical = event.movementY * (invertY.current ? -1 : 1)
+        // Pointer-lock transitions can report a single extreme delta. Clamp
+        // that one event and keep yaw normalized so repeated full rotations
+        // remain continuous instead of appearing to snap back.
+        const horizontal = THREE.MathUtils.clamp(event.movementX, -160, 160)
+        const nextYaw = yaw.current - horizontal * 0.004 * sensitivity.current
+        yaw.current = Math.atan2(Math.sin(nextYaw), Math.cos(nextYaw))
+        const vertical = THREE.MathUtils.clamp(event.movementY, -140, 140) * (invertY.current ? -1 : 1)
         pitch.current = THREE.MathUtils.clamp(pitch.current + vertical * 0.0032 * sensitivity.current, -1.45, 1.45)
       }
     }
@@ -1831,14 +1855,10 @@ function Player() {
       const live = useGameStore.getState()
       const blocked = live.guideOpen || live.lobbySettingsOpen || live.shopOpen || live.stockOpen || live.inventoryOpen || live.menuOpen || live.playerPanelOpen || live.lotteryOpen || live.ticketInspectOpen || live.noteInspectOpen || live.travelOpen || live.secretOpen || live.cookbookOpen || live.enhancementOpen || Boolean(live.itemUseOpen) || live.sessionComplete
       if (blocked) return
-      try {
-        const request = gl.domElement.requestPointerLock?.()
-        if (request instanceof Promise) void request.catch(() => {
-          try { gl.domElement.setPointerCapture(event.pointerId) } catch { /* Pointer lock is unavailable in some embedded browsers. */ }
-        })
-      } catch {
-        try { gl.domElement.setPointerCapture(event.pointerId) } catch { /* Pointer lock is unavailable in some embedded browsers. */ }
-      }
+      // Right-drag uses pointer capture so Chrome does not show its Pointer
+      // Lock security banner on every camera drag. Q remains the deliberate
+      // unlimited-rotation mode.
+      try { gl.domElement.setPointerCapture(event.pointerId) } catch { /* Pointer capture is unavailable in some embedded browsers. */ }
     }
     const releaseRightPointer = (event: PointerEvent) => {
       if (event.button !== 2) return
@@ -1883,6 +1903,7 @@ function Player() {
     const movementLocked = liveUi.guideOpen || liveUi.lobbySettingsOpen || (liveUi.minigameOpen && !liveUi.minigameActive) || liveUi.shopOpen || liveUi.stockOpen || liveUi.inventoryOpen || liveUi.menuOpen || liveUi.playerPanelOpen || liveUi.lotteryOpen || liveUi.ticketInspectOpen || liveUi.noteInspectOpen || liveUi.travelOpen || liveUi.secretOpen || liveUi.cookbookOpen || liveUi.enhancementOpen || Boolean(liveUi.itemUseOpen) || liveUi.sessionComplete
     if (movementLocked) {
       keys.current = {}
+      sprintToggled.current = false
       horizontalVelocity.current.set(0, 0, 0)
     }
     const inputX = movementLocked ? 0 : Number(Boolean(keys.current.KeyD)) - Number(Boolean(keys.current.KeyA))
@@ -1892,7 +1913,7 @@ function Player() {
     const direction = cameraForward.clone().multiplyScalar(inputZ).add(right.multiplyScalar(inputX))
     const hasMovementInput = direction.lengthSq() > 0
     if (hasMovementInput) direction.normalize()
-    const sprinting = hasMovementInput && Boolean(keys.current.ShiftLeft || keys.current.ShiftRight)
+    const sprinting = hasMovementInput && (liveUi.sprintMode === 'toggle' ? sprintToggled.current : Boolean(keys.current.ShiftLeft || keys.current.ShiftRight))
     const speed = sprinting ? 8.4 : 3.9
     const targetVelocity = direction.clone().multiplyScalar(speed)
     const movementResponse = hasMovementInput
@@ -2229,6 +2250,8 @@ function InteractionTargeter() {
   const activeClaimedFarms = useSharedFarm ? Object.keys(farmOwners).map(Number).filter((farm) => farmOwners[farm] === sharedFarmSelfId) : claimedFarms
   const furnaceCount = useGameStore((state) => state.inventory.furnace ?? 0)
   const collectedForage = useGameStore((state) => state.collectedForage)
+  const sharedForageOnline = useGameStore((state) => state.sharedForageOnline)
+  const sharedForageAvailability = useGameStore((state) => state.sharedForageAvailability)
   const minedNodes = useGameStore((state) => state.minedNodes)
   const rushNodes = useGameStore((state) => state.rushNodes)
   const forageRushCollected = useGameStore((state) => state.forageRushCollected)
@@ -2255,7 +2278,10 @@ function InteractionTargeter() {
     lastCheck.current = state.clock.elapsedTime
     let best: { candidate: InteractionCandidate; score: number } | null = null
     const anchorIds = Object.keys(anchors)
-    const activeRares = visibleRareForageIds(anchorIds, minigameOpen && minigameKind === 'forage', forageRushRareSnapshot, sessionSeed, matchStartedAt, Date.now(), lobbyPlayerCount, minigameMilestone)
+    const rushForage = minigameOpen && minigameKind === 'forage'
+    const activeRares = !rushForage && sharedForageOnline
+      ? new Set(anchorIds.filter((id) => (id.startsWith('ForageTruffle') || id.startsWith('ForageDiscovery')) && (sharedForageAvailability[id] ?? 0) > 0))
+      : visibleRareForageIds(anchorIds, rushForage, forageRushRareSnapshot, sessionSeed, matchStartedAt, Date.now(), lobbyPlayerCount, minigameMilestone)
     const heldMiningTarget = interactionProgress > 0 && (previous.current?.startsWith('MineOre') || previous.current?.startsWith('RushOre'))
     for (const anchor of anchorIds) {
       if (minigameOpen && !anchor.startsWith('RushOre') && !anchor.startsWith('FarmRush') && !anchor.startsWith('ForageRush')) continue
@@ -2265,7 +2291,7 @@ function InteractionTargeter() {
       if (!candidate) continue
       if (heldMiningTarget && candidate.id !== previous.current) continue
       if ((anchor.startsWith('ForageTruffle') || anchor.startsWith('ForageDiscovery') || anchor.startsWith('ForageRushTruffle') || anchor.startsWith('ForageRushDiscovery')) && !activeRares.has(anchor)) continue
-      if (candidate.id.startsWith('forage:') && forageSiteAvailability(anchor, collectedForage[anchor] ?? 0) <= 0) continue
+      if (candidate.id.startsWith('forage:') && (sharedForageOnline ? sharedForageAvailability[anchor] ?? 0 : forageSiteAvailability(anchor, collectedForage[anchor] ?? 0)) <= 0) continue
       if (candidate.id.startsWith('Mine') && (minedNodes[candidate.id] ?? 0) > Date.now()) continue
       if (candidate.id.startsWith('RushOre') && (rushNodes[candidate.id]?.readyAt ?? 0) > Date.now()) continue
       if (candidate.id.startsWith('ForageRush') && !candidate.id.startsWith('ForageRushDeliver') && (forageRushCollected[candidate.id] ?? 0) > Date.now()) continue
@@ -2525,8 +2551,46 @@ function LoadingMark() {
   )
 }
 
+function SceneAssetWarmup() {
+  const zone = useGameStore((state) => state.zone)
+  useEffect(() => {
+    const remaining = [
+      ...Object.values(SCENES).filter((url) => url !== SCENES[zone]),
+      ...Object.values(MINIGAME_SCENES),
+    ]
+    let cancelled = false
+    let idleId = 0
+    let timer = 0
+    const idleApi = window as unknown as {
+      requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number
+      cancelIdleCallback?: (id: number) => void
+    }
+    const schedule = () => {
+      if (cancelled || !remaining.length) return
+      const loadNext = () => {
+        if (cancelled) return
+        const url = remaining.shift()
+        if (url) useGLTF.preload(url)
+        timer = window.setTimeout(schedule, 900)
+      }
+      if (idleApi.requestIdleCallback) idleId = idleApi.requestIdleCallback(loadNext, { timeout: 4_000 })
+      else timer = window.setTimeout(loadNext, 900)
+    }
+    timer = window.setTimeout(schedule, 1_200)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+      if (idleId) idleApi.cancelIdleCallback?.(idleId)
+    }
+  }, [zone])
+  return null
+}
+
 export function GameWorld() {
   const graphicsMode = useGameStore((state) => state.graphicsMode)
+  const zone = useGameStore((state) => state.zone)
+  const minigameOpen = useGameStore((state) => state.minigameOpen)
+  const minigameKind = useGameStore((state) => state.minigameKind)
   const [autoReduced, setAutoReduced] = useState(false)
   // Auto quality changes render scale in-place through AdaptiveRenderScale.
   // Do not replace the WebGL canvas when an FPS sample crosses a threshold:
@@ -2537,10 +2601,11 @@ export function GameWorld() {
     <Canvas key={low ? 'low-renderer' : 'full-renderer'} shadows={low ? false : 'basic'} dpr={[.85, 1.15]} camera={{ fov: 48, near: 0.1, far: 320, position: [0, 4.2, 20.2] }} gl={{ antialias: !low, alpha: false, stencil: false, powerPreference: 'high-performance' }}>
       <AdaptiveRenderScale rendererLow={low} onReduced={setAutoReduced} />
       <RendererQuality />
+      <SceneAssetWarmup />
       <MaterialEnvironment />
       <SceneLighting reduced={autoReduced} />
       <WeatherEffect />
-      {graphicsMode === 'high' && <HighPostProcessing />}
+      {graphicsMode === 'high' && (zone === 'mine' || minigameOpen && minigameKind === 'mining') && <HighPostProcessing />}
       <Suspense fallback={<LoadingMark />}>
         <EnvironmentScene reduced={autoReduced} />
         <Player />

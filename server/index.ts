@@ -16,7 +16,8 @@ import { STOCK_IDS, advanceMarketCycle, commodityPriceSnapshot, createInitialCom
 type ZoneId = 'hub' | 'forage' | 'farm' | 'mine'
 type MinigameKind = 'mining' | 'farm' | 'forage'
 type PublicStats = { foraged: number; mined: number; harvested: number; sold: number }
-type Presence = { id: string; nickname: string; zone: ZoneId; position: [number, number, number]; yaw?: number; animation?: string; heldItem?: ItemId | null; cash: number; progressValue?: number; stats: PublicStats; seenAt: number; minigameOpen?: boolean; minigameKind?: MinigameKind; minigameMilestone?: number; minigameScore?: number; eventBay?: number }
+type Presence = { id: string; nickname: string; zone: ZoneId; position: [number, number, number]; yaw?: number; animation?: string; heldItem?: ItemId | null; cash: number; progressValue?: number; stats: PublicStats; seenAt: number; tutorialActive?: boolean; minigameOpen?: boolean; minigameKind?: MinigameKind; minigameMilestone?: number; minigameScore?: number; eventBay?: number }
+type ChatMessage = { id: string; nickname: string; text: string; sentAt: number }
 type TradeOffer = { cash: number; items: Record<string, number> }
 type TradeSession = { id: string; a: string; b: string; offers: Record<string, TradeOffer>; ready: Record<string, boolean> }
 type MinigameStanding = { placement: number; nickname: string; score: number }
@@ -74,8 +75,12 @@ const ALLOW_EARLY_TEST_RESET = process.env.TEST_ALLOW_EARLY_RESET === '1'
 const ALLOW_EARLY_TEST_MINIGAME = process.env.TEST_ALLOW_EARLY_MINIGAME === '1'
 const ALLOW_TEST_SCORE_INJECTION = process.env.TEST_ALLOW_SCORE_INJECTION === '1'
 const FORCE_TEST_RARES = process.env.TEST_RARE_FORAGE_ALWAYS === '1'
+const TEST_RARE_FORAGE_ROLL_MS = Number(process.env.TEST_RARE_FORAGE_ROLL_MS) > 0 ? Number(process.env.TEST_RARE_FORAGE_ROLL_MS) : 0
 const FORAGE_REGROW_MS = Number(process.env.TEST_FORAGE_REGROW_MS) > 0 ? Number(process.env.TEST_FORAGE_REGROW_MS) : 30_000
 const FORAGE_RUSH_RARE_RESPAWN_MS = Number(process.env.TEST_FORAGE_RUSH_RARE_RESPAWN_MS) > 0 ? Number(process.env.TEST_FORAGE_RUSH_RARE_RESPAWN_MS) : FORAGE_RUSH_RESPAWN_MS.rare
+const nextMainRareForageRollAt = (item: 'truffle' | 'natural-discovery', matchStartedAt: number, now: number) => TEST_RARE_FORAGE_ROLL_MS > 0
+  ? now + TEST_RARE_FORAGE_ROLL_MS
+  : nextRareForageRollAt(item, false, matchStartedAt, now)
 const RAIN_CYCLE_COOLDOWN_MS = Number(process.env.TEST_RAIN_COOLDOWN_MS) >= 0 ? Number(process.env.TEST_RAIN_COOLDOWN_MS) : 340_000
 const TEST_MARKET_FIXTURES = process.env.TEST_MARKET_FIXTURES === '1'
 const TEST_TRADE_FIXTURES = process.env.TEST_TRADE_FIXTURES === '1'
@@ -121,32 +126,19 @@ const forageTrailCenterAt = (z: number) => {
   }
   return FORAGE_TRAIL.at(-1)![0]
 }
-const orchardSites = (cx: number, cz: number, count: number, salt: number) => Array.from({ length: count }, (_, index) => {
-  const column = index % 5
-  const row = Math.floor(index / 5)
-  return [cx + (column - 2) * 8.4 + (forageSeeded(index, salt) - 0.5) * 3.6, cz + (row - 1.5) * 8.8 + (forageSeeded(index, salt + 1) - 0.5) * 3.8] as const
-})
-const distributedFruitSites = (count: number, salt: number) => Array.from({ length: count }, (_, index) => {
-  const columns = 7
-  const rows = Math.ceil(count / columns)
+const FORAGE_FRUIT_SITES = Array.from({ length: 130 }, (_, index) => {
+  const columns = 13
+  const rows = 10
   const column = index % columns
   const row = Math.floor(index / columns)
-  let x = -174 + (348 * (column + 0.5)) / columns + (forageSeeded(index, salt) - 0.5) * 16
-  const z = -22 - (178 * (row + 0.5)) / rows + (forageSeeded(index, salt + 1) - 0.5) * 13
+  let x = -174 + (348 * (column + 0.5)) / columns + (forageSeeded(index, 6173) - 0.5) * 9
+  const z = -22 - (178 * (row + 0.5)) / rows + (forageSeeded(index, 6174) - 0.5) * 7
   const trail = forageTrailCenterAt(z)
   if (Math.abs(x - trail) < 9) x += x <= trail ? -13 : 13
   return [Math.max(-188, Math.min(188, x)), z] as const
 })
-const FORAGE_APPLE_SITES = [
-  [-10, -96], [20, -104], [-28, -121], [30, -132],
-  ...orchardSites(-49, -44, 8, 6101), ...orchardSites(54, -117, 12, 6127),
-  ...orchardSites(-64, -181, 12, 6151), ...distributedFruitSites(34, 6173),
-] as ReadonlyArray<readonly [number, number]>
-const FORAGE_ORANGE_SITES = [
-  [11, -99], [-24, -109], [27, -118],
-  ...orchardSites(54, -69, 9, 6203), ...orchardSites(-52, -124, 12, 6229),
-  ...distributedFruitSites(36, 6257),
-] as ReadonlyArray<readonly [number, number]>
+const FORAGE_APPLE_SITES = FORAGE_FRUIT_SITES.filter((_, index) => index % 2 === 0 || index >= 120)
+const FORAGE_ORANGE_SITES = FORAGE_FRUIT_SITES.filter((_, index) => index % 2 === 1 && index < 120)
 const FORAGE_TRUFFLE_SITES = [[-112, -66], [97, -104], [-78, -204], [126, -167], [34, -151]] as const
 const FORAGE_DISCOVERY_SITES = [[-178, -185], [164, -201], [-139, -16]] as const
 const FORAGE_RUSH_TRUFFLE_IDS = [...FORAGE_TRUFFLE_SITES.map((_, index) => `ForageRushTruffle${String(index).padStart(3, '0')}`), ...Array.from({ length: 6 }, (_, index) => `ForageRushTruffle${String(index + 20).padStart(3, '0')}`)]
@@ -195,6 +187,8 @@ class WoodlandRoom extends Room {
   private profileBySession = new Map<string, string>()
   private sessionByProfile = new Map<string, string>()
   private movementState = new Map<string, { zone: ZoneId; position: [number, number, number]; movedAt: number; initialized: boolean }>()
+  private chatMessages: ChatMessage[] = []
+  private lastChatAt = new Map<string, number>()
   private trades = new Map<string, TradeSession>()
   private minigameResults = new Map<number, Map<string, MinigameResult>>()
   private minigameRewardLedger = new Map<string, MinigameSettlement>()
@@ -456,13 +450,14 @@ class WoodlandRoom extends Room {
 
   private forageNodePayload(node: SharedForageNode, now = Date.now()) {
     const available = this.forageAvailability(node, now)
-    return { id: node.id, item: node.item, capacity: node.capacity, available, fullAt: available >= node.capacity ? 0 : node.fullAt }
+    return { id: node.id, item: node.item, capacity: node.capacity, available, fullAt: available >= node.capacity ? 0 : node.fullAt, serverNow: now }
   }
 
   private forageSnapshot() {
     const now = Date.now()
     return {
       regrowMs: FORAGE_REGROW_MS,
+      serverNow: now,
       nodes: Object.fromEntries([...this.forageNodes.values()].map((node) => [node.id, this.forageNodePayload(node, now)])),
     }
   }
@@ -486,20 +481,28 @@ class WoodlandRoom extends Room {
     this.clearRareForageTimer()
     const rareNodes = [...this.forageNodes.values()].filter((node) => node.rare)
     if (!rareNodes.length) return
-    const rareIds = rareNodes.map((node) => node.id)
-    const active = FORCE_TEST_RARES
-      ? new Set(rareNodes.filter((node) => node.id === 'ForageTruffle000' || node.id === 'ForageDiscovery00').map((node) => node.id))
-      : this.matchStarted ? activeRareForageIds(rareIds, false, this.matchSeed, this.matchStartedAt, now) : new Set<string>()
-    for (const node of rareNodes) {
-      const nextAt = nextRareForageRollAt(node.item === 'truffle' ? 'truffle' : 'natural-discovery', false, this.matchStartedAt || now, now)
-      const available = active.has(node.id) && node.fullAt <= now
-      node.rareAvailable = available
-      node.fullAt = available ? 0 : Math.max(node.fullAt, nextAt)
-      if (broadcast) this.broadcast('forage:node', this.forageNodePayload(node, now))
+    for (const item of ['truffle', 'natural-discovery'] as const) {
+      const kindNodes = rareNodes.filter((node) => node.item === item)
+      const alreadyActive = kindNodes.find((node) => node.rareAvailable)
+      const eligible = kindNodes.filter((node) => !node.rareAvailable && node.fullAt <= now)
+      let selected: string | null = alreadyActive?.id ?? null
+      if (!selected && this.matchStarted && eligible.length) {
+        if (FORCE_TEST_RARES) selected = item === 'truffle' ? eligible.find((node) => node.id === 'ForageTruffle000')?.id ?? null : eligible.find((node) => node.id === 'ForageDiscovery00')?.id ?? null
+        else selected = [...activeRareForageIds(eligible.map((node) => node.id), false, this.matchSeed, this.matchStartedAt, now)][0] ?? null
+      }
+      const nextAt = nextMainRareForageRollAt(item, this.matchStartedAt || now, now)
+      for (const node of kindNodes) {
+        // Once found, a rare discovery stays in the world until somebody
+        // collects it. Future rolls choose a new eligible site; they do not
+        // despawn and relocate an unclaimed find.
+        node.rareAvailable = node.id === selected
+        node.fullAt = node.rareAvailable ? 0 : Math.max(node.fullAt, nextAt)
+        if (broadcast) this.broadcast('forage:node', this.forageNodePayload(node, now))
+      }
     }
     if (!this.matchStarted) return
-    const nextTruffle = nextRareForageRollAt('truffle', false, this.matchStartedAt, now)
-    const nextDiscovery = nextRareForageRollAt('natural-discovery', false, this.matchStartedAt, now)
+    const nextTruffle = nextMainRareForageRollAt('truffle', this.matchStartedAt, now)
+    const nextDiscovery = nextMainRareForageRollAt('natural-discovery', this.matchStartedAt, now)
     this.forageRareTimer = setTimeout(() => this.refreshRareForage(Date.now()), Math.max(0, Math.min(nextTruffle, nextDiscovery) - now) + 20)
   }
 
@@ -1050,7 +1053,11 @@ class WoodlandRoom extends Room {
         clearTimeout(gate.timeout)
         this.eventReady.delete(key)
         this.eventStartedAt.delete(key)
-      } else this.readyState(key)
+      } else {
+        this.readyState(key)
+        const expected = Math.max(1, this.lobbyEligible.size || this.clients.length)
+        if (!gate.gameplayAt && gate.ready.size >= expected && gate.participants.size >= expected) this.startMinigame(key)
+      }
     }
   }
 
@@ -1185,6 +1192,23 @@ class WoodlandRoom extends Room {
       this.sendMerchantSnapshot(client)
       this.sendMarketSnapshot(client)
       this.sendPendingSettlements(client)
+      client.send('chat:snapshot', this.chatMessages)
+    })
+    this.onMessage('chat:send', (client, message: { text?: unknown }) => {
+      if (!this.sessionIsActive(client.sessionId)) return
+      const now = Date.now()
+      if (now - (this.lastChatAt.get(client.sessionId) ?? 0) < 650) return
+      const text = typeof message?.text === 'string'
+        ? message.text.replace(/[\u0000-\u001f\u007f<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 140)
+        : ''
+      if (!text) return
+      const player = this.players.get(client.sessionId)
+      const nickname = player?.nickname || `Player ${client.sessionId.slice(0, 4)}`
+      const entry = { id: `${now.toString(36)}-${client.sessionId.slice(0, 6)}`, nickname, text, sentAt: now }
+      this.lastChatAt.set(client.sessionId, now)
+      this.chatMessages.push(entry)
+      if (this.chatMessages.length > 40) this.chatMessages.splice(0, this.chatMessages.length - 40)
+      this.broadcast('chat:message', entry)
     })
     this.onMessage('lobby:onboarding-ready', (client, message: { ready?: boolean }) => {
       if (!this.sessionIsActive(client.sessionId)) return
@@ -1245,6 +1269,7 @@ class WoodlandRoom extends Room {
       const position = message.position
       if (!zone || !zoneBounds[zone] || !Array.isArray(position) || position.length !== 3 || position.some((value) => !Number.isFinite(value))) return
       const minigameKind = message.minigameKind === 'mining' || message.minigameKind === 'farm' || message.minigameKind === 'forage' ? message.minigameKind : undefined
+      const tutorialActive = !this.matchStarted && Boolean(message.tutorialActive)
       const minigameMilestone = Number(message.minigameMilestone)
       const minigameOpen = this.matchStarted && Boolean(message.minigameOpen) && Boolean(minigameKind) && this.minigameMilestoneIsDue(minigameMilestone) && minigameKind === scheduledMinigame(minigameMilestone, this.matchSeed, this.matchDurationSeconds)
       const bounds = minigameOpen && minigameKind === 'forage' ? zoneBounds.forage : minigameOpen ? zoneBounds.hub : zoneBounds[zone]
@@ -1259,7 +1284,7 @@ class WoodlandRoom extends Room {
         Math.max(-30, Math.min(30, Number(position[1]))),
         Math.max(bounds.zMin, Math.min(bounds.zMax, Number(position[2]))),
       ]
-      const movement = this.movementState.get(client.sessionId)
+      const movement = tutorialActive ? undefined : this.movementState.get(client.sessionId)
       let safePosition = requestedPosition
       if (movement?.initialized) {
         if (zone !== movement.zone) {
@@ -1271,7 +1296,7 @@ class WoodlandRoom extends Room {
           if (Math.hypot(requestedPosition[0] - movement.position[0], requestedPosition[2] - movement.position[2]) > maxDistance) safePosition = [...movement.position]
         }
       }
-      this.movementState.set(client.sessionId, { zone, position: safePosition, movedAt: now, initialized: true })
+      if (!tutorialActive) this.movementState.set(client.sessionId, { zone, position: safePosition, movedAt: now, initialized: true })
       const rawYaw = Number(message.yaw)
       const yaw = Number.isFinite(rawYaw) ? Math.atan2(Math.sin(rawYaw), Math.cos(rawYaw)) : previous?.yaw ?? 0
       const animation = typeof message.animation === 'string' && PLAYER_ANIMATIONS.has(message.animation) ? message.animation : previous?.animation ?? 'Armature|Idle_Loop'
@@ -1283,7 +1308,7 @@ class WoodlandRoom extends Room {
       const minigameScore = minigameOpen ? this.eventScoreFor(account.profileId, minigameMilestone, minigameKind!) : undefined
       const progressValue = this.accountProgress(account)
       const stats = { ...account.stats }
-      const presence = { id: client.sessionId, nickname: nickname || `Player ${client.sessionId.slice(0, 4)}`, zone, position: safePosition, yaw, animation, heldItem, cash: account.cash, progressValue, stats, minigameOpen, minigameKind, minigameMilestone: minigameOpen ? minigameMilestone : undefined, minigameScore, eventBay, seenAt: now }
+      const presence = { id: client.sessionId, nickname: nickname || `Player ${client.sessionId.slice(0, 4)}`, zone, position: safePosition, yaw, animation, heldItem, cash: account.cash, progressValue, stats, tutorialActive, minigameOpen, minigameKind, minigameMilestone: minigameOpen ? minigameMilestone : undefined, minigameScore, eventBay, seenAt: now }
       this.players.set(client.sessionId, presence)
       if (this.orePauseStartedAt && ![...this.players.values()].some((entry) => entry.minigameOpen)) this.resumeOreRespawns()
       if (eventBay !== undefined && previous?.eventBay !== eventBay) this.sendTo(client.sessionId, 'minigame:bay', { bay: eventBay })
@@ -1366,7 +1391,7 @@ class WoodlandRoom extends Room {
       const quantity = Math.min(available, remainingCapacity)
       if (node.rare) {
         node.rareAvailable = false
-        node.fullAt = nextRareForageRollAt(node.item === 'truffle' ? 'truffle' : 'natural-discovery', false, this.matchStartedAt || now, now)
+        node.fullAt = nextMainRareForageRollAt(node.item === 'truffle' ? 'truffle' : 'natural-discovery', this.matchStartedAt || now, now)
       } else {
         const remaining = available - quantity
         node.fullAt = remaining >= node.capacity ? 0 : now + (node.capacity - remaining) * FORAGE_REGROW_MS
@@ -2124,6 +2149,7 @@ class WoodlandRoom extends Room {
     }
     this.players.delete(client.sessionId)
     this.movementState.delete(client.sessionId)
+    this.lastChatAt.delete(client.sessionId)
     const profileId = this.profileBySession.get(client.sessionId)
     const account = profileId ? this.accounts.get(profileId) : undefined
     if (profileId && account?.activeSessionId === client.sessionId) {

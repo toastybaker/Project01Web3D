@@ -25,7 +25,7 @@ const KO: Record<string, string> = {
   'TIME LEFT': '남은 시간', 'MATCH TIME': '남은 시간', 'RESTOCK': '재입고', 'MARKET NEWS': '시장 뉴스', 'BREAKING NEWS': '속보', 'MARKETS SHIFT SHARPLY': '여러 시세가 크게 움직였습니다',
   'COLLECT ALL': '모두 받기', '3 COOKING SLOTS': '조리 예약 3칸', 'DISHES PER BATCH': '한 번에 조리',
   'MASTER': '전체', 'MUSIC': '음악', 'AMBIENCE': '환경음', 'EFFECTS': '효과음',
-  'SENSITIVITY': '감도', 'SHIFT LOCK': '시점 고정', 'INVERT Y': 'Y축 반전',
+  'SENSITIVITY': '감도', 'SHIFT LOCK': '시점 고정', 'INVERT Y': 'Y축 반전', 'SPRINT MODE': '달리기 방식', 'TOGGLE': '전환', 'HOLD': '길게 누르기',
   'LOCK': '시점 고정', 'HOTBAR': '단축바', 'CAMERA SENSITIVITY': '카메라 감도',
 
   'HOW TO PLAY': '게임 안내',

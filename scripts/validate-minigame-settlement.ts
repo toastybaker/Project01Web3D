@@ -57,11 +57,14 @@ try {
   const profileB = 'profile-b-1234567890'
   const playerA = await new Client(endpoint).joinOrCreate('woodland', { profileId: profileA })
   const playerB = await new Client(endpoint).joinById(playerA.roomId, { profileId: profileB })
-  rooms.push(playerA, playerB)
+  const departingPlayer = await new Client(endpoint).joinById(playerA.roomId, { profileId: 'profile-departing-1234567890' })
+  rooms.push(playerA, playerB, departingPlayer)
   playerA.send('lobby:ready', {})
   playerB.send('lobby:ready', {})
+  departingPlayer.send('lobby:ready', {})
   playerA.send('lobby:onboarding-ready', { ready: true })
   playerB.send('lobby:onboarding-ready', { ready: true })
+  departingPlayer.send('lobby:onboarding-ready', { ready: true })
   await new Promise((resolve) => setTimeout(resolve, 80))
 
   const syncA = message<{ seed: number; durationSeconds: number }>(playerA, 'match:sync')
@@ -81,6 +84,8 @@ try {
   const startB = message<{ gameplayAt: number }>(playerB, 'minigame:start')
   playerA.send('minigame:ready', { milestone, kind })
   playerB.send('minigame:ready', { milestone, kind })
+  await departingPlayer.leave()
+  rooms.splice(rooms.indexOf(departingPlayer), 1)
   const [eventA, eventB] = await Promise.all([startA, startB])
   check(eventA.gameplayAt === eventB.gameplayAt, 'Players received different event start times')
   await new Promise((resolve) => setTimeout(resolve, Math.max(0, eventA.gameplayAt - Date.now()) + 40))
@@ -122,7 +127,7 @@ try {
   check(useGameStore.getState().hotbar.includes('cookbook-box'), 'Client settlement reward skipped the hotbar row')
   check(useGameStore.getState().appliedMinigameSettlementIds.length === 1, 'Client settlement ledger did not stay idempotent')
 
-  console.log(JSON.stringify({ status: 'pass', sameMatch: true, twoPlayerRankingOnly: true, duplicateFinishStable: true, reconnectReplay: true, clientCashAndItemsExactlyOnce: true }, null, 2))
+  console.log(JSON.stringify({ status: 'pass', sameMatch: true, departingPlayerDidNotBlockStart: true, twoPlayerRankingOnly: true, duplicateFinishStable: true, reconnectReplay: true, clientCashAndItemsExactlyOnce: true }, null, 2))
 } finally {
   await Promise.allSettled(rooms.map((room) => room.leave()))
   server.kill('SIGTERM')

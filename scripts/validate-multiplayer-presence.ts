@@ -7,7 +7,9 @@ type Presence = {
   yaw: number
   animation: string
   heldItem?: string | null
+  tutorialActive?: boolean
 }
+type ChatEntry = { id: string; nickname: string; text: string; sentAt: number }
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -53,6 +55,10 @@ try {
   const observer = await new Client(endpoint).joinById(sender.roomId, { bypassLobby: true })
   rooms.push(sender, observer)
 
+  const emptyChat = messageWhere<ChatEntry[]>(observer, 'chat:snapshot', (entries) => Array.isArray(entries))
+  observer.send('lobby:ready', {})
+  assert((await emptyChat).length === 0, 'Fresh room chat history was not empty')
+
   const sprinting = messageWhere<Presence>(observer, 'presence:move', (presence) => presence.id === sender.sessionId && presence.position[0] === 8)
   sender.send('move', {
     zone: 'hub', position: [8, 0.86, -6], yaw: 1.2, animation: 'Armature|Sprint_Loop',
@@ -86,7 +92,30 @@ try {
   const jumpPresence = await jumping
   assert(jumpPresence.animation === 'Armature|Jump_Loop', 'Remote jump animation was not replicated')
 
-  console.log(JSON.stringify({ status: 'pass', sameRoom: true, yawReplicated: true, sprintReplicated: true, jumpReplicated: true, heldItemReplicated: true, invalidAnimationRejected: true }, null, 2))
+  const tutorial = messageWhere<Presence>(observer, 'presence:move', (presence) => presence.id === sender.sessionId && presence.tutorialActive === true)
+  sender.send('move', {
+    zone: 'mine', position: [40, 0.86, -40], yaw: 0.4, animation: 'Armature|Walk_Loop', tutorialActive: true,
+    nickname: 'Runner', cash: 100_000, progressValue: 100_000,
+    stats: { foraged: 0, mined: 0, harvested: 0, sold: 0 }, minigameOpen: false,
+  })
+  const tutorialPresence = await tutorial
+  assert(tutorialPresence.tutorialActive === true, 'Tutorial presence was not marked as isolated')
+
+  const resumed = messageWhere<Presence>(observer, 'presence:move', (presence) => presence.id === sender.sessionId && presence.tutorialActive === false && presence.position[0] === 11)
+  sender.send('move', {
+    zone: 'hub', position: [11, 0.86, -6], yaw: 0.4, animation: 'Armature|Walk_Loop', tutorialActive: false,
+    nickname: 'Runner', cash: 100_000, progressValue: 100_000,
+    stats: { foraged: 0, mined: 0, harvested: 0, sold: 0 }, minigameOpen: false,
+  })
+  await resumed
+
+  const chat = messageWhere<ChatEntry>(observer, 'chat:message', (entry) => entry.nickname === 'Runner')
+  sender.send('chat:send', { text: '  hello <forest>   친구  ' })
+  const chatEntry = await chat
+  assert(chatEntry.text === 'hello forest 친구', `Chat text was not normalized safely: ${chatEntry.text}`)
+  assert(Number.isFinite(chatEntry.sentAt) && chatEntry.id.length > 5, 'Chat message metadata was invalid')
+
+  console.log(JSON.stringify({ status: 'pass', sameRoom: true, yawReplicated: true, sprintReplicated: true, jumpReplicated: true, heldItemReplicated: true, invalidAnimationRejected: true, tutorialPresenceIsolated: true, normalPresenceRestored: true, chatReplicated: true }, null, 2))
 } finally {
   await Promise.allSettled(rooms.map((room) => room.leave()))
   server.kill('SIGTERM')

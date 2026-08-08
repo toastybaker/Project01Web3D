@@ -55,9 +55,10 @@ try {
   await command('Page.enable')
   await command('Runtime.enable')
   await command('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false })
-  await command('Page.navigate', { url })
   const auditUrl = new URL(url)
-  const automated = auditUrl.searchParams.has('auditReady') || auditUrl.searchParams.has('auditMenu') || auditUrl.searchParams.has('auditInventory') || auditUrl.searchParams.has('auditGuideStep') || auditUrl.searchParams.has('auditTutorialStep') || auditUrl.searchParams.has('auditCookReady') || auditUrl.searchParams.has('auditHeldItem')
+  const automated = auditUrl.searchParams.has('auditReady') || auditUrl.searchParams.has('auditMenu') || auditUrl.searchParams.has('auditInventory') || auditUrl.searchParams.has('auditGuideStep') || auditUrl.searchParams.has('auditTutorialStep') || auditUrl.searchParams.has('auditCookReady') || auditUrl.searchParams.has('auditHeldItem') || auditUrl.searchParams.has('auditEnhance') || auditUrl.searchParams.has('auditResult')
+  if (automated) auditUrl.searchParams.set('qa', '1')
+  await command('Page.navigate', { url: auditUrl.href })
   if (automated) {
     let spent = Math.min(5_000, waitMs)
     await sleep(spent)
@@ -79,6 +80,45 @@ try {
     }
     if (auditUrl.searchParams.has('auditMenu')) await command('Runtime.evaluate', { expression: `[...document.querySelectorAll('button')].find((button) => /menu|메뉴/i.test(button.getAttribute('aria-label') || ''))?.click()` })
     if (auditUrl.searchParams.has('auditInventory')) await command('Runtime.evaluate', { expression: `window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE', bubbles: true }))` })
+    if (auditUrl.searchParams.has('auditEnhance')) await command('Runtime.evaluate', { expression: `(() => {
+      const store = window.__PROJECT01_STORE__;
+      if (!store) return false;
+      store.setState((state) => ({
+        inventory: {
+          ...state.inventory,
+          'worn-pickaxe': 1,
+          'copper-ore': 999,
+          'iron-ore': 999,
+          'silver-ore': 999,
+          'gold-ore': 999,
+          'crystal-ore': 999,
+          'ancient-ore': 999,
+          'upgrade-coupon': 2,
+          'upgrade-guard-4': 2,
+        },
+        enhancements: { ...state.enhancements, 'worn-pickaxe': 3 },
+        enhancementOpen: true,
+      }));
+      return true;
+    })()` })
+    if (auditUrl.searchParams.has('auditResult')) await command('Runtime.evaluate', { expression: `(() => {
+      const store = window.__PROJECT01_STORE__;
+      if (!store) return false;
+      store.setState((state) => ({
+        minigameOpen: false,
+        minigameActive: false,
+        lastMinigameResult: state.lastMinigameResult ?? {
+          kind: 'farm', placement: 2, score: 184, cash: 900000,
+          items: { 'cookbook-box': 1, 'fortune-boost': 1 },
+          standings: [
+            { placement: 1, nickname: 'Player 2048', score: 228 },
+            { placement: 2, nickname: state.nickname, score: 184 },
+          ],
+          receivedAt: Date.now(),
+        },
+      }));
+      return true;
+    })()` })
     const guideStep = Math.max(0, Math.min(7, Number(auditUrl.searchParams.get('auditGuideStep')) || 0))
     if (guideStep > 0) await command('Runtime.evaluate', { awaitPromise: true, expression: `(async () => {
       for (let index = 0; index < ${guideStep}; index += 1) {
@@ -161,6 +201,30 @@ try {
     })()` })
     await sleep(350)
   }
+  if (auditUrl.searchParams.has('auditEnhance')) {
+    await command('Runtime.evaluate', { expression: `(() => {
+      const store = window.__PROJECT01_STORE__;
+      if (!store) return false;
+      store.setState((state) => ({
+        inventory: {
+          ...state.inventory,
+          'worn-pickaxe': 1,
+          'copper-ore': 999,
+          'iron-ore': 999,
+          'silver-ore': 999,
+          'gold-ore': 999,
+          'crystal-ore': 999,
+          'ancient-ore': 999,
+          'upgrade-coupon': 2,
+          'upgrade-guard-4': 2,
+        },
+        enhancements: { ...state.enhancements, 'worn-pickaxe': 3 },
+        enhancementOpen: true,
+      }));
+      return true;
+    })()` })
+    await sleep(350)
+  }
   await command('Runtime.evaluate', {
     awaitPromise: true,
     expression: `Promise.race([
@@ -205,7 +269,17 @@ try {
       } : null;
       const tutorialState = window.__PROJECT01_STORE__?.getState();
       const tutorialAudit = tutorialState ? { step: tutorialState.tutorialStep, zone: tutorialState.zone, anchors: Object.keys(tutorialState.anchors).filter((id) => /ForageApple|ForageOrange|MineOre|FarmCell0_|FurnacePad0/.test(id)).slice(0, 12) } : null;
-      return { fps: Math.round(fps * 10) / 10, sceneReady: !text.includes('LOADING') && !text.includes('불러오는 중'), text, brokenImages, imageAudit, tooltipAudit, tutorialAudit, resourceCount: resources.length, transferredMB: Math.round(resources.reduce((sum, entry) => sum + (entry.transferSize || 0), 0) / 104857.6) / 10 };
+      const enhancementAudit = tutorialState ? { open: tutorialState.enhancementOpen, wornPickaxe: tutorialState.inventory?.['worn-pickaxe'] ?? 0, level: tutorialState.enhancements?.['worn-pickaxe'] ?? 0 } : null;
+      const overflowAudit = [...document.querySelectorAll('.interface button, .interface strong, .interface small, .interface em, .interface output, .interface span, .interface .hud-chip, .interface .location-chip, .interface .shop-item-name')]
+        .filter((entry) => {
+          const style = getComputedStyle(entry); const rect = entry.getBoundingClientRect();
+          if (!entry.textContent?.trim() || style.display === 'none' || style.visibility === 'hidden' || rect.width < 2 || rect.height < 2) return false;
+          if (style.overflowX === 'auto' || style.overflowX === 'scroll') return false;
+          return entry.scrollWidth > entry.clientWidth + 2 || entry.scrollHeight > entry.clientHeight + 2;
+        })
+        .slice(0, 40)
+        .map((entry) => ({ tag: entry.tagName, className: entry.className, text: entry.textContent.trim().replace(/\s+/g, ' ').slice(0, 120), clientWidth: entry.clientWidth, scrollWidth: entry.scrollWidth, clientHeight: entry.clientHeight, scrollHeight: entry.scrollHeight }));
+      return { fps: Math.round(fps * 10) / 10, sceneReady: !text.includes('LOADING') && !text.includes('불러오는 중'), text, brokenImages, imageAudit, tooltipAudit, tutorialAudit, enhancementAudit, overflowAudit, resourceCount: resources.length, transferredMB: Math.round(resources.reduce((sum, entry) => sum + (entry.transferSize || 0), 0) / 104857.6) / 10 };
     })()`,
   })
   if (finalHeldItem) await command('Runtime.evaluate', { expression: `(() => {

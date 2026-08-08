@@ -6,5 +6,6 @@ dist/
 !.env.example
 *.log
 public/assets/3d/generated/
+public/assets/3d/scenes/*.next.glb
 workbench/
 artifacts/

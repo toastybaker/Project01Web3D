@@ -70,18 +70,13 @@ const forageTrailCenterAt = (z: number) => {
   }
   return FORAGE_TRAIL.at(-1)![0]
 }
-const orchardSites = (cx: number, cz: number, count: number, salt: number) => Array.from({ length: count }, (_, index) => {
-  const column = index % 5
-  const row = Math.floor(index / 5)
-  return { x: cx + (column - 2) * 8.4 + (orchardSeeded(index, salt) - 0.5) * 3.6, z: cz + (row - 1.5) * 8.8 + (orchardSeeded(index, salt + 1) - 0.5) * 3.8 }
-})
-const distributedFruitSites = (count: number, salt: number) => Array.from({ length: count }, (_, index) => {
-  const columns = 7
-  const rows = Math.ceil(count / columns)
+const FRUIT_SITES = Array.from({ length: 130 }, (_, index) => {
+  const columns = 13
+  const rows = 10
   const column = index % columns
   const row = Math.floor(index / columns)
-  let x = -174 + (348 * (column + 0.5)) / columns + (orchardSeeded(index, salt) - 0.5) * 16
-  const z = -22 - (178 * (row + 0.5)) / rows + (orchardSeeded(index, salt + 1) - 0.5) * 13
+  let x = -174 + (348 * (column + 0.5)) / columns + (orchardSeeded(index, 6173) - 0.5) * 9
+  const z = -22 - (178 * (row + 0.5)) / rows + (orchardSeeded(index, 6174) - 0.5) * 7
   const trail = forageTrailCenterAt(z)
   if (Math.abs(x - trail) < 9) x += x <= trail ? -13 : 13
   return { x: Math.max(-188, Math.min(188, x)), z }
@@ -89,16 +84,8 @@ const distributedFruitSites = (count: number, salt: number) => Array.from({ leng
 
 // Mirrors the server-private authored site list. The cardinality assertions below
 // intentionally fail if the live layout drifts from the six-player model.
-const APPLE_SITES = [
-  { x: -10, z: -96 }, { x: 20, z: -104 }, { x: -28, z: -121 }, { x: 30, z: -132 },
-  ...orchardSites(-49, -44, 8, 6101), ...orchardSites(54, -117, 12, 6127),
-  ...orchardSites(-64, -181, 12, 6151), ...distributedFruitSites(34, 6173),
-]
-const ORANGE_SITES = [
-  { x: 11, z: -99 }, { x: -24, z: -109 }, { x: 27, z: -118 },
-  ...orchardSites(54, -69, 9, 6203), ...orchardSites(-52, -124, 12, 6229),
-  ...distributedFruitSites(36, 6257),
-]
+const APPLE_SITES = FRUIT_SITES.filter((_, index) => index % 2 === 0 || index >= 120)
+const ORANGE_SITES = FRUIT_SITES.filter((_, index) => index % 2 === 1 && index < 120)
 const TRUFFLE_SITES = [{ x: -112, z: -66 }, { x: 97, z: -104 }, { x: -78, z: -204 }, { x: 126, z: -167 }, { x: 34, z: -151 }]
 const DISCOVERY_SITES = [{ x: -178, z: -185 }, { x: 164, z: -201 }, { x: -139, z: -16 }]
 

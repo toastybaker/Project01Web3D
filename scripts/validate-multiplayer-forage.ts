@@ -82,6 +82,7 @@ let clientRequest: { type: string; payload: unknown } | null = null
 setMultiplayerSender((type, payload) => { clientRequest = { type, payload } })
 useGameStore.setState({
   sharedForageOnline: true,
+  sharedForageAvailability: { ForageApple001: fruitTreeCapacity('ForageApple001') },
   collectedForage: {},
   inventory: { ...useGameStore.getState().inventory, apple: BASKET_CONFIG.hand.capacity - 1, orange: 0, basket: 0, 'reinforced-basket': 0, 'master-basket': 0 },
 })
@@ -98,7 +99,7 @@ console.warn = (...args: unknown[]) => {
 }
 const server = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
   cwd: process.cwd(),
-  env: { ...process.env, PORT: String(port), TEST_FORAGE_REGROW_MS: String(testRegrowMs), TEST_RARE_FORAGE_ALWAYS: '1' },
+  env: { ...process.env, PORT: String(port), TEST_FORAGE_REGROW_MS: String(testRegrowMs), TEST_RARE_FORAGE_ALWAYS: '1', TEST_RARE_FORAGE_ROLL_MS: '120' },
   stdio: ['pipe', 'pipe', 'pipe'],
 })
 const rooms: Room[] = []
@@ -153,8 +154,8 @@ try {
   playerA.send('forage:request', { id: 'ForageApple001', item: 'apple', remainingCapacity: 1 })
   assert((await tooFar).id === 'ForageApple001', 'Remote forage-node harvest was not rejected')
 
-  const partialTargetId = 'ForageApple001'
-  await moveAlong(playerA, movement, [3, -82], [20, -104])
+  const partialTargetId = 'ForageApple016'
+  await moveAlong(playerA, movement, [3, -82], [-8.77834661842644, -65.39751780599545])
   const partialCapacity = fruitTreeCapacity(partialTargetId)
   const partialNode = messageWhere<ForageNode>(playerA, 'forage:node', (node) => node.id === partialTargetId && node.available === 0)
   const partialCapacityAward = messageWhere<ForageAward>(playerA, 'forage:award', (award) => award.id === partialTargetId && award.quantity === partialCapacity)
@@ -162,10 +163,10 @@ try {
   const [partiallyDepleted, oneSlotAward] = await Promise.all([partialNode, partialCapacityAward])
   assert(partiallyDepleted.available === 0 && oneSlotAward.quantity === partialCapacity, 'Server trusted the client-supplied capacity instead of its authoritative inventory')
 
-  const targetId = 'ForageApple002'
+  const targetId = 'ForageApple022'
   await Promise.all([
-    moveAlong(playerA, movement, [20, -104], [-28, -121]),
-    moveAlong(playerB, movement, [3, -82], [-28, -121]),
+    moveAlong(playerA, movement, [-8.77834661842644, -65.39751780599545], [-24.822923637741326, -81.38835681166601]),
+    moveAlong(playerB, movement, [3, -82], [-24.822923637741326, -81.38835681166601]),
   ])
   const capacity = fruitTreeCapacity(targetId)
   const depletedA = messageWhere<ForageNode>(playerA, 'forage:node', (node) => node.id === targetId && node.available === 0)
@@ -185,9 +186,18 @@ try {
   assert(raceNodeA.fullAt === raceNodeB.fullAt && raceNodeA.fullAt > Date.now(), 'Clients received different depletion clocks')
 
   const rareTargetId = 'ForageTruffle000'
+  await new Promise((resolve) => setTimeout(resolve, 320))
+  const persistentJoiner = await client.joinOrCreate('woodland', { bypassLobby: true })
+  rooms.push(persistentJoiner)
+  const persistentSnapshot = messageWhere<ForageSnapshot>(persistentJoiner, 'forage:snapshot')
+  persistentJoiner.send('lobby:ready', {})
+  const persistentRare = await persistentSnapshot
+  assert(persistentRare.nodes[rareTargetId]?.available === 1, 'An uncollected rare forage node despawned during later spawn rolls')
+  await persistentJoiner.leave()
+  rooms.splice(rooms.indexOf(persistentJoiner), 1)
   await Promise.all([
-    moveAlong(playerA, movement, [-28, -121], [-112, -66]),
-    moveAlong(playerB, movement, [-28, -121], [-112, -66]),
+    moveAlong(playerA, movement, [-24.822923637741326, -81.38835681166601], [-112, -66]),
+    moveAlong(playerB, movement, [-24.822923637741326, -81.38835681166601], [-112, -66]),
   ])
   const rareNodeA = messageWhere<ForageNode>(playerA, 'forage:node', (node) => node.id === rareTargetId && node.available === 0)
   const rareNodeB = messageWhere<ForageNode>(playerB, 'forage:node', (node) => node.id === rareTargetId && node.available === 0)
@@ -219,7 +229,7 @@ try {
   const redepletedA = messageWhere<ForageNode>(playerA, 'forage:node', (node) => node.id === targetId && node.available === 0 && node.fullAt > raceNodeA.fullAt, 6_000)
   const redepletedLate = messageWhere<ForageNode>(lateJoiner, 'forage:node', (node) => node.id === targetId && node.available === 0 && node.fullAt > raceNodeA.fullAt, 6_000)
   const partialAward = messageWhere<ForageAward>(playerA, 'forage:award', (award) => award.id === targetId && award.quantity === 1, 6_000)
-  await moveAlong(playerA, movement, [-112, -66], [-28, -121])
+  await moveAlong(playerA, movement, [-112, -66], [-24.822923637741326, -81.38835681166601])
   playerA.send('forage:request', { id: targetId, item: 'apple', remainingCapacity: 1 })
   const [secondDepletionA, secondDepletionLate, oneFruitAward] = await Promise.all([redepletedA, redepletedLate, partialAward])
   assert(oneFruitAward.quantity === 1, 'Harvest did not grant the currently available partial-tree count')
@@ -253,6 +263,7 @@ try {
     oneSlotAward: oneSlotAward.quantity,
     partialTreeRemaining: partiallyDepleted.available,
     rareAtomicAwards: rareAwards,
+    uncollectedRarePersisted: true,
     clientCapacityRequest: 1,
     simultaneousAwards: atomicRaceAwards,
     raceQuantity: atomicRaceQuantity,
