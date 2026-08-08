@@ -32,6 +32,22 @@ const EMPTY_RESOURCE_IDS = new Set<string>()
 const livePlayerPosition = new THREE.Vector3(0, 0.86, 14)
 const HELD_PICKAXES = new Set<ItemId>(['worn-pickaxe', 'iron-pickaxe', 'steel-pickaxe', 'crystal-pickaxe'])
 type HeldPickaxeId = 'worn-pickaxe' | 'iron-pickaxe' | 'steel-pickaxe' | 'crystal-pickaxe'
+const MINING_LOWER_BODY_TRACKS = ['pelvis', 'thigh_l', 'thigh_r', 'calf_l', 'calf_r', 'foot_l', 'foot_r', 'ball_l', 'ball_r']
+
+function characterAnimationClips(standard: THREE.AnimationClip[], tools: THREE.AnimationClip[]) {
+  return [
+    ...standard,
+    ...tools.map((clip) => {
+      if (clip.name !== 'TreeChopping_Loop') return clip
+      const upperBody = clip.clone()
+      // Mining should torque the shoulders and torso without the exaggerated
+      // tree-chopping lunge. The neutral lower body keeps the interaction
+      // planted beside an ore and reads much closer to a game pickaxe swing.
+      upperBody.tracks = upperBody.tracks.filter((track) => !MINING_LOWER_BODY_TRACKS.some((bone) => track.name.includes(bone)))
+      return upperBody
+    }),
+  ]
+}
 
 function visibleRareForageIds(
   ids: string[],
@@ -1235,29 +1251,15 @@ function heldItemForState(state: ReturnType<typeof useGameStore.getState>): Item
   return selected && (state.inventory[selected] ?? 0) > 0 ? selected : null
 }
 
-function HeldPickaxeAttachment({ character, item, mining = false }: { character: THREE.Object3D; item: HeldPickaxeId | null; mining?: boolean }) {
+function HeldPickaxeAttachment({ character, item }: { character: THREE.Object3D; item: HeldPickaxeId | null }) {
   const source = useGLTF('/assets/3d/tools/pickaxe.glb?v=5').scene
   const equipped = useRef<THREE.Object3D | null>(null)
-  const gripRotation = useMemo(() => new THREE.Quaternion().setFromEuler(new THREE.Euler(-.18, .72, -.28, 'YXZ')), [])
-  const swingRotation = useMemo(() => new THREE.Quaternion(), [])
-  const gripOffset = useMemo(() => new THREE.Vector3(-.008, -.465, 0), [])
-  const toolScale = .66
-  useFrame((state) => {
-    const tool = equipped.current
-    if (!tool) return
-    tool.quaternion.copy(gripRotation)
-    // The authored arm animation now drives the tool. This small local torque
-    // only emphasizes impact; it no longer rotates independently of the fist.
-    const phase = (state.clock.elapsedTime * 1.28) % 1
-    const ease = (value: number) => value * value * (3 - 2 * value)
-    if (mining) {
-      const torque = phase < .46
-        ? THREE.MathUtils.lerp(-.12, .2, ease(phase / .46))
-        : THREE.MathUtils.lerp(.2, -.12, ease((phase - .46) / .54))
-      swingRotation.setFromEuler(new THREE.Euler(torque, 0, torque * -.28, 'YXZ'))
-      tool.quaternion.multiply(swingRotation)
-    }
-  })
+  // The handle runs through the closed fist and leans forward from the torso.
+  // Keep this socket fixed: the animated hand supplies the entire swing, so
+  // the pickaxe cannot lag behind or appear to move independently.
+  const gripRotation = useMemo(() => new THREE.Quaternion().setFromEuler(new THREE.Euler(-.5, .4, -.1, 'YXZ')), [])
+  const gripOffset = useMemo(() => new THREE.Vector3(-.008, -.34, 0), [])
+  const toolScale = .58
   useEffect(() => {
     if (!item) return
     const hand = character.getObjectByName('hand_r')
@@ -1358,10 +1360,10 @@ function HeldSpriteAttachment({ character, item }: { character: THREE.Object3D; 
   return null
 }
 
-function HeldItemAttachment({ character, item, mining = false }: { character: THREE.Object3D; item: ItemId | null; mining?: boolean }) {
+function HeldItemAttachment({ character, item }: { character: THREE.Object3D; item: ItemId | null }) {
   const pickaxe = item && HELD_PICKAXES.has(item) ? item as HeldPickaxeId : null
   const sprite = item && !HELD_PICKAXES.has(item) ? item as Exclude<ItemId, HeldPickaxeId> : null
-  return <><HeldPickaxeAttachment character={character} item={pickaxe} mining={mining} /><HeldSpriteAttachment character={character} item={sprite} /></>
+  return <><HeldPickaxeAttachment character={character} item={pickaxe} /><HeldSpriteAttachment character={character} item={sprite} /></>
 }
 
 function NormalizedModel({ src, height, position = [0, 0, 0], rotation = [0, 0, 0] }: NormalizedModelProps) {
@@ -1395,7 +1397,7 @@ function AnimatedCharacter({ src, height, position, rotation, animation, castSha
   const source = useGLTF(src).scene
   const animationSource = useGLTF('/assets/3d/animations/standard.glb')
   const toolAnimationSource = useGLTF('/assets/3d/animations/tool-actions.glb?v=3')
-  const animationClips = useMemo(() => [...animationSource.animations, ...toolAnimationSource.animations], [animationSource.animations, toolAnimationSource.animations])
+  const animationClips = useMemo(() => characterAnimationClips(animationSource.animations, toolAnimationSource.animations), [animationSource.animations, toolAnimationSource.animations])
   const { actions } = useAnimations(animationClips, group)
   const normalized = useMemo(() => {
     const object = skeletonClone(source)
@@ -1419,7 +1421,7 @@ function AnimatedCharacter({ src, height, position, rotation, animation, castSha
     action?.reset().fadeIn(0.2).play()
     return () => { action?.fadeOut(0.15) }
   }, [actions, animation])
-  return <group ref={group} position={position} rotation={rotation}><primitive object={normalized} /><HeldItemAttachment character={normalized} item={heldItem} mining={animation === 'TreeChopping_Loop'} /></group>
+  return <group ref={group} position={position} rotation={rotation}><primitive object={normalized} /><HeldItemAttachment character={normalized} item={heldItem} /></group>
 }
 
 type PeerPresence = { id: string; nickname: string; zone: ZoneId; position: [number, number, number]; yaw?: number; animation?: string; heldItem?: ItemId | null; cash: number; progressValue?: number; stats: { foraged: number; mined: number; harvested: number; sold: number }; seenAt: number; tutorialActive?: boolean; minigameOpen?: boolean; minigameKind?: MinigameKind; minigameMilestone?: number; minigameScore?: number; eventBay?: number }
@@ -1665,7 +1667,7 @@ function Player() {
   const source = useGLTF('/assets/3d/characters/ranger.glb').scene
   const animationSource = useGLTF('/assets/3d/animations/standard.glb')
   const toolAnimationSource = useGLTF('/assets/3d/animations/tool-actions.glb?v=3')
-  const animationClips = useMemo(() => [...animationSource.animations, ...toolAnimationSource.animations], [animationSource.animations, toolAnimationSource.animations])
+  const animationClips = useMemo(() => characterAnimationClips(animationSource.animations, toolAnimationSource.animations), [animationSource.animations, toolAnimationSource.animations])
   const { actions } = useAnimations(animationClips, visual)
   const activeAnimation = useRef('')
   const selectedHeldItem = useGameStore(heldItemForState)
@@ -2112,7 +2114,7 @@ function Player() {
       {(zone === 'mine' || minigameOpen && minigameKind === 'mining') && graphicsMode === 'high' && <pointLight color="#a9bec1" intensity={2.3} distance={7.5} decay={2} position={[0, 1.55, -1.15]} />}
       <group ref={visual}>
         <primitive object={ranger} />
-        <HeldItemAttachment character={ranger} item={heldItem} mining={visuallyMining} />
+        <HeldItemAttachment character={ranger} item={heldItem} />
       </group>
     </group>
   )
@@ -2553,11 +2555,14 @@ function LoadingMark() {
 
 function SceneAssetWarmup() {
   const zone = useGameStore((state) => state.zone)
+  const sessionStarted = useGameStore((state) => state.sessionStarted)
   useEffect(() => {
-    const remaining = [
-      ...Object.values(SCENES).filter((url) => url !== SCENES[zone]),
-      ...Object.values(MINIGAME_SCENES),
-    ]
+    // Stage travel scenes only while everyone is waiting in the lobby. GPU
+    // uploads during an active run caused the periodic forward skips players
+    // reported even when the current scene itself was rendering smoothly.
+    const remaining = zone === 'hub' && !sessionStarted
+      ? (['forage', 'farm', 'mine'] as const).map((id) => SCENES[id])
+      : []
     let cancelled = false
     let idleId = 0
     let timer = 0
@@ -2571,18 +2576,18 @@ function SceneAssetWarmup() {
         if (cancelled) return
         const url = remaining.shift()
         if (url) useGLTF.preload(url)
-        timer = window.setTimeout(schedule, 900)
+        timer = window.setTimeout(schedule, 8_000)
       }
-      if (idleApi.requestIdleCallback) idleId = idleApi.requestIdleCallback(loadNext, { timeout: 4_000 })
-      else timer = window.setTimeout(loadNext, 900)
+      if (idleApi.requestIdleCallback) idleId = idleApi.requestIdleCallback(loadNext, { timeout: 12_000 })
+      else timer = window.setTimeout(loadNext, 8_000)
     }
-    timer = window.setTimeout(schedule, 1_200)
+    timer = window.setTimeout(schedule, zone === 'hub' ? 6_000 : 3_000)
     return () => {
       cancelled = true
       window.clearTimeout(timer)
       if (idleId) idleApi.cancelIdleCallback?.(idleId)
     }
-  }, [zone])
+  }, [sessionStarted, zone])
   return null
 }
 

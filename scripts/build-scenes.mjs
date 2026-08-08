@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import * as THREE from 'three'
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js'
 import { NodeIO } from '@gltf-transform/core'
@@ -229,6 +229,10 @@ async function loadOfflineObjAsset(name, sourcePath) {
   value.traverse((object) => {
     if (!object.isMesh) return
     if (!object.geometry.attributes.normal) object.geometry.computeVertexNormals()
+    // OBJ faces repeat the same vertex data per triangle. Welding identical
+    // attributes keeps the exact silhouette, normals, and UV seams while
+    // cutting the cost of every instanced tree and rock in the browser.
+    object.geometry = mergeVertices(object.geometry, 1e-4)
     object.material = (Array.isArray(object.material) ? object.material : [object.material]).map((sourceMaterial) => (
       /lea(?:f|ves)/i.test(sourceMaterial.name) ? mats.leafFresh : mats.bark
     ))
@@ -248,6 +252,7 @@ async function loadOfflineObjWithMtl(name, sourcePath, materialPath) {
   value.traverse((object) => {
     if (!object.isMesh) return
     if (!object.geometry.attributes.normal) object.geometry.computeVertexNormals()
+    object.geometry = mergeVertices(object.geometry, 1e-4)
     const sourceMaterials = Array.isArray(object.material) ? object.material : [object.material]
     const converted = sourceMaterials.map((sourceMaterial) => {
       const convertedMaterial = material(sourceMaterial.name || name, sourceMaterial.color?.getHex?.() ?? 0x777777, { flatShading: true })
@@ -686,14 +691,15 @@ function shrub(x, z, scale = 1, dark = false, y = 0) {
   const group = new THREE.Group()
   group.name = 'Shrub Cluster'
   group.position.set(x, y, z)
+  group.scale.setScalar(scale)
   const mat = dark ? mats.leafDark : mats.leaf
   ;[
     [-0.45, 0.5, 0, 0.65],
     [0.35, 0.55, 0.08, 0.72],
     [0, 0.72, -0.25, 0.66],
   ].forEach(([px, py, pz, size]) => {
-    const part = mesh(new THREE.DodecahedronGeometry(size * scale, 1), mat, 'Shrub')
-    part.position.set(px * scale, py * scale, pz * scale)
+    const part = mesh(new THREE.DodecahedronGeometry(size, 1), mat, 'Shrub')
+    part.position.set(px, py, pz)
     part.scale.y = 0.68
     group.add(part)
   })
@@ -737,10 +743,10 @@ function fallenLog(x, z, length = 5.4, rotation = 0, heightAt = forageGroundHeig
 }
 
 function rock(x, z, scale = 1, dark = false, y = 0) {
-  const value = mesh(new THREE.DodecahedronGeometry(0.75 * scale, 1), dark ? mats.stoneDark : mats.stone, 'Ground Rock')
+  const value = mesh(new THREE.DodecahedronGeometry(0.75, 1), dark ? mats.stoneDark : mats.stone, 'Ground Rock')
   value.position.set(x, y + 0.42 * scale, z)
   value.userData.colliderRadius = 0.62 * scale
-  value.scale.set(1.2, 0.72, 0.9)
+  value.scale.set(1.2 * scale, 0.72 * scale, 0.9 * scale)
   value.rotation.set(0.12, x * 0.31 + z, 0.08)
   return value
 }
@@ -769,12 +775,13 @@ function boulderFormation(x, z, scale = 1, rotation = 0, heightAt = forageGround
   group.name = 'Natural Cliff Boulder'
   group.position.set(x, heightAt(x, z), z)
   group.rotation.y = rotation
+  group.scale.setScalar(scale)
   group.userData.colliderRadius = 1.35 * scale
   ;[
     [-0.65, 0.65, 0, 1.15], [0.55, 0.82, 0.1, 1.35], [0, 1.55, -0.15, 1.05],
   ].forEach(([bx, by, bz, size], index) => {
-    const stone = mesh(new THREE.DodecahedronGeometry(size * scale, 1), index % 2 ? mats.stoneDark : mats.stone, 'Cliff Stone')
-    stone.position.set(bx * scale, by * scale, bz * scale)
+    const stone = mesh(new THREE.DodecahedronGeometry(size, 1), index % 2 ? mats.stoneDark : mats.stone, 'Cliff Stone')
+    stone.position.set(bx, by, bz)
     stone.scale.set(1.2, 0.82 + index * 0.1, 0.95)
     stone.rotation.set(index * 0.13, index * 0.61, index * 0.08)
     group.add(stone)

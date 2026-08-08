@@ -279,7 +279,8 @@ try {
         })
         .slice(0, 40)
         .map((entry) => ({ tag: entry.tagName, className: entry.className, text: entry.textContent.trim().replace(/\s+/g, ' ').slice(0, 120), clientWidth: entry.clientWidth, scrollWidth: entry.scrollWidth, clientHeight: entry.clientHeight, scrollHeight: entry.scrollHeight }));
-      return { fps: Math.round(fps * 10) / 10, sceneReady: !text.includes('LOADING') && !text.includes('불러오는 중'), text, brokenImages, imageAudit, tooltipAudit, tutorialAudit, enhancementAudit, overflowAudit, resourceCount: resources.length, transferredMB: Math.round(resources.reduce((sum, entry) => sum + (entry.transferSize || 0), 0) / 104857.6) / 10 };
+      const loadingMark = document.querySelector('.loading-label');
+      return { fps: Math.round(fps * 10) / 10, sceneReady: !loadingMark, text, brokenImages, imageAudit, tooltipAudit, tutorialAudit, enhancementAudit, overflowAudit, resourceCount: resources.length, transferredMB: Math.round(resources.reduce((sum, entry) => sum + (entry.transferSize || 0), 0) / 104857.6) / 10 };
     })()`,
   })
   if (finalHeldItem) await command('Runtime.evaluate', { expression: `(() => {

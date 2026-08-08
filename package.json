@@ -12,6 +12,7 @@
     "assets:wheat": "node scripts/build-wheat-crop.mjs",
     "assets:materials": "node scripts/build-material-maps.mjs",
     "assets:tools": "node scripts/build-held-tools.mjs && node scripts/build-steel-pickaxe-icon.mjs",
+    "assets:characters": "node scripts/optimize-character-assets.mjs",
     "assets:scenes": "node scripts/build-scenes.mjs",
     "assets": "npm run assets:convert && npm run assets:brands && npm run assets:wheat && npm run assets:materials && npm run assets:scenes && npm run assets:tools",
     "test:economy": "tsx scripts/validate-economy.ts",

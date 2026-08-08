@@ -574,6 +574,11 @@ function OnboardingPanelV2() {
   const notes = ko
     ? ['', '레시피를 먼저 보면 어떤 재료를 모으고 키울지 알 수 있습니다.', '깊이에 따라 광석 확률이 달라집니다. 좋은 광석에는 더 좋은 곡괭이가 필요합니다.', '과일은 다시 열리며 바구니가 보관량을 정합니다.', '실제 경기에서는 작물마다 성장 시간이 다릅니다.', '화로 하나는 한 번에 요리 10개를 만들 수 있습니다. 화로가 늘면 10개씩 늘어나며, 최대 세 묶음을 예약할 수 있습니다.', '가격은 주기마다 갱신됩니다. 한꺼번에 많이 팔면 다음 갱신 전에도 가격이 내려갈 수 있습니다.', '주가는 회사마다 다르게 움직입니다. 살 필요 없이 화면만 확인하세요.', '강화는 해당 장비에만 남습니다. 높은 단계는 실패 시 내려갈 수 있습니다.', '속보는 일부 또는 여러 시세를 크게 바꿀 수 있습니다.', '떠돌이 상인은 한정 상품과 다음 속보에 관한 정보를 팝니다. 위치는 때마다 달라집니다.', '미니게임 보상으로 현금, 레시피 상자, 유용한 강화 효과를 받을 수 있습니다.', '정해진 길은 없습니다. 종료 시 보유 현금이 가장 많은 사람이 이깁니다.']
     : ['', 'Recipes show what to gather and grow before you commit.', 'Depth changes ore chances. Better ores require better pickaxes.', 'Fruit regrows; your basket sets capacity.', 'Normal matches use each crop’s full growth time.', 'One furnace cooks 10 dishes per batch. Each extra furnace adds 10, with up to three batches queued.', 'Prices update each cycle. A large sale can push a price down before the next update.', 'Each company moves differently. You do not need to buy anything here.', 'Upgrades stay on that item. High levels can drop on failure.', 'Breaking news can move a few markets—or many—by a large amount.', 'The Wandering Merchant sells limited items and information about upcoming news. Its location changes.', 'Minigames award cash, Recipe Boxes, and useful temporary boosts.', 'There is no required route. Most cash at the end wins.']
+  if (step === 9) {
+    objectives[8] = ko ? '세 가지 장비를 비교하고 초보자 곡괭이를 한 번 강화하세요.' : 'Compare all three tools, then upgrade the Starter Pickaxe once.'
+    notes[8] = ko ? '곡괭이는 채광, 바구니는 채집, 부적은 농사 효율을 높입니다.' : 'Pickaxes improve mining, baskets improve foraging, and charms improve farming.'
+  }
+
   const progress = step === 1 ? '✓'
     : step === 2 ? `${Number(Boolean(flags.bought)) + Number(Boolean(flags.recipe))}/2`
       : step === 3 ? `${Number(Boolean(flags.bought)) + Number(Boolean(flags.mined)) + Number(Boolean(flags.sold))}/3`

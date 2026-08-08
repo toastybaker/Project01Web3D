@@ -721,7 +721,9 @@ function tutorialStepState(step: number, state: GameState): Partial<GameState> {
   if (step === 8) return { ...common, zone: 'hub', teleportNonce: state.teleportNonce + 1, anchors: {}, colliders: [], playerPosition: SPAWNS.hub, cash: Math.max(state.cash, 3_000_000) }
   if (step === 9) {
     const requirements = enhancementRequirements('worn-pickaxe', 1)
-    const inventory = { ...state.inventory, 'worn-pickaxe': 1 }
+    // Tutorial-only copies let the real upgrade panel compare each progression
+    // path. The tutorial snapshot restores the player's real inventory later.
+    const inventory = { ...state.inventory, 'worn-pickaxe': 1, basket: 1, 'harvest-charm': 1 }
     for (const [id, quantity] of Object.entries(requirements.materials) as Array<[ItemId, number]>) inventory[id] = Math.max(inventory[id] ?? 0, quantity)
     return { ...common, zone: 'hub', teleportNonce: state.zone === 'hub' ? state.teleportNonce : state.teleportNonce + 1, anchors: state.zone === 'hub' ? state.anchors : {}, colliders: state.zone === 'hub' ? state.colliders : [], playerPosition: state.zone === 'hub' ? state.playerPosition : SPAWNS.hub, inventory, hotbar: hotbarWithInventoryDelta(state.hotbar, state.inventory, inventory, 'worn-pickaxe'), cash: Math.max(state.cash, requirements.coins + 500_000) }
   }
