@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: project01-web3d
+    runtime: node
+    plan: free
+    numInstances: 1
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: 22.14.0

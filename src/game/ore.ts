@@ -1,5 +1,6 @@
-import { MATCH_CONFIG, ORE_CONFIG, PICKAXE_CONFIG, fortuneBonus } from './config'
+import { MATCH_CONFIG, ORE_CONFIG, PICKAXE_CONFIG } from './config'
 import type { ItemId } from './items'
+import { enhancedMiningSpeed, enhancedYield } from './enhancement'
 
 export type OreItem = keyof typeof ORE_CONFIG
 export type PickaxeItem = keyof typeof PICKAXE_CONFIG
@@ -38,16 +39,11 @@ export function oreWeightsAtDepth(z: number): Record<OreItem, number> {
   }
 }
 
-export function oreKindAtDepth(nodeId: string, z: number, spawnSeed = 0): OreItem {
+export function oreKindAtDepth(nodeId: string, z: number, generation = 0, matchSeed = 0): OreItem {
   const weights = oreWeightsAtDepth(z)
-  if (spawnSeed === 0) {
-    weights['gold-ore'] = 0
-    weights['crystal-ore'] = 0
-    weights['ancient-ore'] = 0
-  }
   const ordered = Object.entries(weights) as Array<[OreItem, number]>
   const total = ordered.reduce((sum, [, weight]) => sum + weight, 0)
-  let roll = hash01(`${nodeId}:${Math.floor(spawnSeed)}`) * total
+  let roll = hash01(`${Math.floor(matchSeed)}:${nodeId}:${Math.floor(generation)}`) * total
   for (const [item, weight] of ordered) { roll -= weight; if (roll <= 0) return item }
   return 'copper-ore'
 }
@@ -56,9 +52,9 @@ export function isPickaxe(item: ItemId | null): item is PickaxeItem { return Boo
 export function canMineOre(tool: ItemId | null, ore: OreItem) {
   return isPickaxe(tool) && (PICKAXE_CONFIG[tool].unlocks as readonly string[]).includes(ore)
 }
-export function miningDuration(tool: ItemId | null, ore: OreItem) {
+export function miningDuration(tool: ItemId | null, ore: OreItem, enhancement = 0) {
   if (!canMineOre(tool, ore) || !isPickaxe(tool)) return 0
-  return Math.max(MATCH_CONFIG.minimumMiningMs, Math.round(1_150 * ORE_CONFIG[ore].hardness / PICKAXE_CONFIG[tool].speed))
+  return Math.max(MATCH_CONFIG.minimumMiningMs, Math.round(1_150 * ORE_CONFIG[ore].hardness / enhancedMiningSpeed(tool, enhancement)))
 }
 export function miningHits(tool: ItemId | null, ore: OreItem) {
   if (!canMineOre(tool, ore) || !isPickaxe(tool)) return 0
@@ -69,10 +65,10 @@ export function requiredPickaxe(ore: OreItem): PickaxeItem {
     .find(([, config]) => (config.unlocks as readonly string[]).includes(ore))
   return entry?.[0] ?? 'crystal-pickaxe'
 }
-export function miningYield(tool: ItemId | null, random = Math.random()) {
-  return isPickaxe(tool) ? 1 + fortuneBonus(PICKAXE_CONFIG[tool].fortune, random) : 0
+export function miningYield(tool: ItemId | null, random = Math.random(), enhancement = 0) {
+  return isPickaxe(tool) ? enhancedYield(tool, enhancement, random) : 0
 }
-export function oreRespawnMs(ore: OreItem, nodeId = '') {
-  const [minimum, maximum] = ORE_CONFIG[ore].respawn
-  return Math.round((minimum + hash01(`${nodeId}:${ore}:respawn`) * (maximum - minimum)) * 1000)
+export function oreRespawnMs(nodeId = '', generation = 0, matchSeed = 0) {
+  const [minimum, maximum] = MATCH_CONFIG.oreRespawnSeconds
+  return Math.round((minimum + hash01(`${Math.floor(matchSeed)}:${nodeId}:${Math.floor(generation)}:respawn`) * (maximum - minimum)) * 1000)
 }

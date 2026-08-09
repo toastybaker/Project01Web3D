@@ -1,4 +1,4 @@
-import { COMMODITY_MARKET_CONFIG, MATCH_CONFIG, type CommodityId } from './config'
+import { COMMODITY_MARKET_CONFIG, CROP_CONFIG, MATCH_CONFIG, type CommodityId } from './config'
 import type { StockDefinition } from './items'
 
 export type CommodityMarket = Record<CommodityId, number>
@@ -15,9 +15,12 @@ export function formatCoins(value: number, compact = false) {
   return `${short >= 100 ? short.toFixed(0) : short >= 10 ? short.toFixed(1) : short.toFixed(2)}${suffix}`
 }
 
-export function lotteryPrice(_cycle = 1) { return 30_000 }
-export function lotteryTwoMatch(_cycle = 1) { return 190_000 }
-export function lotteryJackpot(_cycle = 1) { return 950_000 }
+// A ticket should be a deliberate wager even after the opening forage run. The
+// payout curve keeps a modest house edge while the 5x/25x tiers scale the same
+// risk for later economies instead of turning the lottery into click spam.
+export function lotteryPrice(_cycle = 1) { return 100_000 }
+export function lotteryTwoMatch(_cycle = 1) { return 640_000 }
+export function lotteryJackpot(_cycle = 1) { return 3_200_000 }
 
 export function seeded01(seed: number) {
   let value = Math.floor(seed) | 0
@@ -38,7 +41,9 @@ export function commodityMultiplier(id: CommodityId, stock: number) {
 }
 
 export function commodityPrice(id: CommodityId, baseValue: number, stock: number) {
-  return Math.max(1, Math.round(baseValue * commodityMultiplier(id, stock)))
+  const crop = id in CROP_CONFIG ? CROP_CONFIG[id as keyof typeof CROP_CONFIG] : null
+  const cropFloor = crop ? Math.ceil(crop.seedPrice / crop.yield) : 1
+  return Math.max(cropFloor, Math.round(baseValue * commodityMultiplier(id, stock)))
 }
 
 export function marginalSale(id: CommodityId, baseValue: number, stock: number, quantity: number) {
@@ -49,6 +54,22 @@ export function marginalSale(id: CommodityId, baseValue: number, stock: number, 
     nextStock += 1
   }
   return { proceeds, stock: nextStock }
+}
+
+export function commodityShockThreshold(id: CommodityId) {
+  return Math.max(3, Math.ceil(COMMODITY_MARKET_CONFIG[id].neutral * 0.10))
+}
+
+export function settleCommoditySale(id: CommodityId, baseValue: number, quotedStock: number, pendingSupply: number, quantity: number) {
+  const sale = marginalSale(id, baseValue, quotedStock + Math.max(0, pendingSupply), quantity)
+  const accumulatedSupply = Math.max(0, sale.stock - quotedStock)
+  const shock = accumulatedSupply >= commodityShockThreshold(id)
+  return {
+    proceeds: sale.proceeds,
+    quotedStock: shock ? sale.stock : quotedStock,
+    pendingSupply: shock ? 0 : accumulatedSupply,
+    shock,
+  }
 }
 
 export function advanceCommodityCycle(market: CommodityMarket, cycle: number, weather: 'clear' | 'rain' | 'mist' | 'sunny' | 'breeze', matchSeed = 9731) {
@@ -62,7 +83,13 @@ export function advanceCommodityCycle(market: CommodityMarket, cycle: number, we
     const supplyEvent = seeded01(matchSeed + cycle * 2017 + index * 131 + 43) < 0.13
       ? Math.round(config.neutral * (0.04 + seeded01(matchSeed + cycle * 3037 + index * 151) * 0.08))
       : 0
-    next[id] = Math.max(config.neutral * 0.03, next[id] - demand + supplyEvent)
+    const averageDemand = (config.demand[0] + config.demand[1]) / 2
+    const demandRange = Math.max(1, config.demand[1] - config.demand[0])
+    const demandPressure = (demand - averageDemand) / demandRange
+    const targetStock = config.neutral * (1 - demandPressure * 0.18)
+    const recovery = 0.22 + seeded01(matchSeed + cycle * 4051 + index * 173 + 71) * 0.12
+    const settled = next[id] + (targetStock - next[id]) * recovery
+    next[id] = Math.max(config.neutral * 0.03, Math.round(settled + supplyEvent))
   })
   return next
 }

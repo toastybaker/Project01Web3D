@@ -18,6 +18,16 @@ export type RecipeDefinition = {
   cookSeconds: number
 }
 
+// Common prepared-food premium. Recipe multipliers still distinguish dish
+// complexity; this pays back the deed, furnace, and recipe setup within a
+// one-hour cash-at-the-bell match.
+export const PREPARED_FOOD_MARKUP = 2
+export const PREPARED_FOOD_BASE_VALUE: Record<RecipeGroup, number> = {
+  early: 180_000,
+  middle: 650_000,
+  late: 2_000_000,
+}
+
 export const RECIPES: Record<RecipeId, RecipeDefinition> = {
   'berry-jam': { id: 'berry-jam', food: 'food-berry-jam', name: 'Orchard Jam', group: 'early', ingredients: { apple: 3, orange: 2 }, multiplier: 1.18, cookSeconds: 30 },
   'apple-bread': { id: 'apple-bread', food: 'food-apple-bread', name: 'Apple Bread', group: 'early', ingredients: { apple: 2, wheat: 2 }, multiplier: 1.2, cookSeconds: 30 },
@@ -28,7 +38,7 @@ export const RECIPES: Record<RecipeId, RecipeDefinition> = {
   'orchard-pie': { id: 'orchard-pie', food: 'food-orchard-pie', name: 'Orchard Pie', group: 'middle', ingredients: { apple: 4, orange: 4, wheat: 2 }, multiplier: 1.38, cookSeconds: 40 },
   'pumpkin-bread': { id: 'pumpkin-bread', food: 'food-pumpkin-bread', name: 'Pumpkin Bread', group: 'middle', ingredients: { pumpkin: 1, wheat: 4 }, multiplier: 1.42, cookSeconds: 45 },
   'farmhouse-plate': { id: 'farmhouse-plate', food: 'food-farmhouse-plate', name: 'Farmhouse Plate', group: 'middle', ingredients: { tomato: 2, lettuce: 2, wheat: 1 }, multiplier: 1.45, cookSeconds: 45 },
-  'melon-preserve': { id: 'melon-preserve', food: 'food-melon-preserve', name: 'Melon Preserve', group: 'late', ingredients: { watermelon: 1, orange: 4, apple: 3 }, multiplier: 1.52, cookSeconds: 50 },
+  'melon-preserve': { id: 'melon-preserve', food: 'food-melon-preserve', name: 'Melon Preserve', group: 'late', ingredients: { watermelon: 1, orange: 4, apple: 3 }, multiplier: 1.48, cookSeconds: 60 },
   'harvest-feast': { id: 'harvest-feast', food: 'food-harvest-feast', name: 'Harvest Feast', group: 'late', ingredients: { pumpkin: 1, lettuce: 1, tomato: 1, wheat: 2 }, multiplier: 1.58, cookSeconds: 55 },
   'truffle-banquet': { id: 'truffle-banquet', food: 'food-truffle-banquet', name: 'Truffle Banquet', group: 'late', ingredients: { truffle: 1, pumpkin: 1, wheat: 3 }, multiplier: 1.65, cookSeconds: 60 },
 }

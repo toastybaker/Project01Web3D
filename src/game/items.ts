@@ -1,9 +1,12 @@
 import { BASKET_CONFIG, CROP_CONFIG, FORAGE_CONFIG, ORE_CONFIG, PICKAXE_CONFIG } from './config'
+import { enhancedBasketCapacity, expectedFortune, fortuneFor, miningSpeedBonus } from './enhancement'
 
 export type ItemId =
-  | 'farm-deed' | 'lottery-ticket' | 'information-note' | 'cookbook-box' | 'furnace' | 'water-can' | 'home-charm' | 'gold-coins'
+  | 'farm-deed' | 'shared-farm-deed' | 'lottery-ticket' | 'information-note' | 'cookbook-box' | 'furnace' | 'water-can' | 'home-charm' | 'gold-coins'
+  | 'mining-boost' | 'fortune-boost' | 'cook-timer' | 'rain-bottle' | 'upgrade-coupon'
+  | 'upgrade-guard-4' | 'upgrade-guard-5' | 'upgrade-guard-6'
   | 'worn-pickaxe' | 'iron-pickaxe' | 'steel-pickaxe' | 'crystal-pickaxe'
-  | 'basket' | 'reinforced-basket' | 'master-basket'
+  | 'basket' | 'reinforced-basket' | 'master-basket' | 'harvest-charm'
   | 'wheat-seeds' | 'tomato-seeds' | 'lettuce-seeds' | 'pumpkin-seeds' | 'watermelon-seeds'
   | 'wheat' | 'tomato' | 'lettuce' | 'pumpkin' | 'watermelon'
   | 'berries' | 'apple' | 'orange' | 'mushroom' | 'wild-herbs' | 'wildflower' | 'truffle' | 'natural-discovery'
@@ -12,7 +15,7 @@ export type ItemId =
   | 'food-meadow-stew' | 'food-orchard-pie' | 'food-pumpkin-bread' | 'food-farmhouse-plate'
   | 'food-melon-preserve' | 'food-harvest-feast' | 'food-truffle-banquet'
 
-export type ShopKind = 'common' | 'forage' | 'forage-sell' | 'farm' | 'produce' | 'mine' | 'ore'
+export type ShopKind = 'common' | 'forage' | 'forage-sell' | 'farm' | 'produce' | 'food' | 'mine' | 'ore'
 export type StockId = 'apple' | 'samsung' | 'nvidia' | 'google' | 'amd'
 
 export type ItemDefinition = {
@@ -27,19 +30,29 @@ export type ItemDefinition = {
 }
 
 export const ITEMS: Record<ItemId, ItemDefinition> = {
-  'farm-deed': { id: 'farm-deed', name: 'Farm Deed', icon: '/assets/ui/items/land-deed.png', buyPrice: 5_000_000, category: 'utility', limited: true, hotbar: false },
-  'lottery-ticket': { id: 'lottery-ticket', name: 'Lottery', icon: '/assets/ui/items/lottery-ticket.png', buyPrice: 30_000, category: 'utility' },
+  'farm-deed': { id: 'farm-deed', name: 'Personal Farm Deed', icon: '/assets/ui/items/land-deed.png', buyPrice: 2_500_000, category: 'utility', limited: true, hotbar: false },
+  'shared-farm-deed': { id: 'shared-farm-deed', name: 'Extra Farm Deed', icon: '/assets/ui/items/land-deed.png', buyPrice: 2_500_000, category: 'utility', limited: true, hotbar: false },
+  'lottery-ticket': { id: 'lottery-ticket', name: 'Lottery', icon: '/assets/ui/items/lottery-ticket.png', buyPrice: 100_000, category: 'utility' },
   'information-note': { id: 'information-note', name: 'Broker Note', icon: '/assets/ui/cooking/cookbook.png', category: 'utility' },
-  'cookbook-box': { id: 'cookbook-box', name: 'Cookbook Box', icon: '/assets/ui/cooking/cookbook.png', buyPrice: 600_000, category: 'cooking' },
-  furnace: { id: 'furnace', name: 'Farm Furnace', icon: '/assets/ui/cooking/furnace-idle-v2.png', buyPrice: 2_000_000, category: 'cooking', hotbar: false },
+  'cookbook-box': { id: 'cookbook-box', name: 'Recipe Box', icon: '/assets/ui/items/merchant/cookbook-box-merchant.png', buyPrice: 600_000, category: 'cooking' },
+  'mining-boost': { id: 'mining-boost', name: 'Mining Tonic', icon: '/assets/ui/items/merchant/mining-boost.png', category: 'utility', hotbar: false },
+  'fortune-boost': { id: 'fortune-boost', name: 'Luck Tonic', icon: '/assets/ui/items/merchant/fortune-boost.png', category: 'utility', hotbar: false },
+  'cook-timer': { id: 'cook-timer', name: 'Cook Timer', icon: '/assets/ui/items/merchant/cook-timer.png', category: 'utility', hotbar: false },
+  'rain-bottle': { id: 'rain-bottle', name: 'Rain Bottle', icon: '/assets/ui/items/merchant/rain-bottle.png', category: 'utility', hotbar: false },
+  'upgrade-coupon': { id: 'upgrade-coupon', name: '30% Upgrade Discount', icon: '/assets/ui/items/merchant/upgrade-coupon-clean.png', category: 'utility', hotbar: false },
+  'upgrade-guard-4': { id: 'upgrade-guard-4', name: '+4 Protection', icon: '/assets/ui/items/merchant/upgrade-guard-4.png', category: 'utility', hotbar: false },
+  'upgrade-guard-5': { id: 'upgrade-guard-5', name: '+5 Protection', icon: '/assets/ui/items/merchant/upgrade-guard-5.png', category: 'utility', hotbar: false },
+  'upgrade-guard-6': { id: 'upgrade-guard-6', name: '+6 Protection', icon: '/assets/ui/items/merchant/upgrade-guard-6.png', category: 'utility', hotbar: false },
+  furnace: { id: 'furnace', name: 'Farm Furnace', icon: '/assets/ui/cooking/furnace-idle-v2.png', buyPrice: 1_500_000, category: 'cooking', hotbar: false },
   'water-can': { id: 'water-can', name: 'Watering Can', icon: '/assets/ui/items/water-can-v2.png', buyPrice: 90_000, category: 'tool' },
-  'worn-pickaxe': { id: 'worn-pickaxe', name: PICKAXE_CONFIG['worn-pickaxe'].name, icon: '/assets/ui/items/worn-pickaxe.png', category: 'tool' },
-  'iron-pickaxe': { id: 'iron-pickaxe', name: PICKAXE_CONFIG['iron-pickaxe'].name, icon: '/assets/ui/items/iron-pickaxe.png', buyPrice: PICKAXE_CONFIG['iron-pickaxe'].price, category: 'tool', limited: true },
-  'steel-pickaxe': { id: 'steel-pickaxe', name: PICKAXE_CONFIG['steel-pickaxe'].name, icon: '/assets/ui/items/gold-pickaxe.png', buyPrice: PICKAXE_CONFIG['steel-pickaxe'].price, category: 'tool', limited: true },
-  'crystal-pickaxe': { id: 'crystal-pickaxe', name: PICKAXE_CONFIG['crystal-pickaxe'].name, icon: '/assets/ui/items/crystal-pickaxe.png', buyPrice: PICKAXE_CONFIG['crystal-pickaxe'].price, category: 'tool', limited: true },
-  basket: { id: 'basket', name: BASKET_CONFIG.basket.name, icon: '/assets/ui/items/basket.png', buyPrice: BASKET_CONFIG.basket.price, category: 'tool', limited: true, hotbar: false },
-  'reinforced-basket': { id: 'reinforced-basket', name: BASKET_CONFIG['reinforced-basket'].name, icon: '/assets/ui/items/forager-crate.png', buyPrice: BASKET_CONFIG['reinforced-basket'].price, category: 'tool', limited: true, hotbar: false },
-  'master-basket': { id: 'master-basket', name: BASKET_CONFIG['master-basket'].name, icon: '/assets/ui/items/orchard-cart.png', buyPrice: BASKET_CONFIG['master-basket'].price, category: 'tool', limited: true, hotbar: false },
+  'worn-pickaxe': { id: 'worn-pickaxe', name: PICKAXE_CONFIG['worn-pickaxe'].name, icon: '/assets/ui/items/worn-pickaxe.png', buyPrice: PICKAXE_CONFIG['worn-pickaxe'].price, category: 'tool' },
+  'iron-pickaxe': { id: 'iron-pickaxe', name: PICKAXE_CONFIG['iron-pickaxe'].name, icon: '/assets/ui/items/iron-pickaxe.png', buyPrice: PICKAXE_CONFIG['iron-pickaxe'].price, category: 'tool' },
+  'steel-pickaxe': { id: 'steel-pickaxe', name: PICKAXE_CONFIG['steel-pickaxe'].name, icon: '/assets/ui/items/steel-pickaxe.png', buyPrice: PICKAXE_CONFIG['steel-pickaxe'].price, category: 'tool' },
+  'crystal-pickaxe': { id: 'crystal-pickaxe', name: PICKAXE_CONFIG['crystal-pickaxe'].name, icon: '/assets/ui/items/crystal-pickaxe.png', buyPrice: PICKAXE_CONFIG['crystal-pickaxe'].price, category: 'tool' },
+  basket: { id: 'basket', name: BASKET_CONFIG.basket.name, icon: '/assets/ui/items/basket.png', buyPrice: BASKET_CONFIG.basket.price, category: 'tool', hotbar: false },
+  'reinforced-basket': { id: 'reinforced-basket', name: BASKET_CONFIG['reinforced-basket'].name, icon: '/assets/ui/items/forager-crate.png', buyPrice: BASKET_CONFIG['reinforced-basket'].price, category: 'tool', hotbar: false },
+  'master-basket': { id: 'master-basket', name: BASKET_CONFIG['master-basket'].name, icon: '/assets/ui/items/orchard-cart.png', buyPrice: BASKET_CONFIG['master-basket'].price, category: 'tool', hotbar: false },
+  'harvest-charm': { id: 'harvest-charm', name: 'Harvest Charm', icon: '/assets/ui/items/harvest-charm.png', buyPrice: 500_000, category: 'tool', hotbar: false },
   'wheat-seeds': { id: 'wheat-seeds', name: 'Wheat Seeds', icon: '/assets/ui/items/wheat-seeds-v2.png', buyPrice: CROP_CONFIG.wheat.seedPrice, category: 'seed' },
   'tomato-seeds': { id: 'tomato-seeds', name: 'Tomato Seeds', icon: '/assets/ui/items/tomato-seeds.png', buyPrice: CROP_CONFIG.tomato.seedPrice, category: 'seed' },
   'lettuce-seeds': { id: 'lettuce-seeds', name: 'Lettuce Seeds', icon: '/assets/ui/items/lettuce-seeds.png', buyPrice: CROP_CONFIG.lettuce.seedPrice, category: 'seed' },
@@ -63,7 +76,7 @@ export const ITEMS: Record<ItemId, ItemDefinition> = {
   'silver-ore': { id: 'silver-ore', name: ORE_CONFIG['silver-ore'].name, icon: '/assets/ui/items/stone-ore.png', sellPrice: ORE_CONFIG['silver-ore'].value, category: 'ore' },
   'gold-ore': { id: 'gold-ore', name: ORE_CONFIG['gold-ore'].name, icon: '/assets/ui/items/rich-ore.png', sellPrice: ORE_CONFIG['gold-ore'].value, category: 'ore' },
   'crystal-ore': { id: 'crystal-ore', name: ORE_CONFIG['crystal-ore'].name, icon: '/assets/ui/items/crystal-ore.png', sellPrice: ORE_CONFIG['crystal-ore'].value, category: 'ore' },
-  'ancient-ore': { id: 'ancient-ore', name: ORE_CONFIG['ancient-ore'].name, icon: '/assets/ui/items/rich-ore.png', sellPrice: ORE_CONFIG['ancient-ore'].value, category: 'ore' },
+  'ancient-ore': { id: 'ancient-ore', name: ORE_CONFIG['ancient-ore'].name, icon: '/assets/ui/items/ancient-ore.png', sellPrice: ORE_CONFIG['ancient-ore'].value, category: 'ore' },
   'food-berry-jam': { id: 'food-berry-jam', name: 'Orchard Jam', icon: '/assets/ui/cooking/berry-jam.png', category: 'cooking' },
   'food-apple-bread': { id: 'food-apple-bread', name: 'Apple Bread', icon: '/assets/ui/cooking/apple-bread.png', category: 'cooking' },
   'food-mushroom-skewer': { id: 'food-mushroom-skewer', name: 'Farm Skewer', icon: '/assets/ui/cooking/mushroom-skewer.png', category: 'cooking' },
@@ -81,13 +94,14 @@ export const ITEMS: Record<ItemId, ItemDefinition> = {
 }
 
 export const SHOPS: Record<ShopKind, { title: string; items: ItemId[]; action: 'buy' | 'sell' }> = {
-  common: { title: 'COMMON SHOP', items: ['farm-deed', 'cookbook-box', 'lottery-ticket'], action: 'buy' },
-  forage: { title: 'FORAGING SHOP', items: ['basket', 'reinforced-basket', 'master-basket'], action: 'buy' },
+  common: { title: 'GENERAL SHOP', items: ['farm-deed', 'shared-farm-deed', 'cookbook-box', 'lottery-ticket'], action: 'buy' },
+  forage: { title: 'FORAGE SHOP', items: ['basket', 'reinforced-basket', 'master-basket'], action: 'buy' },
   'forage-sell': { title: 'FORAGE MARKET', items: ['apple', 'orange', 'truffle', 'natural-discovery'], action: 'sell' },
-  farm: { title: 'FARM SHOP', items: ['wheat-seeds', 'tomato-seeds', 'lettuce-seeds', 'pumpkin-seeds', 'watermelon-seeds', 'water-can', 'furnace'], action: 'buy' },
-  produce: { title: 'PRODUCE STAND', items: ['wheat', 'tomato', 'lettuce', 'pumpkin', 'watermelon'], action: 'sell' },
-  mine: { title: 'MINING SHOP', items: ['iron-pickaxe', 'steel-pickaxe', 'crystal-pickaxe'], action: 'buy' },
-  ore: { title: 'ORE STAND', items: ['copper-ore', 'iron-ore', 'silver-ore', 'gold-ore', 'crystal-ore', 'ancient-ore'], action: 'sell' },
+  farm: { title: 'FARM SHOP', items: ['wheat-seeds', 'tomato-seeds', 'lettuce-seeds', 'pumpkin-seeds', 'watermelon-seeds', 'water-can', 'furnace', 'harvest-charm'], action: 'buy' },
+  produce: { title: 'CROP MARKET', items: ['wheat', 'tomato', 'lettuce', 'pumpkin', 'watermelon'], action: 'sell' },
+  food: { title: 'FOOD MARKET', items: ['food-berry-jam', 'food-apple-bread', 'food-mushroom-skewer', 'food-garden-salad', 'food-citrus-mix', 'food-meadow-stew', 'food-orchard-pie', 'food-pumpkin-bread', 'food-farmhouse-plate', 'food-melon-preserve', 'food-harvest-feast', 'food-truffle-banquet'], action: 'sell' },
+  mine: { title: 'MINING SHOP', items: ['worn-pickaxe', 'iron-pickaxe', 'steel-pickaxe', 'crystal-pickaxe'], action: 'buy' },
+  ore: { title: 'ORE MARKET', items: ['copper-ore', 'iron-ore', 'silver-ore', 'gold-ore', 'crystal-ore', 'ancient-ore'], action: 'sell' },
 }
 
 export type StockDefinition = {
@@ -110,25 +124,38 @@ export const STOCKS: Record<StockId, StockDefinition> = {
   amd: { id: 'amd', name: 'AMD', ticker: 'AMD', logo: '/assets/brands/amd.svg', color: '#ed1c24', basePrice: 32_000_000, releaseMinute: 0, volatility: 0.46, waveSize: 1 },
 }
 
-export const INVENTORY_ITEMS = Object.keys(ITEMS).filter((id) => id !== 'gold-coins') as ItemId[]
+export const INVENTORY_ITEMS = Object.keys(ITEMS).filter((id) => id !== 'gold-coins' && id !== 'shared-farm-deed') as ItemId[]
 
 function fortuneLine(outcomes: readonly { chance: number; bonus: number }[]) {
   return outcomes.map(({ chance, bonus }) => `${Math.round(chance * 100)}% ×${bonus + 1}`).join(' · ')
 }
 
-export function itemTooltip(id: ItemId): string[] | null {
+export function itemTooltip(id: ItemId, enhancement = 0): string[] | null {
   if (id === 'water-can') return ['Waters one planted crop.']
   if (id === 'furnace') return ['+10 batch capacity each.', 'Three queued recipes.']
   if (id === 'home-charm') return ['LMB Common · RMB Choose destination']
   if (id === 'lottery-ticket') return ['RMB View chosen numbers']
   if (id === 'information-note') return ['RMB Read information']
+  if (id === 'cookbook-box') return ['Use to unlock one new recipe.']
+  if (id === 'mining-boost') return ['Use: +12% mining speed · 3m', 'Pauses during events']
+  if (id === 'fortune-boost') return ['Use on gear: Fortune +1 level', '20 mines · 30 trees · 32 crops']
+  if (id === 'cook-timer') return ['Use: cuts active cook times', 'Up to 30s each · 90s total']
+  if (id === 'rain-bottle') return ['Use on a farm', 'Waters every planted crop']
+  if (id === 'upgrade-coupon') return ['30% off one upgrade', 'Maximum discount: 750K']
+  if (id === 'upgrade-guard-4') return ['Keeps your level if +4 fails']
+  if (id === 'upgrade-guard-5') return ['Keeps your level if +5 fails']
+  if (id === 'upgrade-guard-6') return ['Keeps your level if +6 fails']
   if (id in PICKAXE_CONFIG) {
     const pickaxe = PICKAXE_CONFIG[id as keyof typeof PICKAXE_CONFIG]
-    return [`${pickaxe.speed.toFixed(2)}× mining speed`, ...pickaxe.fortune.map(({ chance, bonus }) => `${Math.round(chance * 100)}% chance: ${bonus + 1}× yield`)]
+    const item = id as keyof typeof PICKAXE_CONFIG
+    const level = Math.max(0, Math.min(10, Math.floor(enhancement)))
+    return [`${level ? `+${Math.round(miningSpeedBonus(level) * 1000) / 10}%` : `${pickaxe.speed.toFixed(2)}×`} mining speed`, ...fortuneFor(item, level).map(({ chance, bonus }) => `${Math.round(chance * 100)}% chance: ${bonus + 1}× yield`)]
   }
   if (id in BASKET_CONFIG) {
-    const carrier = BASKET_CONFIG[id as keyof typeof BASKET_CONFIG]
-    return [`Stores ${carrier.capacity} fruit`, ...carrier.fortune.map(({ chance, bonus }) => `${Math.round(chance * 100)}% chance: ${bonus + 1}× yield`)]
+    const item = id as 'basket' | 'reinforced-basket' | 'master-basket'
+    const level = Math.max(0, Math.min(10, Math.floor(enhancement)))
+    return [`Stores ${enhancedBasketCapacity(item, level)} fruit`, ...fortuneFor(item, level).map(({ chance, bonus }) => `${Math.round(chance * 100)}% chance: ${bonus + 1}× yield`)]
   }
+  if (id === 'harvest-charm') return [`${expectedFortune(id, enhancement).toFixed(2)}× average harvest`, ...fortuneFor(id, enhancement).map(({ chance, bonus }) => `${Math.round(chance * 100)}% chance: ${bonus + 1}× yield`)]
   return null
 }

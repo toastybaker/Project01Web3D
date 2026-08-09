@@ -1,20 +1,34 @@
 import { BASKET_CONFIG, COMMODITY_MARKET_CONFIG, CROP_CONFIG, FORAGE_CONFIG, MATCH_CONFIG, ORE_CONFIG, PICKAXE_CONFIG, forageSiteAvailability, fruitTreeCapacity } from '../src/game/config'
-import { advanceCommodityCycle, initialCommodityMarket, lotteryJackpot, lotteryPrice, lotteryTwoMatch, marginalSale, nextStockPrice, stockWaveQuantity } from '../src/game/economy'
+import { advanceCommodityCycle, commodityPrice, commodityShockThreshold, initialCommodityMarket, lotteryJackpot, lotteryPrice, lotteryTwoMatch, marginalSale, nextStockPrice, settleCommoditySale, stockWaveQuantity } from '../src/game/economy'
 import { STOCKS, type StockId } from '../src/game/items'
-import { RECIPES } from '../src/game/recipes'
-import { oreWeightsAtDepth } from '../src/game/ore'
+import { createInitialCommodityHistory, createInitialFoodHistory, createInitialStockHistory } from '../src/game/market'
+import { PREPARED_FOOD_BASE_VALUE, PREPARED_FOOD_MARKUP, RECIPES } from '../src/game/recipes'
+import { oreKindAtDepth, oreRespawnMs, oreWeightsAtDepth } from '../src/game/ore'
 
 function assert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message) }
+
+assert(Object.values(createInitialStockHistory()).every((history) => history.length === 1), 'New stock histories must begin with only the opening price')
+assert(Object.values(createInitialCommodityHistory()).every((history) => history?.length === 1), 'New commodity histories must begin with only the opening price')
+assert(Object.values(createInitialFoodHistory()).every((history) => history?.length === 1), 'New food histories must begin with only the opening price')
 
 assert(MATCH_CONFIG.startingCash === 100_000, 'Starting cash drifted')
 assert(PICKAXE_CONFIG['iron-pickaxe'].price === 750_000, 'Iron pickaxe price drifted')
 assert(PICKAXE_CONFIG['steel-pickaxe'].price === 4_000_000, 'Steel pickaxe price drifted')
 assert(PICKAXE_CONFIG['crystal-pickaxe'].price === 18_000_000, 'Crystal pickaxe price drifted')
-assert(ORE_CONFIG['copper-ore'].value === 8_000 && ORE_CONFIG['ancient-ore'].value === 1_500_000, 'Ore endpoints drifted')
+assert(ORE_CONFIG['copper-ore'].value === 6_800 && ORE_CONFIG['ancient-ore'].value === 1_275_000, 'Ore endpoints drifted')
+const oreValues = Object.values(ORE_CONFIG).map((ore) => ore.value)
+assert(oreValues.every((value, index) => index === 0 || value > oreValues[index - 1]), 'Ore values must rise with rarity')
 assert(CROP_CONFIG.wheat.seedPrice === 10_000 && CROP_CONFIG.watermelon.seedPrice === 750_000, 'Crop prices drifted')
+for (const [id, crop] of Object.entries(CROP_CONFIG)) {
+  const floor = commodityPrice(id as keyof typeof CROP_CONFIG, crop.value, crop.seedPrice * 100)
+  assert(floor * crop.yield >= crop.seedPrice, `${id} can sell below its seed break-even floor`)
+}
+assert(COMMODITY_MARKET_CONFIG.watermelon.neutral >= 100 && COMMODITY_MARKET_CONFIG.watermelon.demand[0] >= 15, 'Watermelon market cannot absorb a normal harvest')
 assert(FORAGE_CONFIG.apple.value === 4_000 && FORAGE_CONFIG.orange.value === 6_000, 'Orchard fruit values drifted')
 assert(BASKET_CONFIG.hand.capacity === 24 && BASKET_CONFIG.basket.capacity === 80 && BASKET_CONFIG['reinforced-basket'].capacity === 180 && BASKET_CONFIG['master-basket'].capacity === 360, 'Fruit storage progression drifted')
 assert(Object.values(RECIPES).every((recipe) => Object.keys(recipe.ingredients).length <= 4 && recipe.multiplier <= 1.65 && recipe.cookSeconds >= 30 && recipe.cookSeconds <= 60), 'Recipe bounds failed')
+assert(PREPARED_FOOD_MARKUP === 2, 'Prepared-food ingredient premium drifted')
+assert(PREPARED_FOOD_BASE_VALUE.early === 180_000 && PREPARED_FOOD_BASE_VALUE.middle === 650_000 && PREPARED_FOOD_BASE_VALUE.late === 2_000_000, 'Prepared-food tier values drifted')
 const obtainableCookingItems = new Set(['apple', 'orange', 'truffle', 'wheat', 'tomato', 'lettuce', 'pumpkin', 'watermelon'])
 assert(Object.values(RECIPES).every((recipe) => Object.keys(recipe.ingredients).every((item) => obtainableCookingItems.has(item))), 'Recipe requires an unavailable ingredient')
 
@@ -50,20 +64,54 @@ assert(deepOre['copper-ore'] > deepOre['iron-ore'] && deepOre['copper-ore'] > 0.
 assert(deepOre['ancient-ore'] > 0 && deepOre['ancient-ore'] < 0.02, 'Ancient ore depth tail is out of bounds')
 assert(middleOre['silver-ore'] > entranceOre['silver-ore'] && deepOre['silver-ore'] > middleOre['silver-ore'], 'Silver depth curve is not progressive')
 
+const rareOres = new Set(['gold-ore', 'crystal-ore', 'ancient-ore'])
+let initialRare = false
+for (let seed = 0; seed < 2_000; seed += 1) if (rareOres.has(oreKindAtDepth('MineOre244', -190, 0, seed))) initialRare = true
+assert(initialRare, 'Deep rare ores are missing from initial depth rolls')
+let rerolledRare = false
+for (let seed = 0; seed < 2_000; seed += 1) if (rareOres.has(oreKindAtDepth('MineOre244', -190, 1, seed))) rerolledRare = true
+assert(rerolledRare, 'Rare ores never enter deep-node rerolls')
+for (let generation = 1; generation < 40; generation += 1) {
+  const cooldown = oreRespawnMs('MineOre244', generation, 913_711)
+  assert(cooldown >= 28_000 && cooldown <= 35_000, `Ore respawn escaped target range: ${cooldown}`)
+}
+
 const lotteryEv = ((27 / 220) * lotteryTwoMatch() + (1 / 220) * lotteryJackpot()) / lotteryPrice()
 assert(lotteryEv >= 0.92 && lotteryEv <= 0.96, `Lottery EV ${(lotteryEv * 100).toFixed(2)}%`)
+assert(lotteryPrice() === 100_000, 'opening lottery wager drifted back into disposable click-spam territory')
 
 const commodityRows = []
 for (const id of Object.keys(COMMODITY_MARKET_CONFIG) as Array<keyof typeof COMMODITY_MARKET_CONFIG>) {
   const config = COMMODITY_MARKET_CONFIG[id]
   const neutral = initialCommodityMarket()[id]
-  const one = marginalSale(id, 100_000, neutral, 1)
+  const baseValue = id in CROP_CONFIG
+    ? CROP_CONFIG[id as keyof typeof CROP_CONFIG].value
+    : id in FORAGE_CONFIG
+      ? FORAGE_CONFIG[id as keyof typeof FORAGE_CONFIG].value
+      : ORE_CONFIG[id as keyof typeof ORE_CONFIG].value
+  const one = marginalSale(id, baseValue, neutral, 1)
   const floodQuantity = Math.max(10, Math.ceil(config.neutral * 0.8))
-  const flood = marginalSale(id, 100_000, neutral, floodQuantity)
+  const flood = marginalSale(id, baseValue, neutral, floodQuantity)
   assert(one.proceeds > 0 && flood.proceeds > one.proceeds, `${id} bulk sale failed`)
   assert(flood.proceeds / floodQuantity < one.proceeds, `${id} is not marginally priced`)
   commodityRows.push({ item: id, neutral, firstUnit: one.proceeds, floodedAverage: Math.round(flood.proceeds / floodQuantity) })
 }
+const watermelonBatch = marginalSale('watermelon', CROP_CONFIG.watermelon.value, COMMODITY_MARKET_CONFIG.watermelon.neutral, 16)
+assert(watermelonBatch.proceeds > CROP_CONFIG.watermelon.seedPrice * 16, 'A normal watermelon batch loses money at neutral demand')
+
+const appleNeutral = COMMODITY_MARKET_CONFIG.apple.neutral
+const appleShockThreshold = commodityShockThreshold('apple')
+const ordinaryAppleSale = settleCommoditySale('apple', 8_800, appleNeutral, 0, appleShockThreshold - 1)
+assert(ordinaryAppleSale.quotedStock === appleNeutral, 'an ordinary sale should not make the displayed quote flicker between cycles')
+assert(ordinaryAppleSale.pendingSupply === appleShockThreshold - 1, 'ordinary sales must accumulate for the next market cycle')
+const appleDump = settleCommoditySale('apple', 8_800, appleNeutral, ordinaryAppleSale.pendingSupply, 1)
+assert(appleDump.shock && appleDump.quotedStock === appleNeutral + appleShockThreshold && appleDump.pendingSupply === 0, 'a mathematically large dump must move the quote immediately')
+
+const pressuredMarket = initialCommodityMarket()
+pressuredMarket.apple += 100
+const pressuredNextCycle = advanceCommodityCycle(pressuredMarket, 1, 'clear', 9731)
+assert(pressuredNextCycle.apple > appleNeutral + 50, 'one routine cycle erased too much accumulated apple supply pressure')
+assert(pressuredNextCycle.apple < pressuredMarket.apple, 'routine demand did not begin recovering an oversupplied apple market')
 
 let market = initialCommodityMarket()
 for (let cycle = 1; cycle <= MATCH_CONFIG.totalRounds; cycle += 1) market = advanceCommodityCycle(market, cycle, cycle % 3 === 0 ? 'rain' : 'clear')

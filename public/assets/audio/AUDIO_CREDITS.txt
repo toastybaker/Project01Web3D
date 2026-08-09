@@ -1,8 +1,23 @@
-Project 01 Reboot audio credits
+Project 01 audio notes
 
-Hub and foraging: Gabriel Fauré, Sicilienne, Op. 78, flute and piano arrangement.
-Source: https://www.flutetunes.com/tunes.php?id=319
-Use: non-commercial/educational use under the site's terms.
+Current music files under assets/audio/music are user-supplied local recordings
+for private evaluation. Replace or license them before any public distribution.
+
+Hub: Sicilienne, Op. 78 — Gabriel Fauré
+Forage: Aerie — Lena Raine
+Farm: Haggstrom — C418
+Mine: Dead Voxel — C418
+Mining Rush: Aria Math — C418
+Kitchen Rush: Cat — C418
+Forage Race: otherside — Lena Raine
+Results: Alpha — C418
+
+Legacy cleared recordings retained in this directory:
+
+Hub: Gabriel Fauré, Pelléas et Mélisande, Op. 80, III. Sicilienne.
+DuPage Symphony Orchestra; Barbara Schubert, conductor. Performed 9 February 2008.
+Source: https://archive.org/details/dso20080209
+License: CC BY-NC-ND 3.0.
 
 Farm: Gabriel Fauré, Fantaisie, Op. 79. Alex Murray (flute), Martha Goldstein (piano).
 Source: https://commons.wikimedia.org/wiki/File:Faure_-_Fantasie.ogg
@@ -12,9 +27,13 @@ Mine: Gabriel Fauré, Élégie, Op. 24. Hans Goldstein (cello), Eli Kalman (pian
 Source: https://commons.wikimedia.org/wiki/File:Faure_-_Elegie.ogg
 License: CC BY-SA 2.0.
 
-Forest ambience: nille, "forest ambience" (PDSounds recording 707).
+Outdoor ambience: Wilfredor, "Leaves falling from the trees during autumn in the forest".
+Source: https://commons.wikimedia.org/wiki/File:Leaves_falling_from_the_trees_during_autumn_in_the_forest.wav
+License: CC0 1.0.
+
+Previous forest ambience (retained, no longer used): nille, "forest ambience"
+(PDSounds recording 707). Public domain.
 Source: https://commons.wikimedia.org/wiki/File:20090610_0_ambience.ogg
-License: public domain.
 
 Cave ambience: ZooFari, "Water drops dripping".
 Source: https://commons.wikimedia.org/wiki/File:Water_drops_dripping.ogg

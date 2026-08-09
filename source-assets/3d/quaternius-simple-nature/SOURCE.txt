@@ -1,0 +1,7 @@
+Quaternius Simple Nature Pack
+https://quaternius.com/packs/simplenature.html
+
+License: CC0 1.0 Universal
+https://creativecommons.org/publicdomain/zero/1.0/
+
+The pack includes the three low-poly rock meshes used by the authored scene builder.

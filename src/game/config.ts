@@ -1,20 +1,34 @@
 export const MATCH_CONFIG = {
   startingCash: 100_000,
   defaultDurationSeconds: 60 * 60,
-  selectableDurationsSeconds: [30, 45, 60, 90].map((minutes) => minutes * 60),
+  selectableDurationsSeconds: [30, 60, 90, 120, 150, 180].map((minutes) => minutes * 60),
   totalRounds: 15,
   worldCycleSeconds: 4 * 60,
   stockUpdateSeconds: 4 * 60,
   commodityCycleSeconds: 4 * 60,
   secretNpcCycleSeconds: 4 * 60,
+  marketCorrectionIntervalSeconds: 15 * 60,
+  minigameIntervalSeconds: 20 * 60,
   minimumMiningMs: 420,
+  oreRespawnSeconds: [28, 35],
 } as const
+
+export function recurringMilestones(durationSeconds: number, intervalSeconds: number) {
+  const duration = Math.max(60, Math.floor(durationSeconds))
+  const interval = Math.max(1, Math.floor(intervalSeconds))
+  return Array.from({ length: Math.max(0, Math.ceil(duration / interval) - 1) }, (_, index) => (index + 1) * interval)
+    .filter((milestone) => milestone < duration)
+}
+
+export function marketCorrectionMilestones(durationSeconds: number) {
+  return recurringMilestones(durationSeconds, MATCH_CONFIG.marketCorrectionIntervalSeconds)
+}
 
 export type FortuneOutcome = { chance: number; bonus: number }
 
 export const PICKAXE_CONFIG = {
   'worn-pickaxe': {
-    name: 'Starter Pickaxe', price: 0, speed: 1,
+    name: 'Starter Pickaxe', price: 50_000, speed: 1,
     unlocks: ['copper-ore', 'iron-ore'],
     fortune: [{ chance: 0.95, bonus: 0 }, { chance: 0.05, bonus: 1 }],
   },
@@ -29,19 +43,19 @@ export const PICKAXE_CONFIG = {
     fortune: [{ chance: 0.65, bonus: 0 }, { chance: 0.25, bonus: 1 }, { chance: 0.08, bonus: 2 }, { chance: 0.02, bonus: 3 }],
   },
   'crystal-pickaxe': {
-    name: 'Crystal Pickaxe', price: 18_000_000, speed: 2.25,
+    name: 'Crystal Pickaxe', price: 18_000_000, speed: 4.2,
     unlocks: ['copper-ore', 'iron-ore', 'silver-ore', 'gold-ore', 'crystal-ore', 'ancient-ore'],
     fortune: [{ chance: 0.48, bonus: 0 }, { chance: 0.35, bonus: 1 }, { chance: 0.12, bonus: 2 }, { chance: 0.04, bonus: 3 }, { chance: 0.01, bonus: 4 }],
   },
 } as const
 
 export const ORE_CONFIG = {
-  'copper-ore': { name: 'Copper Ore', value: 8_000, hardness: 1, respawn: [35, 50] },
-  'iron-ore': { name: 'Iron Ore', value: 18_000, hardness: 1.6, respawn: [40, 55] },
-  'silver-ore': { name: 'Silver Ore', value: 55_000, hardness: 2.4, respawn: [50, 75] },
-  'gold-ore': { name: 'Gold Ore', value: 150_000, hardness: 3.5, respawn: [60, 85] },
-  'crystal-ore': { name: 'Crystal', value: 500_000, hardness: 5, respawn: [75, 105] },
-  'ancient-ore': { name: 'Ancient Ore', value: 1_500_000, hardness: 7.5, respawn: [90, 125] },
+  'copper-ore': { name: 'Copper Ore', value: 6_800, hardness: 1 },
+  'iron-ore': { name: 'Iron Ore', value: 15_300, hardness: 1.6 },
+  'silver-ore': { name: 'Silver Ore', value: 46_800, hardness: 2.4 },
+  'gold-ore': { name: 'Gold Ore', value: 127_500, hardness: 3.5 },
+  'crystal-ore': { name: 'Crystal', value: 425_000, hardness: 5 },
+  'ancient-ore': { name: 'Ancient Ore', value: 1_275_000, hardness: 7.5 },
 } as const
 
 export const BASKET_CONFIG = {
@@ -96,8 +110,8 @@ const RARE_FORAGE_ROLLS = {
     discovery: { seconds: 240, chance: 0.38, count: 1 },
   },
   rush: {
-    truffle: { seconds: 20, chance: 1, count: 2 },
-    discovery: { seconds: 30, chance: 1, count: 1 },
+    truffle: { seconds: 12, chance: 1, count: 3 },
+    discovery: { seconds: 12, chance: 1, count: 1 },
   },
 } as const
 
@@ -107,7 +121,15 @@ function rareHash(value: string) {
   return (hash >>> 0) / 4294967296
 }
 
-export function activeRareForageIds(ids: string[], rush: boolean, sessionSeed: number, matchStartedAt: number, now = Date.now()) {
+export function activeRareForageIds(
+  ids: string[],
+  rush: boolean,
+  sessionSeed: number,
+  matchStartedAt: number,
+  now = Date.now(),
+  participantCount = 1,
+  eventKey = 0,
+) {
   const active = new Set<string>()
   const mode = rush ? 'rush' : 'main'
   for (const kind of ['truffle', 'discovery'] as const) {
@@ -115,14 +137,24 @@ export function activeRareForageIds(ids: string[], rush: boolean, sessionSeed: n
     const candidates = ids.filter((id) => id.startsWith(prefix)).sort()
     if (!candidates.length) continue
     const settings = RARE_FORAGE_ROLLS[mode][kind]
-    const cycle = Math.max(0, Math.floor((now - matchStartedAt) / (settings.seconds * 1000)))
+    // Main-world finds move between sites on their normal world cadence. Rush
+    // uses eventKey as a server-owned spawn generation: the wall clock never
+    // changes a visible event find, while a collected find advances its own
+    // generation and can be rolled into a different designated location.
+    const cycle = rush ? Math.max(0, Math.floor(eventKey)) : Math.max(0, Math.floor((now - matchStartedAt) / (settings.seconds * 1000)))
     if (rareHash(`${sessionSeed}:${mode}:${kind}:${cycle}:chance`) >= settings.chance) continue
     const ranked = [...candidates].sort((a, b) => rareHash(`${sessionSeed}:${mode}:${kind}:${cycle}:${a}`) - rareHash(`${sessionSeed}:${mode}:${kind}:${cycle}:${b}`))
     if (settings.count === 1 && cycle > 0 && ranked.length > 1) {
       const previous = [...candidates].sort((a, b) => rareHash(`${sessionSeed}:${mode}:${kind}:${cycle - 1}:${a}`) - rareHash(`${sessionSeed}:${mode}:${kind}:${cycle - 1}:${b}`))[0]
       if (ranked[0] === previous) [ranked[0], ranked[1]] = [ranked[1], ranked[0]]
     }
-    ranked.slice(0, settings.count).forEach((id) => active.add(id))
+    const players = Math.max(1, Math.min(6, Math.floor(participantCount) || 1))
+    const activeCount = rush
+      ? kind === 'truffle'
+        ? Math.max(settings.count, players + 1)
+        : Math.max(settings.count, Math.ceil(players / 2))
+      : settings.count
+    ranked.slice(0, Math.min(candidates.length, activeCount)).forEach((id) => active.add(id))
   }
   return active
 }
@@ -147,7 +179,7 @@ export const COMMODITY_MARKET_CONFIG = {
   tomato: { neutral: 300, demand: [60, 90], elasticity: 0.70, minimum: 0.50, maximum: 3.00 },
   lettuce: { neutral: 180, demand: [35, 55], elasticity: 0.70, minimum: 0.50, maximum: 3.00 },
   pumpkin: { neutral: 80, demand: [15, 25], elasticity: 0.70, minimum: 0.50, maximum: 3.00 },
-  watermelon: { neutral: 20, demand: [3, 6], elasticity: 0.70, minimum: 0.50, maximum: 3.00 },
+  watermelon: { neutral: 100, demand: [15, 30], elasticity: 0.70, minimum: 0.50, maximum: 3.00 },
   berries: { neutral: 500, demand: [100, 160], elasticity: 0.60, minimum: 0.60, maximum: 2.20 },
   apple: { neutral: 400, demand: [80, 120], elasticity: 0.60, minimum: 0.60, maximum: 2.20 },
   orange: { neutral: 300, demand: [60, 90], elasticity: 0.60, minimum: 0.60, maximum: 2.20 },

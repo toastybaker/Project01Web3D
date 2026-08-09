@@ -11,21 +11,91 @@ const storage = {
 }
 Object.assign(globalThis, { localStorage: storage, window: { location: { search: '?gate=final' } } })
 
-const { useGameStore } = await import('../src/game/store')
-const { activeRareForageIds } = await import('../src/game/config')
-const { minigameMilestones, minigameRewardPackage, scheduledMinigame } = await import('../src/game/minigame')
+const { useGameStore, inventoryLayout } = await import('../src/game/store')
+const { ITEMS } = await import('../src/game/items')
+const { activeRareForageIds, marketCorrectionMilestones } = await import('../src/game/config')
+const { FARM_RUSH_MAX_ORDERS, FARM_RUSH_ORDER_LIFETIME_MS, FARM_RUSH_RECIPE_IDS, FORAGE_RUSH_DELIVERY_POINTS, FORAGE_RUSH_REQUIREMENTS, farmRushOrders, minigameMilestones, minigameRewardPackage, minigameSchedule, scheduledMinigame } = await import('../src/game/minigame')
 
-assert.deepEqual(minigameMilestones(30 * 60), [10 * 60, 20 * 60])
-assert.deepEqual(minigameMilestones(45 * 60), [15 * 60, 30 * 60])
+assert.deepEqual(minigameMilestones(30 * 60), [20 * 60])
 assert.deepEqual(minigameMilestones(60 * 60), [20 * 60, 40 * 60])
-assert.deepEqual(minigameMilestones(90 * 60), [30 * 60, 60 * 60])
-for (const duration of [30, 45, 60, 90].map((minutes) => minutes * 60)) {
-  const [first, second] = minigameMilestones(duration)
-  assert.notEqual(scheduledMinigame(first, 9731, duration), scheduledMinigame(second, 9731, duration))
+assert.deepEqual(minigameMilestones(90 * 60), [20, 40, 60, 80].map((minutes) => minutes * 60))
+assert.deepEqual(minigameMilestones(120 * 60), [20, 40, 60, 80, 100].map((minutes) => minutes * 60))
+assert.deepEqual(minigameMilestones(150 * 60), [20, 40, 60, 80, 100, 120, 140].map((minutes) => minutes * 60))
+assert.deepEqual(minigameMilestones(180 * 60), [20, 40, 60, 80, 100, 120, 140, 160].map((minutes) => minutes * 60))
+assert.deepEqual(marketCorrectionMilestones(30 * 60), [15 * 60])
+assert.deepEqual(marketCorrectionMilestones(60 * 60), [15, 30, 45].map((minutes) => minutes * 60))
+assert.deepEqual(marketCorrectionMilestones(180 * 60), [15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165].map((minutes) => minutes * 60))
+for (const duration of [30, 60, 90, 120, 150, 180].map((minutes) => minutes * 60)) {
+  const schedule = minigameSchedule(duration, 9731)
+  assert.deepEqual(schedule, minigameSchedule(duration, 9731), 'event plan must be deterministic at match start')
+  for (let index = 1; index < schedule.length; index += 1) assert.notEqual(schedule[index].kind, schedule[index - 1].kind, 'consecutive events must differ')
+  schedule.forEach((entry) => assert.equal(entry.kind, scheduledMinigame(entry.milestone, 9731, duration)))
 }
+
+const beforeOverlap = useGameStore.getState()
+useGameStore.setState({
+  sessionStarted: true,
+  sessionComplete: false,
+  sessionDurationSeconds: 90 * 60,
+  roundNumber: 16,
+  roundSeconds: 4 * 60,
+  minigameOpen: false,
+  minigamesCompleted: [20 * 60, 40 * 60],
+  marketCorrectionsApplied: [15 * 60, 30 * 60, 45 * 60],
+})
+useGameStore.getState().tickGame()
+assert.equal(useGameStore.getState().minigameMilestone, 60 * 60, 'the 60-minute minigame opens first at an overlapping milestone')
+assert(!useGameStore.getState().marketCorrectionsApplied.includes(60 * 60), 'the overlapping market correction must remain pending during the minigame')
+useGameStore.setState({ minigameOpen: false, minigamesCompleted: [20 * 60, 40 * 60, 60 * 60] })
+useGameStore.getState().tickGame()
+assert(useGameStore.getState().marketCorrectionsApplied.includes(60 * 60), 'the pending correction applies exactly once after the minigame')
+useGameStore.setState(beforeOverlap)
 
 const permanentInventory = { 'water-can': 1, 'worn-pickaxe': 1, 'home-charm': 1, apple: 4 } as const
 const permanentHotbar = ['water-can', 'worn-pickaxe', null, null, null, null, null, null, 'home-charm'] as const
+
+function assertRestoredHotbarWithRewards(label: string) {
+  const state = useGameStore.getState()
+  permanentHotbar.forEach((item, index) => {
+    if (item) assert.equal(state.hotbar[index], item, `${label} moved an existing hotbar item`)
+  })
+  for (const [itemId, quantity] of Object.entries(state.lastMinigameResult?.items ?? {})) {
+    if (Number(quantity) > 0 && itemId !== 'gold-coins') assert(state.hotbar.some((item) => item === itemId), `${label} reward skipped the hotbar row`)
+  }
+}
+
+useGameStore.setState({
+  cash: 100_000,
+  inventory: { 'home-charm': 1 },
+  hotbar: [null, null, null, null, null, null, null, null, 'home-charm'],
+  inventoryOrder: Array(useGameStore.getState().inventoryOrder.length).fill(null),
+  shopKind: 'farm',
+  lobbyConnected: false,
+})
+useGameStore.getState().trade('wheat-seeds', 1)
+assert.equal(useGameStore.getState().hotbar[0], 'wheat-seeds', 'a purchased item fills the first available hotbar slot before the second inventory row')
+useGameStore.getState().addItem('apple', 1)
+assert.equal(useGameStore.getState().hotbar[1], 'apple', 'a newly gathered item fills the next available hotbar slot')
+const protectedTradeApplied = useGameStore.getState().applyPlayerTrade({ cash: 0, items: { 'home-charm': 1 } }, { cash: 0, items: {} })
+assert.equal(protectedTradeApplied, false, 'the Return Charm cannot enter a player trade')
+
+useGameStore.setState({
+  inventory: { ...permanentInventory },
+  hotbar: [...permanentHotbar],
+  inventoryOrder: Array(useGameStore.getState().inventoryOrder.length).fill(null),
+  selectedHotbar: 0,
+})
+const inventoryBeforeEquip = { ...useGameStore.getState().inventory }
+useGameStore.getState().equipItem('apple')
+useGameStore.getState().equipItem('apple')
+let layoutAfterEquip = inventoryLayout(useGameStore.getState())
+assert.equal(layoutAfterEquip.filter((item) => item === 'apple').length, 1, 'quick-equip cannot duplicate an inventory item into the hotbar')
+assert.deepEqual(useGameStore.getState().inventory, inventoryBeforeEquip, 'quick-equip changes layout, not item quantities')
+const appleSlot = layoutAfterEquip.indexOf('apple')
+useGameStore.getState().moveInventorySlot(appleSlot, 10)
+layoutAfterEquip = inventoryLayout(useGameStore.getState())
+assert.equal(layoutAfterEquip.filter((item) => item === 'apple').length, 1, 'dragging between inventory and hotbar keeps one visual item slot')
+assert.equal(useGameStore.getState().inventory.apple, 4, 'moving an inventory item never changes its stack count')
 
 function enter(kind: 'mining' | 'farm' | 'forage') {
   useGameStore.setState({
@@ -40,9 +110,9 @@ function enter(kind: 'mining' | 'farm' | 'forage') {
     minigameKind: kind,
     minigameMilestone: 20 * 60,
     minigameSnapshot: { zone: 'forage', playerPosition: [12, 0.86, -42], hotbar: [...permanentHotbar], selectedHotbar: 8, inventoryOpen: false, startedAt: Date.now() },
-    rushNodes: {}, rushScore: 0, rushCombo: 0, rushLastMineAt: 0,
-    farmRushCells: {}, farmRushTool: 'wheat', farmRushInventory: { wheat: 0, tomato: 0, lettuce: 0, pumpkin: 0, watermelon: 0 }, farmRushOrders: [], farmRushCooking: null, farmRushScore: 0,
-    forageRushCollected: {}, forageRushInventory: { apple: 0, orange: 0, truffle: 0, discovery: 0 }, forageRushDelivered: { apple: false, orange: false, truffle: false, discovery: false }, forageRushScore: 0,
+    rushNodes: {}, rushInventory: { 'copper-ore': 0, 'iron-ore': 0, 'silver-ore': 0, 'gold-ore': 0, 'crystal-ore': 0 }, rushScore: 0, rushCombo: 0, rushLastMineAt: 0,
+    farmRushCells: {}, farmRushTool: 'wheat', farmRushInventory: { wheat: 0, tomato: 0, lettuce: 0, pumpkin: 0, watermelon: 0, apple: 99, orange: 99, truffle: 99 }, farmRushOrders: [], farmRushIssued: 0, farmRushCooking: [], farmRushScore: 0,
+    forageRushCollected: {}, forageRushInventory: { apple: 0, orange: 0, truffle: 0, discovery: 0 }, forageRushProgress: { apple: 0, orange: 0, truffle: 0, discovery: 0 }, forageRushDelivered: { apple: false, orange: false, truffle: false, discovery: false }, forageRushScore: 0,
   })
 }
 
@@ -54,6 +124,7 @@ useGameStore.setState({ eventBay: 0 })
 useGameStore.getState().mineRushNode('RushOre0_00')
 const firstMine = useGameStore.getState()
 assert(firstMine.rushScore > 0, 'mining awards points')
+assert.equal(Object.values(firstMine.rushInventory).reduce((sum, quantity) => sum + quantity, 0), 1, 'mined event ore appears in the temporary inventory')
 assert.equal(firstMine.inventory['copper-ore'] ?? 0, 0, 'event ore never enters permanent inventory')
 const scoreDuringRespawn = firstMine.rushScore
 useGameStore.getState().mineRushNode('RushOre0_00')
@@ -61,8 +132,10 @@ assert.equal(useGameStore.getState().rushScore, scoreDuringRespawn, 'depleted no
 useGameStore.setState((state) => ({ rushNodes: { ...state.rushNodes, RushOre0_00: { ...state.rushNodes.RushOre0_00, readyAt: 0 } } }))
 useGameStore.getState().mineRushNode('RushOre0_00')
 assert.equal(useGameStore.getState().rushCombo, 2, 'continuous mining advances combo')
+useGameStore.setState({ enhancementOpen: true })
 useGameStore.getState().finishMinigame(useGameStore.getState().rushScore, 3, 10_000_000)
-assert.deepEqual(useGameStore.getState().hotbar, permanentHotbar, 'mining restores the exact hotbar')
+assert.equal(useGameStore.getState().enhancementOpen, false, 'event exit cannot reopen a stale enhancement modal')
+assertRestoredHotbarWithRewards('mining')
 assert.equal(useGameStore.getState().selectedHotbar, 8, 'mining restores selected slot')
 assert.equal(useGameStore.getState().inventory['copper-ore'] ?? 0, 0, 'temporary mining rewards are deleted')
 const miningCashAfterReward = useGameStore.getState().cash
@@ -83,38 +156,92 @@ const firstReadyAt = useGameStore.getState().farmRushCells[cell]?.readyAt ?? 0
 assert(firstReadyAt > Date.now(), 'one watering starts the growth timer')
 useGameStore.getState().farmRushAction(cell)
 assert.equal(useGameStore.getState().farmRushCells[cell]?.readyAt, firstReadyAt, 'watering is not repeatedly required')
+useGameStore.getState().tickFarmRush()
+assert.equal(useGameStore.getState().farmRushOrders.length, FARM_RUSH_MAX_ORDERS, 'Kitchen Rush starts with three live orders')
+assert(useGameStore.getState().farmRushOrders.every((ticket) => ticket.expiresAt - Date.now() <= FARM_RUSH_ORDER_LIFETIME_MS), 'Kitchen Rush orders never exceed forty seconds')
+assert.equal(new Set(FARM_RUSH_RECIPE_IDS).size, 12, 'all twelve cookbook recipes are available in the event cookbook')
+assert.equal(new Set(farmRushOrders(20 * 60).map((order) => order.recipe)).size, 12, 'the repeating order sequence uses all twelve recipes')
+const firstTicket = useGameStore.getState().farmRushOrders[0]
+const firstOrder = farmRushOrders(20 * 60)[firstTicket.orderIndex]
+useGameStore.setState({ farmRushInventory: { wheat: 20, tomato: 20, lettuce: 20, pumpkin: 20, watermelon: 20, apple: 99, orange: 99, truffle: 99 } })
+useGameStore.getState().farmRushCook(firstOrder.recipe)
+assert.equal(useGameStore.getState().farmRushCooking.length, 1, 'manual cookbook selection queues one matching dish')
+assert.equal(useGameStore.getState().farmRushCooking[0].orderIndex, firstTicket.orderIndex, 'manual cookbook selection does not cook another recipe')
+useGameStore.setState((state) => ({ farmRushCooking: state.farmRushCooking.map((job) => ({ ...job, readyAt: Date.now() - 1 })) }))
+useGameStore.getState().farmRushSubmit(firstTicket.orderIndex)
+assert(useGameStore.getState().farmRushScore > 0, 'manual submit awards the dish points')
+assert.equal(useGameStore.getState().farmRushOrders.length, FARM_RUSH_MAX_ORDERS, 'submitting immediately replaces the order')
+useGameStore.setState((state) => ({
+  farmRushOrders: state.farmRushOrders.map((ticket) => ({ ...ticket, expiresAt: Date.now() - 1 })),
+  farmRushCooking: [{ orderIndex: 999, recipe: firstOrder.recipe, readyAt: Date.now() - 1 }],
+}))
+useGameStore.getState().tickFarmRush()
+assert.equal(useGameStore.getState().farmRushOrders.length, FARM_RUSH_MAX_ORDERS, 'expired orders are replaced on the next event tick')
+assert.equal(useGameStore.getState().farmRushCooking.length, 1, 'an expired order does not delete its cooked dish')
+const nextTicket = useGameStore.getState().farmRushOrders[0]
+const nextOrder = farmRushOrders(20 * 60)[nextTicket.orderIndex % farmRushOrders(20 * 60).length]
+useGameStore.setState({
+  farmRushInventory: { wheat: 20, tomato: 20, lettuce: 20, pumpkin: 20, watermelon: 20, apple: 99, orange: 99, truffle: 99 },
+  farmRushCooking: [900, 901, 902].map((orderIndex) => ({ orderIndex, recipe: firstOrder.recipe, readyAt: Date.now() - 1 })),
+})
+useGameStore.getState().farmRushCook(nextOrder.recipe)
+assert.equal(useGameStore.getState().farmRushCooking.filter((job) => job.readyAt > Date.now()).length, 1, 'prepared dishes do not occupy a furnace queue slot')
+const lateTicket = { orderIndex: 18, expiresAt: Date.now() + FARM_RUSH_ORDER_LIFETIME_MS }
+const lateOrder = farmRushOrders(20 * 60)[lateTicket.orderIndex]
+useGameStore.setState({
+  farmRushOrders: [lateTicket],
+  farmRushInventory: { wheat: 20, tomato: 20, lettuce: 20, pumpkin: 20, watermelon: 20, apple: 99, orange: 99, truffle: 99 },
+  farmRushCooking: [],
+})
+useGameStore.getState().farmRushCook(lateOrder.recipe)
+assert.equal(useGameStore.getState().farmRushCooking[0]?.orderIndex, lateTicket.orderIndex, 'later order tickets use the same recipe sequence in the HUD and reducer')
 useGameStore.getState().finishMinigame(0, 4, 10_000_000)
-assert.deepEqual(useGameStore.getState().hotbar, permanentHotbar, 'farm restores the exact hotbar')
+assertRestoredHotbarWithRewards('farm')
+assert.deepEqual(useGameStore.getState().farmRushCooking, [], 'temporary cooking jobs are deleted after the event')
 
 enter('forage')
-for (let index = 0; index < 4; index += 1) useGameStore.getState().forageRushCollect(`ForageRushApple${index}`)
-assert.equal(useGameStore.getState().forageRushInventory.apple, 12, 'four apple sites fill the delivery requirement')
+useGameStore.getState().forageRushCollect('ForageRushApple000')
+const firstAppleAmount = useGameStore.getState().forageRushInventory.apple
+useGameStore.getState().forageRushDeliver('apple')
+assert.equal(useGameStore.getState().forageRushInventory.apple, 0, 'partial delivery immediately consumes held fruit')
+assert.equal(useGameStore.getState().forageRushProgress.apple, firstAppleAmount, 'partial delivery records objective progress')
+assert.equal(useGameStore.getState().forageRushScore, Math.round(FORAGE_RUSH_DELIVERY_POINTS.apple * firstAppleAmount / FORAGE_RUSH_REQUIREMENTS.apple), 'partial delivery scores only the submitted share')
+for (let index = 1; useGameStore.getState().forageRushProgress.apple + useGameStore.getState().forageRushInventory.apple < FORAGE_RUSH_REQUIREMENTS.apple; index += 1) {
+  useGameStore.getState().forageRushCollect(`ForageRushApple${String(index).padStart(3, '0')}`)
+}
+const applesHeldBeforeFinalDelivery = useGameStore.getState().forageRushInventory.apple
 assert.equal(useGameStore.getState().inventory.apple, 4, 'event fruit remains isolated from permanent fruit')
 useGameStore.getState().forageRushDeliver('apple')
 assert.equal(useGameStore.getState().forageRushScore, 120, 'apple delivery awards points')
-assert.equal(useGameStore.getState().forageRushInventory.apple, 0, 'delivery consumes temporary fruit')
+assert.equal(useGameStore.getState().forageRushInventory.apple, Math.max(0, applesHeldBeforeFinalDelivery - (FORAGE_RUSH_REQUIREMENTS.apple - firstAppleAmount)), 'delivery consumes only the fruit needed by the objective')
 useGameStore.getState().forageRushDeliver('apple')
 assert.equal(useGameStore.getState().forageRushScore, 120, 'a delivery cannot score twice')
-for (let index = 0; index < 4; index += 1) useGameStore.getState().forageRushCollect(`ForageRushOrange${index}`)
-for (let index = 0; index < 3; index += 1) useGameStore.getState().forageRushCollect(`ForageRushTruffle${index}`)
-useGameStore.getState().forageRushCollect('ForageRushDiscovery0')
+for (let index = 0; useGameStore.getState().forageRushInventory.orange < FORAGE_RUSH_REQUIREMENTS.orange; index += 1) useGameStore.getState().forageRushCollect(`ForageRushOrange${String(index).padStart(3, '0')}`)
+for (let index = 0; index < FORAGE_RUSH_REQUIREMENTS.truffle; index += 1) useGameStore.getState().forageRushCollect(`ForageRushTruffle${String(index).padStart(3, '0')}`)
+useGameStore.getState().forageRushCollect('ForageRushDiscovery00')
 useGameStore.getState().forageRushDeliver('orange')
 useGameStore.getState().forageRushDeliver('truffle')
 useGameStore.getState().forageRushDeliver('discovery')
 assert(Object.values(useGameStore.getState().forageRushDelivered).every(Boolean), 'all four deliveries can complete')
 assert.equal(useGameStore.getState().forageRushScore, 770, 'delivery score total is stable')
 useGameStore.getState().finishMinigame(useGameStore.getState().forageRushScore, 2, 10_000_000)
-assert.deepEqual(useGameStore.getState().hotbar, permanentHotbar, 'forage restores the exact hotbar')
-assert.equal(useGameStore.getState().inventory['cookbook-box'], 1, 'earned Cookbook Box enters permanent inventory without replacing a hotbar slot')
+assertRestoredHotbarWithRewards('forage')
+const forageRewardItems = useGameStore.getState().lastMinigameResult?.items ?? {}
+assert(Object.values(forageRewardItems).some((quantity) => Number(quantity) > 0), 'placed player receives a deterministic item reward')
+for (const [itemId, quantity] of Object.entries(forageRewardItems)) assert.equal(useGameStore.getState().inventory[itemId as keyof typeof ITEMS], quantity, `${itemId} reward entered permanent inventory incorrectly`)
 assert.deepEqual(useGameStore.getState().forageRushInventory, { apple: 0, orange: 0, truffle: 0, discovery: 0 }, 'temporary forage inventory is deleted')
 assert.equal(useGameStore.getState().inventory.apple, 4, 'permanent forage inventory is untouched')
 
 const rareSites = ['ForageRushTruffle000', 'ForageRushTruffle001', 'ForageRushTruffle020', 'ForageRushTruffle021', 'ForageRushDiscovery00', 'ForageRushDiscovery01', 'ForageRushDiscovery10']
-const firstRareRoll = activeRareForageIds(rareSites, true, 77, 0, 1_000)
-const secondRareRoll = activeRareForageIds(rareSites, true, 77, 0, 35_000)
-assert.equal([...firstRareRoll].filter((id) => id.startsWith('ForageRushTruffle')).length, 2, 'race keeps two rotating truffle opportunities active')
-assert.equal([...firstRareRoll].filter((id) => id.startsWith('ForageRushDiscovery')).length, 1, 'race keeps one rotating fossil opportunity active')
-assert.notDeepEqual([...firstRareRoll].sort(), [...secondRareRoll].sort(), 'rare event locations rotate between timed rolls')
+const firstRareRoll = activeRareForageIds(rareSites, true, 77, 0, 1_000, 2, 20 * 60)
+const secondRareRoll = activeRareForageIds(rareSites, true, 77, 0, 35_000, 2, 20 * 60)
+const replacementRareRoll = activeRareForageIds(rareSites, true, 77, 0, 35_000, 2, 20 * 60 + 1)
+assert.equal([...firstRareRoll].filter((id) => id.startsWith('ForageRushTruffle')).length, 3, 'two-player race keeps three truffle opportunities active')
+assert.equal([...firstRareRoll].filter((id) => id.startsWith('ForageRushDiscovery')).length, 1, 'two-player race keeps one fossil opportunity active')
+assert.deepEqual([...firstRareRoll].sort(), [...secondRareRoll].sort(), 'a visible rare roll is not changed by the wall clock')
+assert.notDeepEqual([...firstRareRoll].sort(), [...replacementRareRoll].sort(), 'advancing the server-owned spawn generation can choose new rare locations')
+const crowdedRareRoll = activeRareForageIds(rareSites, true, 77, 0, 35_000, 6, 20 * 60)
+assert.equal([...crowdedRareRoll].filter((id) => id.startsWith('ForageRushTruffle')).length, 4, 'rare opportunities scale up to the available sites for a crowded race')
 
 const rareCollectedAt = Date.now()
 useGameStore.setState({ minigameOpen: false, matchStartedAt: rareCollectedAt - 1_000, inventory: { ...permanentInventory }, collectedForage: {} })
@@ -125,13 +252,19 @@ for (const seed of [7, 77, 777, 7777]) {
   assert.notEqual(scheduledMinigame(20 * 60, seed), scheduledMinigame(40 * 60, seed), 'a session must schedule two different minigames')
 }
 assert.deepEqual(minigameRewardPackage(10_000_000, 0), { budget: 0, boxes: 0, cash: 0 }, 'leaving an event awards nothing')
-assert.equal(minigameRewardPackage(10_000_000, 1).cash, 0, 'first-place Cookbook Boxes consume the full 1.2M early reward budget')
+assert.equal(minigameRewardPackage(10_000_000, 1).cash, 1_500_000, 'first-place cash remains independent from item rewards')
+
+useGameStore.setState({ minigamesCompleted: [20 * 60, 40 * 60], sessionComplete: true })
+const persistedSession = JSON.parse(memory.get('project01-save-v12') ?? '{}') as { minigamesCompleted?: number[]; sessionComplete?: boolean }
+assert.deepEqual(persistedSession.minigamesCompleted, [20 * 60, 40 * 60], 'completed event milestones persist across reloads')
+assert.equal(persistedSession.sessionComplete, true, 'final session completion persists across reloads')
+useGameStore.setState({ sessionComplete: false })
 
 useGameStore.setState({ inventory: { 'cookbook-box': 1 }, hotbar: Array(9).fill(null), knownRecipes: [] })
 useGameStore.getState().useCookbookBox()
 const unlockedRecipe = useGameStore.getState().knownRecipes[0]
 const { RECIPES } = await import('../src/game/recipes')
-assert.equal(RECIPES[unlockedRecipe].group, 'early', 'the first Cookbook Box cannot unlock a late recipe')
+assert.equal(RECIPES[unlockedRecipe].group, 'early', 'the first Recipe Box cannot unlock a late recipe')
 
 useGameStore.setState({ cash: 100_000_000, lotteryTickets: [], lotteryDraft: [] })
 for (let ticket = 0; ticket < 10; ticket += 1) {
@@ -139,6 +272,23 @@ for (let ticket = 0; ticket < 10; ticket += 1) {
   useGameStore.getState().buyLotteryTicket()
 }
 assert.equal(useGameStore.getState().lotteryTickets.length, 10, 'active lottery tickets are never discarded by the UI history cap')
+
+const uniqueEquipment = [
+  ['iron-pickaxe', 'mine'], ['steel-pickaxe', 'mine'], ['crystal-pickaxe', 'mine'],
+  ['basket', 'forage'], ['reinforced-basket', 'forage'], ['master-basket', 'forage'], ['harvest-charm', 'farm'],
+] as const
+for (const [item, shopKind] of uniqueEquipment) {
+  const price = ITEMS[item].buyPrice ?? 0
+  useGameStore.setState({ cash: 100_000_000, inventory: {}, hotbar: Array(9).fill(null), shopKind, enhancements: {}, shopStock: { ...useGameStore.getState().shopStock, [item]: 8 } })
+  useGameStore.getState().trade(item, 10)
+  assert.equal(useGameStore.getState().inventory[item], 1, `${item} purchase limit must be one per player`)
+  assert.equal(useGameStore.getState().cash, 100_000_000 - price, `${item} charges for exactly one tool`)
+  assert.equal(useGameStore.getState().enhancements[item], 0, `${item} starts at +0`)
+  const cashAfterFirst = useGameStore.getState().cash
+  useGameStore.getState().trade(item, 1)
+  assert.equal(useGameStore.getState().inventory[item], 1, `${item} cannot be duplicated`)
+  assert.equal(useGameStore.getState().cash, cashAfterFirst, `${item} duplicate attempt cannot charge coins`)
+}
 
 useGameStore.setState({
   sessionSeed: 445566,
@@ -150,5 +300,10 @@ const persisted = JSON.parse(memory.get('project01-save-v12') ?? '{}')
 assert.equal(persisted.sessionSeed, 445566, 'session seed persists across reloads')
 assert.equal(persisted.stockPrices.google, 444, 'stock state persists across reloads')
 assert.deepEqual(persisted.marketCorrectionsApplied, [1, 2], 'market corrections persist across reloads')
+
+useGameStore.setState({ roundSeconds: 1, restockSeconds: 1, commodityPriceHistory: { apple: [10, 20, 30, 40, 50] } })
+useGameStore.getState().tickGame()
+assert.equal(useGameStore.getState().commodityPriceHistory.apple?.length, 5, 'commodity sell history is capped at five cycle prices')
+assert.notEqual(useGameStore.getState().commodityPriceHistory.apple?.at(-1), 50, 'a new commodity cycle appends the latest sell price')
 
 console.log('Minigames: mining hold result/respawn/combo, one-water farm growth, forage rotation/collection/delivery, isolation, restoration, and idempotent rewards passed.')
