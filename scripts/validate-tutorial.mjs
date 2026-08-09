@@ -74,7 +74,7 @@ try {
     if (!Object.values(histories.stockHistory).every((history) => history.length === 1)) throw new Error('Fresh stock history is fabricated');
     if (!Object.values(histories.commodityPriceHistory).every((history) => history.length === 1)) throw new Error('Fresh commodity history is fabricated');
     store.getState().startTutorial();
-    if (!store.getState().tutorialActive || store.getState().cash !== 3000000) throw new Error('Tutorial did not isolate state');
+    if (!store.getState().tutorialActive || store.getState().cash !== 8000000) throw new Error('Tutorial did not isolate state');
     await new Promise((resolve) => setTimeout(resolve, 120));
     const controlText = document.querySelector('.tutorial-controls')?.textContent || '';
     if (!['MOVE', 'LOOK', 'SPRINT', 'JUMP', 'CAMERA LOCK', 'INVENTORY'].every((label) => controlText.includes(label))) throw new Error('Control reference does not explain every key');
@@ -85,6 +85,9 @@ try {
     if (!await waitForAnchor('NpcShop')) throw new Error('Same-zone tutorial transition erased the shop NPC anchor');
     if (document.querySelector('.tutorial-world-marker')?.textContent?.trim() !== 'GENERAL SHOP') throw new Error('Shop tutorial marker is not destination-specific');
     store.getState().setShopOpen(true, 'common');
+    store.getState().trade('farm-deed', 1);
+    if ((store.getState().inventory['farm-deed'] || 0) !== 1 || store.getState().personalDeedAvailable) throw new Error('Tutorial personal deed purchase failed');
+    if (!store.getState().hotbar.includes('farm-deed')) throw new Error('Tutorial deed skipped hotbar row');
     store.getState().trade('cookbook-box', 1);
     if ((store.getState().inventory['cookbook-box'] || 0) !== 1) throw new Error('Tutorial shop purchase failed');
     if (!store.getState().hotbar.includes('cookbook-box')) throw new Error('Tutorial shop purchase skipped hotbar row');
@@ -105,18 +108,31 @@ try {
     if ((store.getState().inventory['copper-ore'] || 0) !== 0) throw new Error('Tutorial ore sale failed');
 
     store.getState().setTutorialStep(4);
+    store.getState().setShopOpen(true, 'forage');
+    store.getState().trade('basket', 1);
+    if ((store.getState().inventory.basket || 0) !== 1) throw new Error('Tutorial basket purchase failed');
     store.getState().collectForage('ForageAppleTutorial', 'apple');
     const apples = store.getState().inventory.apple || 0;
     if (apples < 1) throw new Error('Tutorial forage failed');
     if (!store.getState().hotbar.includes('apple')) throw new Error('Foraged item skipped hotbar row');
     store.getState().setShopOpen(true, 'forage-sell');
-    store.getState().trade('apple', -apples);
-    if ((store.getState().inventory.apple || 0) !== 0) throw new Error('Tutorial forage sale failed');
+    store.getState().trade('apple', -1);
+    if ((store.getState().inventory.apple || 0) !== apples - 1) throw new Error('Tutorial forage sale failed');
 
     store.getState().setTutorialStep(5);
+    store.getState().claimFarm(0);
+    if (!store.getState().claimedFarms.includes(0) || (store.getState().inventory['farm-deed'] || 0) !== 0) throw new Error('Tutorial farm claim did not use the purchased deed');
+    store.getState().setShopOpen(true, 'farm');
+    store.getState().trade('wheat-seeds', 4);
+    store.getState().trade('water-can', 1);
+    store.getState().trade('furnace', 1);
+    if ((store.getState().inventory['wheat-seeds'] || 0) < 1 || (store.getState().inventory['water-can'] || 0) !== 1 || (store.getState().inventory.furnace || 0) !== 1) throw new Error('Tutorial farm setup purchases failed');
+
+    store.getState().setTutorialStep(6);
+    store.getState().setSelectedHotbar(store.getState().hotbar.indexOf('wheat-seeds'));
     store.getState().farmAction(0, 0);
     if (store.getState().farmCells['0:0']?.stage !== 'planted') throw new Error('Tutorial planting skipped the required watering step');
-    store.getState().setSelectedHotbar(1);
+    store.getState().setSelectedHotbar(store.getState().hotbar.indexOf('water-can'));
     store.getState().farmAction(0, 0);
     const planted = store.getState().farmCells['0:0'];
     if (planted?.stage !== 'watered' || planted.readyAt - Date.now() > 4100) throw new Error('Tutorial crop timer was not accelerated');
@@ -135,7 +151,7 @@ try {
     if (store.getState().stats.harvested < 1) throw new Error('Tutorial harvest failed');
     if (!store.getState().hotbar.includes('wheat')) throw new Error('Harvested crop skipped hotbar row');
 
-    store.getState().setTutorialStep(6);
+    store.getState().setTutorialStep(7);
     store.getState().setCookbookOpen(true, 0);
     store.getState().cookRecipe('apple-bread', 1);
     if (!store.getState().cookQueue.length || store.getState().cookQueue[0].readyAt - Date.now() > 3100) throw new Error('Tutorial cooking timer was not accelerated');
@@ -150,22 +166,23 @@ try {
     const collectedOnce = store.getState().inventory['food-apple-bread'] || 0;
     store.getState().collectCooked('apple-bread');
     if ((store.getState().inventory['food-apple-bread'] || 0) !== collectedOnce) throw new Error('Finished dish could be collected twice');
+    store.getState().setTutorialStep(8);
     store.getState().sellFood('apple-bread', 1);
     if ((store.getState().inventory['food-apple-bread'] || 0) !== 0) throw new Error('Tutorial food sale failed');
 
-    store.getState().setTutorialStep(7);
     store.getState().setShopOpen(true, 'food');
     await new Promise((resolve) => setTimeout(resolve, 700));
     if ((store.getState().foodPriceHistory['apple-bread'] || []).length !== 2) throw new Error('Tutorial market did not demonstrate an actual price change');
 
-    store.getState().setTutorialStep(8);
+    store.getState().setTutorialStep(9);
     store.getState().setStockOpen(true);
     await new Promise((resolve) => setTimeout(resolve, 700));
     if (store.getState().stockHistory.apple.length !== 2) throw new Error('Tutorial stock screen did not demonstrate an immediate price change');
 
-    store.getState().setTutorialStep(9);
+    store.getState().setTutorialStep(10);
     store.getState().enhanceEquipment('worn-pickaxe');
     if ((store.getState().enhancements['worn-pickaxe'] || 0) !== 1) throw new Error('Guaranteed tutorial upgrade failed');
+    for (const step of [11, 12, 13, 14]) store.getState().setTutorialStep(step);
     const midSave = localStorage.getItem('project01-save-v12');
     if (midSave !== initialSave) throw new Error('Tutorial state leaked into durable save');
 
@@ -176,7 +193,7 @@ try {
   assert(!result.active, 'Tutorial remained active after completion')
   assert(result.ready, 'Tutorial completion did not ready the player')
   assert(JSON.stringify(result.initial) === JSON.stringify(result.restored), 'Tutorial did not restore the original state exactly')
-  console.log('Tutorial validation passed: movable control reference, real recipe and tool progression, explicit mine/forage/farm/cook actions, required watering, manual furnace collection, immediate market demonstrations, row-one acquisition, guaranteed upgrade, save protection, and exact restoration.')
+  console.log('Tutorial validation passed: real deed/recipe/tool purchases, explicit mine/forage/farm/cook actions, required watering, manual furnace collection, immediate market demonstrations, row-one acquisition, guaranteed upgrade, save protection, and exact restoration.')
 } finally {
   socket.close()
   chrome.kill()

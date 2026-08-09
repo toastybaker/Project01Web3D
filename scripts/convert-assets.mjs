@@ -63,13 +63,32 @@ async function merchantBaseColor(source) {
   return sharp(recolored, { raw: info }).png({ compressionLevel: 9 }).toBuffer()
 }
 
-async function patchRanger(filename, colorFilename, merchant = false) {
+async function shopkeeperBaseColor(source) {
+  const { data, info } = await sharp(source).resize(1024, 1024).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+  const recolored = Buffer.from(data)
+  for (let index = 0; index < recolored.length; index += 4) {
+    const red = recolored[index]
+    const green = recolored[index + 1]
+    const blue = recolored[index + 2]
+    // Keep skin, leather, fur, and metal intact. The ranger cloth becomes a
+    // clear sage-green uniform so shopkeepers cannot be mistaken for players.
+    if (red > 12 && green / red > .72 && blue / Math.max(1, green) < .58) {
+      const value = Math.max(18, Math.round(red * .46 + green * .46 + blue * .08))
+      recolored[index] = Math.min(255, Math.round(value * .42))
+      recolored[index + 1] = Math.min(255, Math.round(value * 1.08))
+      recolored[index + 2] = Math.min(255, Math.round(value * .62))
+    }
+  }
+  return sharp(recolored, { raw: info }).png({ compressionLevel: 9 }).toBuffer()
+}
+
+async function patchRanger(filename, colorFilename, variant = 'player') {
   const rangerPath = path.join(out, 'characters', filename)
   const ranger = await io.read(rangerPath)
   const colorSource = await readFile(path.join(root, 'source-assets/3d/characters/textures', colorFilename))
   const baseColor = ranger
     .createTexture('Ranger Base Color')
-    .setImage(merchant ? await merchantBaseColor(colorSource) : await sharp(colorSource).resize(1024, 1024).png({ compressionLevel: 9 }).toBuffer())
+    .setImage(variant === 'merchant' ? await merchantBaseColor(colorSource) : variant === 'shopkeeper' ? await shopkeeperBaseColor(colorSource) : await sharp(colorSource).resize(1024, 1024).png({ compressionLevel: 9 }).toBuffer())
     .setMimeType('image/png')
   const normal = ranger
     .createTexture('Ranger Normal')
@@ -94,6 +113,6 @@ async function patchRanger(filename, colorFilename, merchant = false) {
 await patchCropMaterial('tomato_4.glb', 'Red', [0.72, 0.075, 0.018, 1])
 await patchCropMaterial('tomato_crop.glb', 'Red', [0.72, 0.075, 0.018, 1])
 await patchRanger('ranger.glb', 'T_Ranger_BaseColor.png')
-await patchRanger('shopkeeper.glb', 'T_Ranger_3_BaseColor.png')
-await patchRanger('merchant.glb', 'T_Ranger_3_BaseColor.png', true)
+await patchRanger('shopkeeper.glb', 'T_Ranger_3_BaseColor.png', 'shopkeeper')
+await patchRanger('merchant.glb', 'T_Ranger_3_BaseColor.png', 'merchant')
 console.log('Converted Ranger and representative crop stages to GLB with web-ready PBR materials.')

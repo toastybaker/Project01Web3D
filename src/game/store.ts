@@ -705,21 +705,21 @@ function tutorialStepState(step: number, state: GameState): Partial<GameState> {
     return { ...common, zone: 'mine', teleportNonce: state.teleportNonce + 1, anchors: {}, colliders: [], playerPosition: SPAWNS.mine, cash: Math.max(state.cash, PICKAXE_CONFIG['worn-pickaxe'].price + 100_000) }
   }
   if (step === 4) {
-    const inventory = { ...state.inventory, basket: 1 }
-    return { ...common, zone: 'forage', teleportNonce: state.teleportNonce + 1, anchors: {}, colliders: [], playerPosition: SPAWNS.forage, inventory, hotbar: hotbarWithInventoryDelta(state.hotbar, state.inventory, inventory, 'basket') }
+    return { ...common, zone: 'forage', teleportNonce: state.teleportNonce + 1, anchors: {}, colliders: [], playerPosition: SPAWNS.forage }
   }
   if (step === 5) {
-    const inventory = { ...state.inventory, 'wheat-seeds': 4, 'water-can': 1, furnace: 1 }
-    const hotbar = cleanedHotbar(['wheat-seeds', 'water-can', ...state.hotbar], inventory)
-    return { ...common, zone: 'farm', teleportNonce: state.teleportNonce + 1, anchors: {}, colliders: [], playerPosition: [-44, 0, -5], inventory, hotbar, selectedHotbar: 0, claimedFarms: [0], farmCells: {}, weather: 'clear', weatherSeconds: MATCH_CONFIG.worldCycleSeconds }
+    return { ...common, zone: 'farm', teleportNonce: state.teleportNonce + 1, anchors: {}, colliders: [], playerPosition: SPAWNS.farm, weather: 'clear', weatherSeconds: MATCH_CONFIG.worldCycleSeconds }
   }
   if (step === 6) {
-    const inventory = { ...state.inventory, furnace: 1, apple: Math.max(2, state.inventory.apple ?? 0), wheat: Math.max(2, state.inventory.wheat ?? 0) }
-    return { ...common, zone: 'farm', teleportNonce: state.zone === 'farm' ? state.teleportNonce : state.teleportNonce + 1, anchors: state.zone === 'farm' ? state.anchors : {}, colliders: state.zone === 'farm' ? state.colliders : [], playerPosition: state.zone === 'farm' ? state.playerPosition : SPAWNS.farm, inventory, hotbar: hotbarWithInventoryDelta(state.hotbar, state.inventory, inventory, 'apple'), claimedFarms: [0], knownRecipes: state.knownRecipes.includes('apple-bread') ? state.knownRecipes : [...state.knownRecipes, 'apple-bread'] }
+    return { ...common, zone: 'farm', teleportNonce: state.zone === 'farm' ? state.teleportNonce : state.teleportNonce + 1, anchors: state.zone === 'farm' ? state.anchors : {}, colliders: state.zone === 'farm' ? state.colliders : [], playerPosition: state.zone === 'farm' ? state.playerPosition : SPAWNS.farm, selectedHotbar: Math.max(0, state.hotbar.indexOf('wheat-seeds')) }
   }
-  if (step === 7) return { ...common, zone: 'farm', teleportNonce: state.zone === 'farm' ? state.teleportNonce : state.teleportNonce + 1, anchors: state.zone === 'farm' ? state.anchors : {}, colliders: state.zone === 'farm' ? state.colliders : [], playerPosition: state.zone === 'farm' ? state.playerPosition : SPAWNS.farm }
-  if (step === 8) return { ...common, zone: 'hub', teleportNonce: state.teleportNonce + 1, anchors: {}, colliders: [], playerPosition: SPAWNS.hub, cash: Math.max(state.cash, 3_000_000) }
-  if (step === 9) {
+  if (step === 7) {
+    const inventory = { ...state.inventory, apple: Math.max(2, state.inventory.apple ?? 0), wheat: Math.max(2, state.inventory.wheat ?? 0) }
+    return { ...common, zone: 'farm', teleportNonce: state.zone === 'farm' ? state.teleportNonce : state.teleportNonce + 1, anchors: state.zone === 'farm' ? state.anchors : {}, colliders: state.zone === 'farm' ? state.colliders : [], playerPosition: state.zone === 'farm' ? state.playerPosition : SPAWNS.farm, inventory, hotbar: hotbarWithInventoryDelta(state.hotbar, state.inventory, inventory, 'wheat') }
+  }
+  if (step === 8) return { ...common, zone: 'farm', teleportNonce: state.zone === 'farm' ? state.teleportNonce : state.teleportNonce + 1, anchors: state.zone === 'farm' ? state.anchors : {}, colliders: state.zone === 'farm' ? state.colliders : [], playerPosition: state.zone === 'farm' ? state.playerPosition : SPAWNS.farm }
+  if (step === 9) return { ...common, zone: 'hub', teleportNonce: state.teleportNonce + 1, anchors: {}, colliders: [], playerPosition: SPAWNS.hub, cash: Math.max(state.cash, 3_000_000) }
+  if (step === 10) {
     const requirements = enhancementRequirements('worn-pickaxe', 1)
     // Tutorial-only copies let the real upgrade panel compare each progression
     // path. The tutorial snapshot restores the player's real inventory later.
@@ -935,7 +935,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       anchors: {},
       colliders: [],
       playerPosition: SPAWNS.hub,
-      cash: 3_000_000,
+      cash: 8_000_000,
       inventory,
       hotbar: [null, null, null, null, null, null, null, null, 'home-charm'],
       inventoryOrder: [...initialOrder],
@@ -962,6 +962,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       farmOwners: {},
       sharedFarmCells: {},
       sharedDeedOnline: false,
+      personalDeedAvailable: true,
+      globalDeedsRemaining: 2,
       sharedForageOnline: false,
       sharedForageAvailability: {},
       sharedMarketOnline: false,
@@ -972,11 +974,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       enhancementOpen: false,
       prompt: null,
       interactionProgress: 0,
+      shopStock: { ...state.shopStock, 'farm-deed': 1 },
     })
   },
   setTutorialStep: (requestedStep) => set((state) => {
     if (!state.tutorialActive) return state
-    const step = Math.max(1, Math.min(13, Math.floor(requestedStep)))
+    const step = Math.max(1, Math.min(14, Math.floor(requestedStep)))
     return tutorialStepState(step, state)
   }),
   completeGuide: () => {
@@ -1032,6 +1035,25 @@ export const useGameStore = create<GameState>((set, get) => ({
         if (sendMultiplayer('deed:purchase', { requestId, kind: personal ? 'personal' : 'global', quantity: affordable })) return set({ deedPurchasePending: true })
         pendingDeedPurchases.delete(requestId)
         return set({ toast: 'Shop unavailable' })
+      }
+      if (item === 'farm-deed' || item === 'shared-farm-deed') {
+        const personal = item === 'farm-deed'
+        if (!personal && state.personalDeedAvailable) return set({ toast: 'Buy personal deed first' })
+        const available = personal ? (state.personalDeedAvailable ? 1 : 0) : state.globalDeedsRemaining
+        const wanted = Math.min(quantity, available)
+        if (!wanted) return set({ toast: personal ? 'Already owned' : 'Sold out' })
+        const affordable = Math.min(wanted, Math.floor(state.cash / definition.buyPrice))
+        if (!affordable) return set({ toast: 'Not enough coins' })
+        const deedInventory = { ...state.inventory, 'farm-deed': (state.inventory['farm-deed'] ?? 0) + affordable }
+        return set({
+          cash: state.cash - definition.buyPrice * affordable,
+          inventory: deedInventory,
+          hotbar: hotbarWithNewItem(state.hotbar, state.inventory, 'farm-deed'),
+          personalDeedAvailable: personal ? false : state.personalDeedAvailable,
+          globalDeedsRemaining: personal ? state.globalDeedsRemaining : Math.max(0, state.globalDeedsRemaining - affordable),
+          shopStock: personal ? { ...state.shopStock, 'farm-deed': 0 } : state.shopStock,
+          toast: `+${affordable} ${definition.name}`,
+        })
       }
       const available = definition.limited ? state.shopStock[item] ?? 0 : quantity
       const bought = Math.min(quantity, available)

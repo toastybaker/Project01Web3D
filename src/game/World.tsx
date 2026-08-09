@@ -32,19 +32,25 @@ const EMPTY_RESOURCE_IDS = new Set<string>()
 const livePlayerPosition = new THREE.Vector3(0, 0.86, 14)
 const HELD_PICKAXES = new Set<ItemId>(['worn-pickaxe', 'iron-pickaxe', 'steel-pickaxe', 'crystal-pickaxe'])
 type HeldPickaxeId = 'worn-pickaxe' | 'iron-pickaxe' | 'steel-pickaxe' | 'crystal-pickaxe'
-const MINING_LOWER_BODY_TRACKS = ['pelvis', 'thigh_l', 'thigh_r', 'calf_l', 'calf_r', 'foot_l', 'foot_r', 'ball_l', 'ball_r']
+const MINING_STABLE_TRACKS = ['pelvis', 'thigh_l', 'thigh_r', 'calf_l', 'calf_r', 'foot_l', 'foot_r', 'ball_l', 'ball_r', 'hand_l', 'hand_r']
 
 function characterAnimationClips(standard: THREE.AnimationClip[], tools: THREE.AnimationClip[]) {
+  const idle = standard.find((clip) => clip.name === 'Armature|Idle_Loop')
   return [
     ...standard,
     ...tools.map((clip) => {
       if (clip.name !== 'TreeChopping_Loop') return clip
-      const upperBody = clip.clone()
-      // Mining should torque the shoulders and torso without the exaggerated
-      // tree-chopping lunge. The neutral lower body keeps the interaction
-      // planted beside an ore and reads much closer to a game pickaxe swing.
-      upperBody.tracks = upperBody.tracks.filter((track) => !MINING_LOWER_BODY_TRACKS.some((bone) => track.name.includes(bone)))
-      return upperBody
+      const mining = clip.clone()
+      // Keep the authored shoulder/torso swing, but use the established idle
+      // stance and closed hands. An upper-body-only clip leaves unkeyed bones
+      // in bind pose, which was why the feet snapped together and the grip
+      // appeared to open while mining.
+      const swingTracks = mining.tracks.filter((track) => !MINING_STABLE_TRACKS.some((bone) => track.name.includes(bone)))
+      const stableTracks = idle?.tracks
+        .filter((track) => MINING_STABLE_TRACKS.some((bone) => track.name.includes(bone)))
+        .map((track) => track.clone()) ?? []
+      mining.tracks = [...swingTracks, ...stableTracks]
+      return mining
     }),
   ]
 }
@@ -182,18 +188,20 @@ function forageGroundHeight(x: number, z: number) {
 
 function farmGroundHeight(x: number, z: number) {
   const raw = Math.sin(x * 0.045) * 0.48 + Math.cos(z * 0.052) * 0.38 + Math.sin((x - z) * 0.085) * 0.15
-  let height = raw
-  farmParcels.forEach(([cx, cz], index) => {
-    const distance = Math.max(Math.abs(x - cx), Math.abs(z - cz))
-    const influence = 1 - smoothstep(8.2, 12.5, distance)
-    const terrace = Math.sin(cx * 0.045) * 0.48 + Math.cos(cz * 0.052) * 0.38 + (index > 3 ? -0.08 : 0.08)
-    height = THREE.MathUtils.lerp(height, terrace, influence)
-  })
   const westBank = Math.exp(-((x + 86) ** 2) / 260) * 5.5
   const eastBank = Math.exp(-((x - 88) ** 2) / 300) * 5.8
   const farBank = smoothstep(78, 108, -z) * 5.2
   const entryBank = smoothstep(55, 92, z) * 3.8
-  return height + westBank + eastBank + farBank + entryBank
+  let height = raw + westBank + eastBank + farBank + entryBank
+  farmParcels.forEach(([cx, cz], index) => {
+    const distance = Math.max(Math.abs(x - cx), Math.abs(z - cz))
+    const influence = 1 - smoothstep(8.2, 12.5, distance)
+    const terrace = Math.sin(cx * 0.045) * 0.48 + Math.cos(cz * 0.052) * 0.38 + Math.sin((cx - cz) * 0.085) * 0.15
+      + Math.exp(-((cx + 86) ** 2) / 260) * 5.5 + Math.exp(-((cx - 88) ** 2) / 300) * 5.8
+      + smoothstep(78, 108, -cz) * 5.2 + smoothstep(55, 92, cz) * 3.8 + (index > 3 ? -0.08 : 0.08)
+    height = THREE.MathUtils.lerp(height, terrace, influence)
+  })
+  return height
 }
 
 function hubGroundHeight(x: number, z: number) {
@@ -1267,11 +1275,10 @@ function HeldPickaxeAttachment({ character, item }: { character: THREE.Object3D;
   // Keep this socket fixed: the animated hand supplies the entire swing, so
   // the pickaxe cannot lag behind or appear to move independently.
   const gripRotation = useMemo(() => {
-    const lean = new THREE.Quaternion().setFromEuler(new THREE.Euler(-.5, .4, pickaxeTiltVisualTest ?? .3, 'YXZ'))
-    // The imported right-hand bone points its local Y axis toward the ground.
-    // Reverse the tool around its grip so the pick head rises above the fist,
-    // then retain the forward lean instead of hanging like a hammer.
-    return lean.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI))
+    // The model's grip is below its head on local Y. Keep that authored axis
+    // intact, then lean the handle forward across the palm; reversing it put
+    // the head against the torso and made the handle appear to be held upside down.
+    return new THREE.Quaternion().setFromEuler(new THREE.Euler(-.5, .4, pickaxeTiltVisualTest ?? -1.16, 'YXZ'))
   }, [])
   const gripOffset = useMemo(() => new THREE.Vector3(-.008, -.34, 0), [])
   const toolScale = .58
@@ -1340,8 +1347,9 @@ function HeldPickaxeAttachment({ character, item }: { character: THREE.Object3D;
 function HeldSpriteAttachment({ character, item }: { character: THREE.Object3D; item: Exclude<ItemId, HeldPickaxeId> | null }) {
   const equipped = useRef<THREE.Group | null>(null)
   const displayRotation = useMemo(() => {
-    const lean = new THREE.Quaternion().setFromEuler(new THREE.Euler(-.34, .7, -.2, 'YXZ'))
-    return lean.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI))
+    // Flat inventory art is held like a card/tool in the palm: angled upward
+    // and forward, rather than hanging face-down along the forearm.
+    return new THREE.Quaternion().setFromEuler(new THREE.Euler(-.62, .46, .72, 'YXZ'))
   }, [])
   useFrame(() => {
     equipped.current?.quaternion.copy(displayRotation)
@@ -1359,8 +1367,7 @@ function HeldSpriteAttachment({ character, item }: { character: THREE.Object3D; 
     const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, alphaTest: .08, depthWrite: false, side: THREE.DoubleSide, toneMapped: false })
     const display = new THREE.Mesh(geometry, material)
     display.scale.set(1 / Math.max(.001, handScale.x), 1 / Math.max(.001, handScale.y), 1 / Math.max(.001, handScale.z))
-    display.position.y = .15 * display.scale.y
-    display.rotation.z = Math.PI
+    display.position.set(.02 * display.scale.x, .19 * display.scale.y, -.04 * display.scale.z)
     const socket = new THREE.Group()
     socket.name = `Equipped ${ITEMS[item].name}`
     socket.quaternion.copy(displayRotation)
@@ -1639,6 +1646,7 @@ function Player() {
   const yaw = useRef(frontVisualTest || closeVisualTest ? Math.PI : 0)
   const pitch = useRef(0.08)
   const shiftLock = useRef(false)
+  const rightDragging = useRef(false)
   const distance = useRef(closeVisualTest ? 3.25 : 6.2)
   const cameraPosition = useRef(new THREE.Vector3(0, 4.2, 20.2))
   const cameraTarget = useRef(new THREE.Vector3(0, 1.68, 14))
@@ -1675,7 +1683,7 @@ function Player() {
   const cameraSensitivity = useGameStore((state) => state.cameraSensitivity)
   const cameraInvertY = useGameStore((state) => state.cameraInvertY)
   const storedShiftLocked = useGameStore((state) => state.shiftLocked)
-  const pointerUiOpen = useGameStore((state) => state.guideOpen || state.lobbySettingsOpen || state.shopOpen || state.stockOpen || state.inventoryOpen || state.menuOpen || state.playerPanelOpen || state.lotteryOpen || state.ticketInspectOpen || state.noteInspectOpen || state.travelOpen || state.secretOpen || state.cookbookOpen || state.enhancementOpen || Boolean(state.itemUseOpen) || state.sessionComplete)
+  const pointerUiOpen = useGameStore((state) => ((state.sessionStarted || state.tutorialActive) && (state.guideOpen || state.lobbySettingsOpen)) || state.shopOpen || state.stockOpen || state.inventoryOpen || state.menuOpen || state.playerPanelOpen || state.lotteryOpen || state.ticketInspectOpen || state.noteInspectOpen || state.travelOpen || state.secretOpen || state.cookbookOpen || state.enhancementOpen || Boolean(state.itemUseOpen) || state.sessionComplete)
   const graphicsMode = useGameStore((state) => state.graphicsMode)
   const interactionProgress = useGameStore((state) => state.interactionProgress)
   const prompt = useGameStore((state) => state.prompt)
@@ -1745,7 +1753,7 @@ function Player() {
   useEffect(() => {
     const spawnKey = minigameOpen
       ? `${zone}:${teleportNonce}:${minigameKind}:${eventBay}`
-      : tutorialActive ? `${zone}:${teleportNonce}:tutorial:${tutorialStep}` : `${zone}:${teleportNonce}`
+      : tutorialActive ? `${zone}:${teleportNonce}:tutorial` : `${zone}:${teleportNonce}`
     if (spawnedZone.current === spawnKey) return
     if (minigameOpen && farmCellVisualGate && !eventFarmCell) return
     if (deepVisualGate && !anchors.GateDeep) return
@@ -1770,12 +1778,12 @@ function Player() {
     const tutorialTarget = tutorialActive
       ? tutorialStep === 2 ? (anchors.NpcShop ?? anchors.Shop)
       : tutorialStep === 3 ? (anchors.NpcMineShop ?? anchors.MineShop)
-      : tutorialStep === 4 ? anchors.ForageApple000
-      : tutorialStep === 5 ? anchors.FarmCell0_27
-      : tutorialStep === 6 ? anchors.FurnacePad0
-      : tutorialStep === 7 ? (anchors.NpcFoodBuyer ?? anchors.FoodBuyer)
-      : tutorialStep === 8 ? (anchors.NpcStocks ?? anchors.Stocks)
-      : tutorialStep === 9 ? (anchors.LabelEnhance ?? anchors.Enhance)
+      : tutorialStep === 4 ? (anchors.NpcForageShop ?? anchors.ForageShop ?? anchors.Spawn)
+      : tutorialStep === 5 ? anchors.Spawn
+      : tutorialStep === 7 ? anchors.FurnacePad0
+      : tutorialStep === 8 ? (anchors.NpcFoodBuyer ?? anchors.FoodBuyer)
+      : tutorialStep === 9 ? (anchors.NpcStocks ?? anchors.Stocks)
+      : tutorialStep === 10 ? (anchors.LabelEnhance ?? anchors.Enhance)
       : null
       : null
     const tutorialSpawn = tutorialTarget
@@ -1827,7 +1835,8 @@ function Player() {
       const live = useGameStore.getState()
       keys.current[event.code] = true
       if ((event.code === 'ShiftLeft' || event.code === 'ShiftRight') && live.sprintMode === 'toggle' && !event.repeat) sprintToggled.current = !sprintToggled.current
-      const cameraToggleLocked = live.guideOpen || live.lobbySettingsOpen || live.shopOpen || live.stockOpen || live.inventoryOpen || live.menuOpen || live.playerPanelOpen || live.lotteryOpen || live.ticketInspectOpen || live.noteInspectOpen || live.travelOpen || live.secretOpen || live.cookbookOpen || live.enhancementOpen || Boolean(live.itemUseOpen) || live.sessionComplete
+      const pregameRoam = !live.sessionStarted && !live.tutorialActive
+      const cameraToggleLocked = (!pregameRoam && (live.guideOpen || live.lobbySettingsOpen)) || live.shopOpen || live.stockOpen || live.inventoryOpen || live.menuOpen || live.playerPanelOpen || live.lotteryOpen || live.ticketInspectOpen || live.noteInspectOpen || live.travelOpen || live.secretOpen || live.cookbookOpen || live.enhancementOpen || Boolean(live.itemUseOpen) || live.sessionComplete
       if (event.code === 'KeyQ' && !event.repeat && (!cameraToggleLocked || shiftLock.current)) {
         shiftLock.current = !shiftLock.current
         setShiftLocked(shiftLock.current)
@@ -1845,7 +1854,7 @@ function Player() {
         else if (document.pointerLockElement === gl.domElement) document.exitPointerLock()
       }
       const floor = (live.minigameOpen ? minigameGroundHeight(live.minigameKind, position.current.x, position.current.z) : groundHeight(live.zone, position.current.x, position.current.z)) + 0.86
-      const jumpLocked = live.guideOpen || live.lobbySettingsOpen || (live.minigameOpen && !live.minigameActive) || live.shopOpen || live.stockOpen || live.inventoryOpen || live.menuOpen || live.playerPanelOpen || live.lotteryOpen || live.ticketInspectOpen || live.noteInspectOpen || live.travelOpen || live.secretOpen || live.cookbookOpen || live.enhancementOpen || Boolean(live.itemUseOpen) || live.sessionComplete
+      const jumpLocked = (!pregameRoam && (live.guideOpen || live.lobbySettingsOpen)) || (live.minigameOpen && !live.minigameActive) || live.shopOpen || live.stockOpen || live.inventoryOpen || live.menuOpen || live.playerPanelOpen || live.lotteryOpen || live.ticketInspectOpen || live.noteInspectOpen || live.travelOpen || live.secretOpen || live.cookbookOpen || live.enhancementOpen || Boolean(live.itemUseOpen) || live.sessionComplete
       if (event.code === 'Space' && !event.repeat && !jumpLocked && position.current.y <= floor + 0.03) {
         verticalVelocity.current = 5.2
         grounded.current = false
@@ -1855,7 +1864,7 @@ function Player() {
     const up = (event: KeyboardEvent) => { keys.current[event.code] = false }
     const clearInput = () => { keys.current = {}; sprintToggled.current = false }
     const move = (event: PointerEvent) => {
-      if (shiftLock.current || event.buttons === 2) {
+      if (shiftLock.current || rightDragging.current || event.buttons === 2) {
         // Pointer-lock transitions can report a single extreme delta. Clamp
         // that one event and keep yaw normalized so repeated full rotations
         // remain continuous instead of appearing to snap back.
@@ -1880,17 +1889,22 @@ function Player() {
       if (event.button !== 2) return
       event.preventDefault()
       const live = useGameStore.getState()
-      const blocked = live.guideOpen || live.lobbySettingsOpen || live.shopOpen || live.stockOpen || live.inventoryOpen || live.menuOpen || live.playerPanelOpen || live.lotteryOpen || live.ticketInspectOpen || live.noteInspectOpen || live.travelOpen || live.secretOpen || live.cookbookOpen || live.enhancementOpen || Boolean(live.itemUseOpen) || live.sessionComplete
+      const pregameRoam = !live.sessionStarted && !live.tutorialActive
+      const blocked = (!pregameRoam && (live.guideOpen || live.lobbySettingsOpen)) || live.shopOpen || live.stockOpen || live.inventoryOpen || live.menuOpen || live.playerPanelOpen || live.lotteryOpen || live.ticketInspectOpen || live.noteInspectOpen || live.travelOpen || live.secretOpen || live.cookbookOpen || live.enhancementOpen || Boolean(live.itemUseOpen) || live.sessionComplete
       if (blocked) return
       // Right-drag uses pointer capture so Chrome does not show its Pointer
       // Lock security banner on every camera drag. Q remains the deliberate
       // unlimited-rotation mode.
+      rightDragging.current = true
+      gl.domElement.style.cursor = 'none'
       try { gl.domElement.setPointerCapture(event.pointerId) } catch { /* Pointer capture is unavailable in some embedded browsers. */ }
     }
     const releaseRightPointer = (event: PointerEvent) => {
       if (event.button !== 2) return
+      rightDragging.current = false
       if (gl.domElement.hasPointerCapture(event.pointerId)) gl.domElement.releasePointerCapture(event.pointerId)
       if (!shiftLock.current && document.pointerLockElement === gl.domElement) document.exitPointerLock()
+      if (!shiftLock.current) gl.domElement.style.cursor = ''
     }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
@@ -1927,7 +1941,8 @@ function Player() {
 
   useFrame((state, delta) => {
     const liveUi = useGameStore.getState()
-    const movementLocked = liveUi.guideOpen || liveUi.lobbySettingsOpen || (liveUi.minigameOpen && !liveUi.minigameActive) || liveUi.shopOpen || liveUi.stockOpen || liveUi.inventoryOpen || liveUi.menuOpen || liveUi.playerPanelOpen || liveUi.lotteryOpen || liveUi.ticketInspectOpen || liveUi.noteInspectOpen || liveUi.travelOpen || liveUi.secretOpen || liveUi.cookbookOpen || liveUi.enhancementOpen || Boolean(liveUi.itemUseOpen) || liveUi.sessionComplete
+    const pregameRoam = !liveUi.sessionStarted && !liveUi.tutorialActive
+    const movementLocked = (!pregameRoam && (liveUi.guideOpen || liveUi.lobbySettingsOpen)) || (liveUi.minigameOpen && !liveUi.minigameActive) || liveUi.shopOpen || liveUi.stockOpen || liveUi.inventoryOpen || liveUi.menuOpen || liveUi.playerPanelOpen || liveUi.lotteryOpen || liveUi.ticketInspectOpen || liveUi.noteInspectOpen || liveUi.travelOpen || liveUi.secretOpen || liveUi.cookbookOpen || liveUi.enhancementOpen || Boolean(liveUi.itemUseOpen) || liveUi.sessionComplete
     if (movementLocked) {
       keys.current = {}
       sprintToggled.current = false
@@ -2320,6 +2335,10 @@ function InteractionTargeter() {
       if (heldMiningTarget && candidate.id !== previous.current) continue
       if ((anchor.startsWith('ForageTruffle') || anchor.startsWith('ForageDiscovery') || anchor.startsWith('ForageRushTruffle') || anchor.startsWith('ForageRushDiscovery')) && !activeRares.has(anchor)) continue
       if (candidate.id.startsWith('forage:') && (sharedForageOnline ? sharedForageAvailability[anchor] ?? 0 : forageSiteAvailability(anchor, collectedForage[anchor] ?? 0)) <= 0) continue
+      if (candidate.id.startsWith('forage:') && /^(Forage|ForageRush)(Apple|Orange)/.test(anchor)) {
+        const resource = scene.getObjectByName(`Resource_${anchor}`)
+        if (!resource?.visible || (Number(resource.userData.fruitAvailable) || 0) <= 0) continue
+      }
       if (candidate.id.startsWith('Mine') && (minedNodes[candidate.id] ?? 0) > Date.now()) continue
       if (candidate.id.startsWith('RushOre') && (rushNodes[candidate.id]?.readyAt ?? 0) > Date.now()) continue
       if (candidate.id.startsWith('ForageRush') && !candidate.id.startsWith('ForageRushDeliver') && (forageRushCollected[candidate.id] ?? 0) > Date.now()) continue
@@ -2448,47 +2467,60 @@ function TutorialWorldMarker() {
   const step = useGameStore((state) => state.tutorialStep)
   const anchors = useGameStore((state) => state.anchors)
   const inventory = useGameStore((state) => state.inventory)
+  const claimedFarms = useGameStore((state) => state.claimedFarms)
   const language = useGameStore((state) => state.language)
   const playerPosition = useGameStore((state) => state.playerPosition)
   const sessionSeed = useGameStore((state) => state.sessionSeed)
   const mineGenerations = useGameStore((state) => state.mineGenerations)
-  if (!active || step < 2 || step > 9) return null
+  if (!active || step < 2 || step > 10) return null
   let key: string | undefined
   if (step === 2) key = anchors.NpcShop ? 'NpcShop' : 'Shop'
-  const nearest = (ids: string[]) => ids.sort((a, b) => Math.hypot(anchors[a][0] - playerPosition[0], anchors[a][2] - playerPosition[2]) - Math.hypot(anchors[b][0] - playerPosition[0], anchors[b][2] - playerPosition[2]))[0]
+  const nearest = (ids: string[]) => ids.filter((id) => anchors[id]).sort((a, b) => Math.hypot(anchors[a][0] - playerPosition[0], anchors[a][2] - playerPosition[2]) - Math.hypot(anchors[b][0] - playerPosition[0], anchors[b][2] - playerPosition[2]))[0]
   if (step === 3) key = (inventory['worn-pickaxe'] ?? 0) <= 0
     ? (anchors.NpcMineShop ? 'NpcMineShop' : 'MineShop')
     : Object.keys(inventory).some((id) => id.endsWith('-ore') && (inventory[id as ItemId] ?? 0) > 0)
       ? (anchors.NpcOreBuyer ? 'NpcOreBuyer' : 'OreBuyer')
       : nearest(Object.keys(anchors).filter((id) => id.startsWith('MineOre') && canMineOre('worn-pickaxe', oreKindAtDepth(id, anchors[id][2], mineGenerations[id] ?? 0, sessionSeed))))
-  if (step === 4) key = (inventory.apple ?? 0) + (inventory.orange ?? 0) > 0 ? (anchors.NpcForageBuyer ? 'NpcForageBuyer' : 'ForageBuyer') : anchors.ForageApple000 ? 'ForageApple000' : nearest(Object.keys(anchors).filter((id) => id.startsWith('ForageApple') || id.startsWith('ForageOrange')))
-  if (step === 5) key = anchors.FarmCell0_27 ? 'FarmCell0_27' : Object.keys(anchors).find((id) => id.startsWith('FarmCell0_'))
-  if (step === 6) key = (inventory['food-apple-bread'] ?? 0) > 0 ? (anchors.NpcFoodBuyer ? 'NpcFoodBuyer' : 'FoodBuyer') : 'FurnacePad0'
-  if (step === 7) key = anchors.NpcFoodBuyer ? 'NpcFoodBuyer' : 'FoodBuyer'
-  if (step === 8) key = anchors.NpcStocks ? 'NpcStocks' : 'Stocks'
-  if (step === 9) key = anchors.LabelEnhance ? 'LabelEnhance' : 'Enhance'
+  if (step === 4) key = (inventory.basket ?? 0) <= 0
+    ? (anchors.NpcForageShop ? 'NpcForageShop' : 'ForageShop')
+    : (inventory.apple ?? 0) + (inventory.orange ?? 0) > 0
+      ? (anchors.NpcForageBuyer ? 'NpcForageBuyer' : 'ForageBuyer')
+      : nearest(Object.keys(anchors).filter((id) => id.startsWith('ForageApple') || id.startsWith('ForageOrange')))
+  const ownedFarm = claimedFarms[0]
+  const setupReady = (inventory['wheat-seeds'] ?? 0) > 0 && (inventory['water-can'] ?? 0) > 0 && (inventory.furnace ?? 0) > 0
+  if (step === 5) key = ownedFarm === undefined
+    ? nearest(Object.keys(anchors).filter((id) => id.startsWith('FarmClaim')))
+    : !setupReady
+      ? (anchors.NpcFarmShop ? 'NpcFarmShop' : 'FarmShop')
+      : anchors[`FarmPlot${ownedFarm}`] ? `FarmPlot${ownedFarm}` : `FarmClaim${ownedFarm}`
+  if (step === 6 && ownedFarm !== undefined) key = anchors[`FarmCell${ownedFarm}_27`] ? `FarmCell${ownedFarm}_27` : Object.keys(anchors).find((id) => id.startsWith(`FarmCell${ownedFarm}_`))
+  if (step === 7 && ownedFarm !== undefined) key = `FurnacePad${ownedFarm}`
+  if (step === 8) key = anchors.NpcFoodBuyer ? 'NpcFoodBuyer' : 'FoodBuyer'
+  if (step === 9) key = anchors.NpcStocks ? 'NpcStocks' : 'Stocks'
+  if (step === 10) key = anchors.LabelEnhance ? 'LabelEnhance' : 'Enhance'
   const point = key ? anchors[key] : null
   if (!point) return null
   const hasForage = (inventory.apple ?? 0) + (inventory.orange ?? 0) > 0
   const hasOre = Object.keys(inventory).some((id) => id.endsWith('-ore') && (inventory[id as ItemId] ?? 0) > 0)
-  const hasDish = (inventory['food-apple-bread'] ?? 0) > 0
   const label = language === 'ko'
     ? step === 2 ? '잡화점'
       : step === 3 ? ((inventory['worn-pickaxe'] ?? 0) <= 0 ? '채굴 도구' : hasOre ? '광석 판매' : '광석')
-        : step === 4 ? (hasForage ? '채집품 판매' : '사과나무')
-          : step === 5 ? '내 농장'
-            : step === 6 ? (hasDish ? '요리 판매' : '화로')
-              : step === 7 ? '요리 판매'
-                : step === 8 ? '주식'
-                  : '강화'
+        : step === 4 ? ((inventory.basket ?? 0) <= 0 ? '채집 도구' : hasForage ? '채집품 판매' : '과일나무')
+          : step === 5 ? (ownedFarm === undefined ? '빈 농장' : !setupReady ? '농장 상점' : '내 농장')
+            : step === 6 ? '내 농장'
+              : step === 7 ? '화로'
+                : step === 8 ? '요리 판매'
+                  : step === 9 ? '주식'
+                    : '강화'
     : step === 2 ? 'GENERAL SHOP'
       : step === 3 ? ((inventory['worn-pickaxe'] ?? 0) <= 0 ? 'MINING SHOP' : hasOre ? 'ORE MARKET' : 'ORE')
-        : step === 4 ? (hasForage ? 'FORAGE MARKET' : 'APPLE TREE')
-          : step === 5 ? 'YOUR FARM'
-            : step === 6 ? (hasDish ? 'FOOD MARKET' : 'FURNACE')
-              : step === 7 ? 'FOOD MARKET'
-                : step === 8 ? 'STOCKS'
-                  : 'UPGRADE'
+        : step === 4 ? ((inventory.basket ?? 0) <= 0 ? 'FORAGE SHOP' : hasForage ? 'FORAGE MARKET' : 'FRUIT TREE')
+          : step === 5 ? (ownedFarm === undefined ? 'OPEN FARM' : !setupReady ? 'FARM SHOP' : 'YOUR FARM')
+            : step === 6 ? 'YOUR FARM'
+              : step === 7 ? 'FURNACE'
+                : step === 8 ? 'FOOD MARKET'
+                  : step === 9 ? 'STOCKS'
+                    : 'UPGRADE'
   return <group position={[point[0], point[1] + .04, point[2]]}>
     <mesh rotation={[-Math.PI / 2, 0, 0]}>
       <ringGeometry args={[.58, .76, 40]} />

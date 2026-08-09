@@ -448,6 +448,7 @@ function OnboardingPanelV2() {
   const enhancementOpen = useGameStore((state) => state.enhancementOpen)
   const shopKind = useGameStore((state) => state.shopKind)
   const farmCells = useGameStore((state) => state.farmCells)
+  const claimedFarms = useGameStore((state) => state.claimedFarms)
   const knownRecipes = useGameStore((state) => state.knownRecipes)
   const cookQueue = useGameStore((state) => state.cookQueue)
   const stockPrices = useGameStore((state) => state.stockPrices)
@@ -479,6 +480,7 @@ function OnboardingPanelV2() {
     if (!active) return
     const base = baseline.current
     if (step === 2) {
+      if ((inventory['farm-deed'] ?? 0) > 0 || claimedFarms.length > 0) setFlags((value) => ({ ...value, deed: true }))
       if ((inventory['cookbook-box'] ?? 0) > 0) setFlags((value) => ({ ...value, bought: true }))
       if (knownRecipes.includes('apple-bread')) setFlags((value) => ({ ...value, recipe: true }))
     }
@@ -488,27 +490,34 @@ function OnboardingPanelV2() {
       if (stats.sold > base.sold) setFlags((value) => ({ ...value, sold: true }))
     }
     if (step === 4) {
+      if ((inventory.basket ?? 0) > 0) setFlags((value) => ({ ...value, basket: true }))
       if (stats.foraged > base.foraged) setFlags((value) => ({ ...value, gathered: true }))
       if (stats.sold > base.sold) setFlags((value) => ({ ...value, sold: true }))
     }
     if (step === 5) {
+      if (claimedFarms.length > 0) setFlags((value) => ({ ...value, claimed: true }))
+      if ((inventory['wheat-seeds'] ?? 0) > 0) setFlags((value) => ({ ...value, seeds: true }))
+      if ((inventory['water-can'] ?? 0) > 0) setFlags((value) => ({ ...value, waterCan: true }))
+      if ((inventory.furnace ?? 0) > 0) setFlags((value) => ({ ...value, furnace: true }))
+    }
+    if (step === 6) {
       if (Object.values(farmCells).some((cell) => cell.stage !== 'empty')) setFlags((value) => ({ ...value, planted: true }))
       if (Object.values(farmCells).some((cell) => cell.stage === 'watered' || cell.stage === 'ready')) setFlags((value) => ({ ...value, watered: true }))
       if (stats.harvested > base.harvested) setFlags((value) => ({ ...value, harvested: true }))
     }
-    if (step === 6) {
+    if (step === 7) {
       if (cookQueue.length) setFlags((value) => ({ ...value, queued: true }))
       if ((inventory['food-apple-bread'] ?? 0) > 0) setFlags((value) => ({ ...value, cooked: true }))
-      if (stats.sold > base.sold) setFlags((value) => ({ ...value, sold: true }))
     }
-    if (step === 9 && (enhancements['worn-pickaxe'] ?? 0) > 0) setFlags((value) => ({ ...value, upgraded: true }))
-  }, [active, cookQueue.length, enhancements, farmCells, inventory, knownRecipes, stats, step])
+    if (step === 8 && stats.sold > base.sold) setFlags((value) => ({ ...value, sold: true }))
+    if (step === 10 && (enhancements['worn-pickaxe'] ?? 0) > 0) setFlags((value) => ({ ...value, upgraded: true }))
+  }, [active, claimedFarms.length, cookQueue.length, enhancements, farmCells, inventory, knownRecipes, stats, step])
 
   useEffect(() => {
-    if (!active || step !== 7 || !shopOpen || shopKind !== 'food' || flags.marketMoved) return
+    if (!active || step !== 8 || !shopOpen || shopKind !== 'food' || flags.marketMoved) return
     const timer = window.setTimeout(() => {
       useGameStore.setState((state) => {
-        if (!state.tutorialActive || state.tutorialStep !== 7) return state
+        if (!state.tutorialActive || state.tutorialStep !== 8) return state
         const recipe = 'apple-bread' as const
         const before = preparedFoodValue(recipe, state.commodityMarket, state.foodMarket[recipe])
         const foodMarket = { ...state.foodMarket, [recipe]: state.foodMarket[recipe] + 18 }
@@ -521,10 +530,10 @@ function OnboardingPanelV2() {
   }, [active, flags.marketMoved, shopKind, shopOpen, step])
 
   useEffect(() => {
-    if (!active || step !== 8 || !stockOpen || flags.stockMoved) return
+    if (!active || step !== 9 || !stockOpen || flags.stockMoved) return
     const timer = window.setTimeout(() => {
       useGameStore.setState((state) => {
-        if (!state.tutorialActive || state.tutorialStep !== 8) return state
+        if (!state.tutorialActive || state.tutorialStep !== 9) return state
         const next = Math.round(state.stockPrices.apple * 1.16)
         return { stockPrices: { ...state.stockPrices, apple: next }, stockHistory: { ...state.stockHistory, apple: [...state.stockHistory.apple, next].slice(-5) }, toast: 'AAPL +16%' }
       })
@@ -534,7 +543,7 @@ function OnboardingPanelV2() {
   }, [active, flags.stockMoved, stockOpen, step])
 
   useEffect(() => {
-    if (!active || step !== 10 || correctionStarted.current) return
+    if (!active || step !== 11 || correctionStarted.current) return
     correctionStarted.current = true
     const before = useGameStore.getState()
     setCorrectionBefore({
@@ -545,7 +554,7 @@ function OnboardingPanelV2() {
     })
     const timer = window.setTimeout(() => {
       useGameStore.setState((state) => {
-        if (!state.tutorialActive || state.tutorialStep !== 10) return state
+        if (!state.tutorialActive || state.tutorialStep !== 11) return state
         const stock = Math.round(state.stockPrices.apple * .68)
         const nextMarket = { ...state.commodityMarket, apple: Math.round(state.commodityMarket.apple * .66), tomato: Math.round(state.commodityMarket.tomato * 1.5), 'copper-ore': Math.round(state.commodityMarket['copper-ore'] * .72) }
         const histories = { ...state.commodityPriceHistory }
@@ -566,40 +575,43 @@ function OnboardingPanelV2() {
   if (!active) return null
 
   const completed = step === 1 ? true
-    : step === 2 ? Boolean(flags.recipe)
+    : step === 2 ? Boolean(flags.deed && flags.recipe)
       : step === 3 ? Boolean(flags.bought && flags.mined && flags.sold)
-        : step === 4 ? Boolean(flags.gathered && flags.sold)
-          : step === 5 ? Boolean(flags.planted && flags.watered && flags.harvested)
-            : step === 6 ? Boolean(flags.cooked && flags.sold)
-              : step === 7 ? Boolean(flags.marketMoved)
-                : step === 8 ? Boolean(flags.stockMoved)
-                  : step === 9 ? Boolean(flags.upgraded)
-                    : step === 10 ? Boolean(flags.corrected)
+        : step === 4 ? Boolean(flags.basket && flags.gathered && flags.sold)
+          : step === 5 ? Boolean(flags.claimed && flags.seeds && flags.waterCan && flags.furnace)
+            : step === 6 ? Boolean(flags.planted && flags.watered && flags.harvested)
+              : step === 7 ? Boolean(flags.queued && flags.cooked)
+                : step === 8 ? Boolean(flags.marketMoved && flags.sold)
+                  : step === 9 ? Boolean(flags.stockMoved)
+                    : step === 10 ? Boolean(flags.upgraded)
+                      : step === 11 ? Boolean(flags.corrected)
                     : true
   const titles = ko
-    ? ['기본 조작', '레시피', '채굴', '채집', '농사', '요리', '판매 시세', '주식', '강화', '속보', '떠돌이 상인', '미니게임', '준비 완료']
-    : ['CONTROLS', 'RECIPES', 'MINING', 'FORAGING', 'FARMING', 'COOKING', 'MARKET PRICES', 'STOCKS', 'UPGRADE', 'Breaking News', 'WANDERING MERCHANT', 'MINIGAMES', 'READY']
+    ? ['기본 조작', '경기 준비', '채굴', '채집', '농장 준비', '농사', '요리', '요리 판매', '주식', '강화', '속보', '떠돌이 상인', '미니게임', '준비 완료']
+    : ['CONTROLS', 'GET READY', 'MINING', 'FORAGING', 'FARM SETUP', 'FARMING', 'COOKING', 'FOOD MARKET', 'STOCKS', 'UPGRADE', 'BREAKING NEWS', 'WANDERING MERCHANT', 'MINIGAMES', 'READY']
   const objectives = ko
-    ? ['움직여 보세요. 안내 중에도 자유롭게 이동할 수 있습니다.', flags.recipe ? '레시피에서 사과빵 재료를 확인하세요.' : flags.bought ? '퀵슬롯의 레시피 상자를 사용하세요.' : '잡화점에서 레시피 상자를 사세요.', flags.sold ? '채굴 완료.' : flags.mined ? '광석 판매점에 광석을 파세요.' : flags.bought ? '곡괭이를 들고 광석을 바라보며 좌클릭을 누르세요.' : '채굴 도구점에서 초보자 곡괭이를 사세요.', flags.sold ? '채집 완료.' : flags.gathered ? '채집품 판매점에 과일을 파세요.' : '과일나무 가까이에서 F를 누르세요.', flags.harvested ? '농사 완료.' : flags.watered ? '다 자란 밀을 수확하세요.' : flags.planted ? '물뿌리개를 선택해 한 번 물을 주세요.' : '밀 씨앗을 선택해 밭에 심으세요.', flags.sold ? '요리 완료.' : flags.cooked ? '완성된 사과빵을 요리 판매점에 파세요.' : flags.queued ? '완성되면 화로를 열어 사과빵을 수령하세요.' : '화로에서 사과빵을 만드세요.', '요리 판매점에서 사과빵 시세를 확인하세요.', '주식을 열어 가격과 최근 변동을 확인하세요.', '초보자 곡괭이를 한 번 강화하세요.', '속보와 함께 시세가 바뀌는 모습을 확인하세요.', '떠돌이 상인이 파는 물건을 확인하세요.', '경기 중 열리는 미니게임을 확인하세요.', '이제 로비로 돌아갈 수 있습니다.']
-    : ['Move around. The tour stays in the real world.', flags.recipe ? 'Check Apple Bread’s ingredients in Recipes.' : flags.bought ? 'Use the Recipe Box from your hotbar.' : 'Buy a Recipe Box from the General Shop.', flags.sold ? 'Mining complete.' : flags.mined ? 'Sell the ore at the Ore Market.' : flags.bought ? 'Equip it, face an ore, and hold LMB.' : 'Buy the Starter Pickaxe at the Mining Shop.', flags.sold ? 'Foraging complete.' : flags.gathered ? 'Sell the fruit at the Forage Market.' : 'Press F near a fruit tree.', flags.harvested ? 'Farming complete.' : flags.watered ? 'Harvest the wheat when it is ready.' : flags.planted ? 'Select the watering can and water it once.' : 'Select wheat seeds and plant one cell.', flags.sold ? 'Cooking complete.' : flags.cooked ? 'Sell the finished Apple Bread at the Food Market.' : flags.queued ? 'When it finishes, open the furnace and collect Apple Bread.' : 'Cook Apple Bread at the furnace.', 'Open the Food Market and check Apple Bread’s price.', 'Open Stocks and read the price, direction, and recent changes.', 'Upgrade the Starter Pickaxe once.', 'Watch prices change with the breaking news.', 'See what the Wandering Merchant may carry.', 'Review the match minigames.', 'Return to the lobby when ready.']
+    ? ['WASD로 움직여 보세요. 나머지 조작은 아래와 같습니다.', !flags.deed ? '잡화점에서 개인 농장 문서를 사세요.' : !flags.bought && !flags.recipe ? '같은 곳에서 레시피 상자를 사세요.' : !flags.recipe ? '퀵슬롯의 레시피 상자를 사용하세요.' : '레시피에서 사과빵 재료를 확인하세요.', flags.sold ? '채굴 완료.' : flags.mined ? '광석 판매점에 광석을 파세요.' : flags.bought ? '곡괭이를 들고 광석을 바라보며 좌클릭을 누르세요.' : '채굴 도구점에서 초보자 곡괭이를 사세요.', flags.sold ? '채집 완료.' : flags.gathered ? '채집품 판매점에 과일을 파세요.' : flags.basket ? '과일나무 가까이에서 F를 누르세요.' : '채집 도구점에서 바구니를 사세요.', !flags.claimed ? '표지판에서 F를 눌러 농장을 선택하세요.' : !flags.seeds ? '농장 상점에서 밀 씨앗을 사세요.' : !flags.waterCan ? '물뿌리개를 사세요.' : !flags.furnace ? '화로를 사세요.' : '농장 준비 완료.', flags.harvested ? '농사 완료.' : flags.watered ? '다 자란 밀을 수확하세요.' : flags.planted ? '물뿌리개를 선택해 한 번 물을 주세요.' : '밀 씨앗을 선택해 밭에 심으세요.', flags.cooked ? '완성된 사과빵을 화로에서 수령하세요.' : flags.queued ? '완성되면 화로를 열어 사과빵을 수령하세요.' : '화로에서 사과빵을 만드세요.', flags.sold ? '요리 판매 완료.' : '요리 판매점에서 사과빵을 파세요.', '주식을 열어 가격과 최근 변동을 확인하세요.', '초보자 곡괭이를 한 번 강화하세요.', '속보와 함께 시세가 바뀌는 모습을 확인하세요.', '떠돌이 상인이 파는 물건을 확인하세요.', '경기 중 열리는 미니게임을 확인하세요.', '이제 로비로 돌아갈 수 있습니다.']
+    : ['Try WASD. The remaining controls are shown below.', !flags.deed ? 'Buy a Personal Farm Deed at the General Shop.' : !flags.bought && !flags.recipe ? 'Buy a Recipe Box here too.' : !flags.recipe ? 'Use the Recipe Box from your hotbar.' : 'Check Apple Bread’s ingredients in Recipes.', flags.sold ? 'Mining complete.' : flags.mined ? 'Sell the ore at the Ore Market.' : flags.bought ? 'Equip it, face an ore, and hold LMB.' : 'Buy the Starter Pickaxe at the Mining Shop.', flags.sold ? 'Foraging complete.' : flags.gathered ? 'Sell the fruit at the Forage Market.' : flags.basket ? 'Press F near a fruit tree.' : 'Buy a Basket at the Forage Shop.', !flags.claimed ? 'Press F at a plot sign to claim a farm.' : !flags.seeds ? 'Buy Wheat Seeds at the Farm Shop.' : !flags.waterCan ? 'Buy a Watering Can.' : !flags.furnace ? 'Buy a Farm Furnace.' : 'Farm setup complete.', flags.harvested ? 'Farming complete.' : flags.watered ? 'Harvest the wheat when it is ready.' : flags.planted ? 'Select the watering can and water it once.' : 'Select wheat seeds and plant one cell.', flags.cooked ? 'Apple Bread collected.' : flags.queued ? 'When it finishes, open the furnace and collect it.' : 'Cook Apple Bread at your furnace.', flags.sold ? 'Food sale complete.' : 'Sell Apple Bread at the Food Market.', 'Open Stocks and read the price, direction, and recent changes.', 'Upgrade the Starter Pickaxe once.', 'Watch prices change with the breaking news.', 'See what the Wandering Merchant may carry.', 'Review the match minigames.', 'Return to the lobby when ready.']
   const notes = ko
-    ? ['', '레시피를 먼저 보면 어떤 재료를 모으고 키울지 알 수 있습니다.', '깊이에 따라 광석 확률이 달라집니다. 좋은 광석에는 더 좋은 곡괭이가 필요합니다.', '과일은 다시 열리며 바구니가 보관량을 정합니다.', '실제 경기에서는 작물마다 성장 시간이 다릅니다.', '화로 하나는 한 번에 요리 10개를 만들 수 있습니다. 화로가 늘면 10개씩 늘어나며, 최대 세 묶음을 예약할 수 있습니다.', '가격은 주기마다 갱신됩니다. 한꺼번에 많이 팔면 다음 갱신 전에도 가격이 내려갈 수 있습니다.', '주가는 회사마다 다르게 움직입니다. 살 필요 없이 화면만 확인하세요.', '강화는 해당 장비에만 남습니다. 높은 단계는 실패 시 내려갈 수 있습니다.', '속보는 일부 또는 여러 시세를 크게 바꿀 수 있습니다.', '떠돌이 상인은 한정 상품과 다음 속보에 관한 정보를 팝니다. 위치는 때마다 달라집니다.', '미니게임 보상으로 현금, 레시피 상자, 유용한 강화 효과를 받을 수 있습니다.', '정해진 길은 없습니다. 종료 시 보유 현금이 가장 많은 사람이 이깁니다.']
-    : ['', 'Recipes show what to gather and grow before you commit.', 'Depth changes ore chances. Better ores require better pickaxes.', 'Fruit regrows; your basket sets capacity.', 'Normal matches use each crop’s full growth time.', 'One furnace cooks 10 dishes per batch. Each extra furnace adds 10, with up to three batches queued.', 'Prices update each cycle. A large sale can push a price down before the next update.', 'Each company moves differently. You do not need to buy anything here.', 'Upgrades stay on that item. High levels can drop on failure.', 'Breaking news can move a few markets—or many—by a large amount.', 'The Wandering Merchant sells limited items and information about upcoming news. Its location changes.', 'Minigames award cash, Recipe Boxes, and useful temporary boosts.', 'There is no required route. Most cash at the end wins.']
-  if (step === 9) {
-    objectives[8] = ko ? '세 가지 장비를 비교하고 초보자 곡괭이를 한 번 강화하세요.' : 'Compare all three tools, then upgrade the Starter Pickaxe once.'
-    notes[8] = ko ? '곡괭이는 채광, 바구니는 채집, 부적은 농사 효율을 높입니다.' : 'Pickaxes improve mining, baskets improve foraging, and charms improve farming.'
+    ? ['', flags.deed ? '개인 농장 구매 후에는 수량이 한정된 추가 농장을 먼저 살 수 있습니다.' : '개인 농장은 한 명당 하나입니다.', '깊이에 따라 광석 확률이 달라집니다. 좋은 광석에는 더 좋은 곡괭이가 필요합니다.', '바구니를 바꾸면 과일 보관량이 늘어납니다.', '실제 경기에서도 원하는 빈 농장을 직접 선택합니다.', '실제 경기에서는 작물마다 성장 시간이 다릅니다.', '화로 하나당 한 번에 10개를 요리할 수 있습니다. 화로를 더 사면 10개씩 늘어납니다.', '가격은 주기마다 바뀌며, 한꺼번에 많이 팔면 즉시 내려갈 수 있습니다.', '주가는 회사마다 다르게 움직입니다. 여기서는 살 필요가 없습니다.', '강화 효과는 해당 장비에만 남습니다.', '속보는 일부 또는 여러 시세를 크게 바꿀 수 있습니다.', '떠돌이 상인은 한정 상품과 다음 속보에 관한 정보를 팝니다.', '미니게임은 현금과 아이템 보상을 줍니다.', '정해진 길은 없습니다. 종료 시 보유 현금이 가장 많은 사람이 이깁니다.']
+    : ['', flags.deed ? 'After your personal farm, limited extra farms are first come, first served.' : 'Each player gets one personal deed first.', 'Depth changes ore chances. Better ores require better pickaxes.', 'Better baskets increase fruit storage.', 'You choose any open farm in a real match too.', 'Normal matches use each crop’s full growth time.', 'Each furnace adds 10 dishes to one batch.', 'Prices update each cycle; a large sale can move them immediately.', 'Each company moves differently. You do not need to buy here.', 'Upgrades stay on that item.', 'Breaking news can move a few markets—or many.', 'The Wandering Merchant sells limited items and upcoming-news information.', 'Minigames award cash and useful items.', 'There is no required route. Most cash at the end wins.']
+  if (step === 10) {
+    objectives[9] = ko ? '세 가지 장비를 비교하고 초보자 곡괭이를 한 번 강화하세요.' : 'Compare all three tools, then upgrade the Starter Pickaxe once.'
+    notes[9] = ko ? '곡괭이는 채굴, 바구니는 채집, 부적은 농사를 강화합니다.' : 'Pickaxes improve mining, baskets improve foraging, and charms improve farming.'
   }
 
   const progress = step === 1 ? '✓'
-    : step === 2 ? `${Number(Boolean(flags.bought)) + Number(Boolean(flags.recipe))}/2`
+    : step === 2 ? `${Number(Boolean(flags.deed)) + Number(Boolean(flags.bought || flags.recipe)) + Number(Boolean(flags.recipe))}/3`
       : step === 3 ? `${Number(Boolean(flags.bought)) + Number(Boolean(flags.mined)) + Number(Boolean(flags.sold))}/3`
-        : step === 4 ? `${Number(Boolean(flags.gathered)) + Number(Boolean(flags.sold))}/2`
-          : step === 5 ? `${Number(Boolean(flags.planted)) + Number(Boolean(flags.watered)) + Number(Boolean(flags.harvested))}/3`
-            : step === 6 ? `${Number(Boolean(flags.queued)) + Number(Boolean(flags.cooked)) + Number(Boolean(flags.sold))}/3`
+        : step === 4 ? `${Number(Boolean(flags.basket)) + Number(Boolean(flags.gathered)) + Number(Boolean(flags.sold))}/3`
+          : step === 5 ? `${Number(Boolean(flags.claimed)) + Number(Boolean(flags.seeds)) + Number(Boolean(flags.waterCan)) + Number(Boolean(flags.furnace))}/4`
+            : step === 6 ? `${Number(Boolean(flags.planted)) + Number(Boolean(flags.watered)) + Number(Boolean(flags.harvested))}/3`
+              : step === 7 ? `${Number(Boolean(flags.queued)) + Number(Boolean(flags.cooked))}/2`
+                : step === 8 ? `${Number(Boolean(flags.marketMoved)) + Number(Boolean(flags.sold))}/2`
           : completed ? '✓' : '0/1'
 
   return <aside className={`tutorial-card tutorial-step-${step} ${shopOpen || stockOpen || cookbookOpen || enhancementOpen ? 'with-modal' : ''}`} data-tutorial-step={step}>
-    <header><span>{step}/13</span><strong>{titles[step - 1]}</strong><button onClick={completeGuide}>{t('SKIP')}</button></header>
+    <header><span>{step}/14</span><strong>{titles[step - 1]}</strong><button onClick={completeGuide}>{t('SKIP')}</button></header>
     <div className="tutorial-objective"><b>{objectives[step - 1]}</b><span>{progress}</span></div>
     {step === 1 && <div className="tutorial-controls">
       {([
@@ -611,11 +623,11 @@ function OnboardingPanelV2() {
         ['E', ko ? '가방' : 'INVENTORY'],
       ] as Array<[string, string]>).map(([key, label]) => <i key={key}><kbd>{key}</kbd><span>{label}</span></i>)}
     </div>}
-    {step === 10 && <div className="tutorial-market-values">{(['apple', 'tomato', 'copper-ore'] as CommodityId[]).map((id) => <span key={id}><img src={ITEMS[id].icon} alt="" /><small>{formatCoins(correctionBefore[id] ?? commodityPrice(id, ITEMS[id].sellPrice ?? 0, commodityMarket[id]), true)}</small><i>→</i><b>{formatCoins(commodityPrice(id, ITEMS[id].sellPrice ?? 0, commodityMarket[id]), true)}</b></span>)}<span><img src={STOCKS.apple.logo} alt="" /><small>{formatCoins(correctionBefore.stock ?? stockPrices.apple, true)}</small><i>→</i><b>{formatCoins(stockPrices.apple, true)}</b></span></div>}
-    {step === 11 && <div className="tutorial-event-list tutorial-merchant-list"><span><img src={ITEMS['information-note'].icon} alt="" />{ko ? '정보' : 'INFORMATION'}</span><span><img src={ITEMS['mining-boost'].icon} alt="" />{ko ? '채굴 강화' : 'MINING TONIC'}</span><span><img src={ITEMS['upgrade-guard-4'].icon} alt="" />{ko ? '강화 보호' : 'PROTECTION'}</span></div>}
-    {step === 12 && <div className="tutorial-event-list"><span><img src={ITEMS['crystal-pickaxe'].icon} alt="" />{t('MINING RUSH')}</span><span><img src={ITEMS['food-apple-bread'].icon} alt="" />{t('KITCHEN RUSH')}</span><span><img src={ITEMS.apple.icon} alt="" />{t('FORAGE RACE')}</span></div>}
+    {step === 11 && <div className="tutorial-market-values">{(['apple', 'tomato', 'copper-ore'] as CommodityId[]).map((id) => <span key={id}><img src={ITEMS[id].icon} alt="" /><small>{formatCoins(correctionBefore[id] ?? commodityPrice(id, ITEMS[id].sellPrice ?? 0, commodityMarket[id]), true)}</small><i>→</i><b>{formatCoins(commodityPrice(id, ITEMS[id].sellPrice ?? 0, commodityMarket[id]), true)}</b></span>)}<span><img src={STOCKS.apple.logo} alt="" /><small>{formatCoins(correctionBefore.stock ?? stockPrices.apple, true)}</small><i>→</i><b>{formatCoins(stockPrices.apple, true)}</b></span></div>}
+    {step === 12 && <div className="tutorial-event-list tutorial-merchant-list"><span><img src={ITEMS['information-note'].icon} alt="" />{ko ? '정보' : 'INFORMATION'}</span><span><img src={ITEMS['mining-boost'].icon} alt="" />{ko ? '채굴 강화' : 'MINING TONIC'}</span><span><img src={ITEMS['upgrade-guard-4'].icon} alt="" />{ko ? '강화 보호' : 'PROTECTION'}</span></div>}
+    {step === 13 && <div className="tutorial-event-list"><span><img src={ITEMS['crystal-pickaxe'].icon} alt="" />{t('MINING RUSH')}</span><span><img src={ITEMS['food-apple-bread'].icon} alt="" />{t('KITCHEN RUSH')}</span><span><img src={ITEMS.apple.icon} alt="" />{t('FORAGE RACE')}</span></div>}
     {notes[step - 1] && <p>{notes[step - 1]}</p>}
-    <footer>{step > 1 && <button className="quiet-button" onClick={() => setTutorialStep(step - 1)}>{t('BACK')}</button>}<button className="guide-next" disabled={!completed} onClick={() => step === 13 ? completeGuide() : setTutorialStep(step + 1)}>{t(step === 13 ? 'RETURN TO LOBBY' : 'CONTINUE')}</button></footer>
+    <footer>{step > 1 && <button className="quiet-button" onClick={() => setTutorialStep(step - 1)}>{t('BACK')}</button>}<button className="guide-next" disabled={!completed} onClick={() => step === 14 ? completeGuide() : setTutorialStep(step + 1)}>{t(step === 14 ? 'RETURN TO LOBBY' : 'CONTINUE')}</button></footer>
   </aside>
 }
 
@@ -965,6 +977,7 @@ function ShopPanel() {
   const enhancements = useGameStore((state) => state.enhancements)
   const tutorialActive = useGameStore((state) => state.tutorialActive)
   const tutorialStep = useGameStore((state) => state.tutorialStep)
+  const claimedFarms = useGameStore((state) => state.claimedFarms)
   const personalDeedAvailable = useGameStore((state) => state.personalDeedAvailable)
   const globalDeedsRemaining = useGameStore((state) => state.globalDeedsRemaining)
   const openLottery = useGameStore((state) => state.setLotteryOpen)
@@ -993,7 +1006,20 @@ function ShopPanel() {
             const available = deedTile ? (personalDeed ? (personalDeedAvailable ? 1 : 0) : globalDeedsRemaining) : item.limited ? shopStock[id] ?? 0 : null
             const stockLabel = isEnhanceableItem(id) && owned > 0 ? t('OWNED') : deedTile ? personalDeed ? (personalDeedAvailable ? t('AVAILABLE') : t('OWNED')) : `${globalDeedsRemaining} ${t('LEFT')}` : available !== null ? `${available} ${t('LEFT')}` : null
             const history = recipe ? foodPriceHistory[recipe] ?? [] : commodity ? commodityPriceHistory[commodity] ?? [] : []
-            const tutorialFocus = tutorialActive && (tutorialStep === 2 && kind === 'common' && id === 'cookbook-box' || tutorialStep === 3 && kind === 'mine' && id === 'worn-pickaxe' || tutorialStep === 7 && kind === 'food' && id === 'food-apple-bread')
+            const tutorialFocus = tutorialActive && (
+              tutorialStep === 2 && kind === 'common' && (
+                id === 'farm-deed' && (inventory['farm-deed'] ?? 0) <= 0
+                || id === 'cookbook-box' && (inventory['farm-deed'] ?? 0) > 0 && !knownRecipes.includes('apple-bread')
+              )
+              || tutorialStep === 3 && kind === 'mine' && id === 'worn-pickaxe'
+              || tutorialStep === 4 && kind === 'forage' && id === 'basket' && (inventory.basket ?? 0) <= 0
+              || tutorialStep === 5 && kind === 'farm' && claimedFarms.length > 0 && (
+                id === 'wheat-seeds' && (inventory['wheat-seeds'] ?? 0) <= 0
+                || id === 'water-can' && (inventory['wheat-seeds'] ?? 0) > 0 && (inventory['water-can'] ?? 0) <= 0
+                || id === 'furnace' && (inventory['wheat-seeds'] ?? 0) > 0 && (inventory['water-can'] ?? 0) > 0 && (inventory.furnace ?? 0) <= 0
+              )
+              || tutorialStep === 8 && kind === 'food' && id === 'food-apple-bread'
+            )
             return <button
               className={`shop-tile ${history.length ? 'has-history' : ''} ${deedLocked ? 'deed-locked' : ''} ${tutorialFocus ? 'tutorial-focus' : ''}`}
               key={id}

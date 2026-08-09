@@ -351,7 +351,7 @@ button { color: inherit; }
 .stock-card:hover .stock-history { opacity: 1; transform: translateY(0); }
 .stock-lock { position: absolute; right: 13px; top: 15px; width: 30px; height: 26px; display: grid; place-items: center; border-radius: 8px; background: rgba(244,232,198,.12); font-size: 10px; font-weight: 900; }
 
-.world-label { display: block; height: 25px; padding: 0 10px; border-radius: 9px; border: 1px solid rgba(244, 232, 198, 0.18); background: rgba(31, 43, 34, 0.8); box-shadow: 0 5px 14px rgba(17, 23, 18, 0.24); color: #f4e8c6; font: 900 9px/25px 'Nunito Sans', sans-serif; letter-spacing: 0.1em; white-space: nowrap; }
+.world-label { display: inline-block; width: max-content; height: 25px; padding: 0 10px; border-radius: 9px; border: 1px solid rgba(244, 232, 198, 0.18); background: rgba(31, 43, 34, 0.8); box-shadow: 0 5px 14px rgba(17, 23, 18, 0.24); color: #f4e8c6; font: 900 9px/25px 'Nunito Sans', sans-serif; letter-spacing: 0.08em; white-space: nowrap; word-break: keep-all; writing-mode: horizontal-tb; }
 .world-label.forage { color: #cce792; }
 .world-label.farm { color: #f0bb72; opacity: 0.58; }
 .world-label.mine { color: #b7d5ea; opacity: 0.58; }
@@ -1118,13 +1118,15 @@ button { color: inherit; }
 .tutorial-event-list { grid-template-columns: repeat(3,minmax(0,1fr)); }
 .tutorial-event-list span { min-width: 0; display: grid; justify-items: center; gap: 4px; padding: 6px 2px; color: #d7d6ca; font-size: 7px; font-weight: 1000; text-align: center; }
 .tutorial-event-list img { width: 36px; height: 36px; object-fit: contain; }
-.tutorial-world-marker { display: block; padding: 6px 10px; border: 1px solid rgba(236,198,113,.68); border-radius: 999px; background: rgba(45,57,45,.94); color: #f2cf7d; font: 1000 9px/1 'Nunito Sans',sans-serif; letter-spacing: .12em; box-shadow: 0 7px 18px rgba(8,12,9,.36); animation: tutorial-marker-float 1.35s ease-in-out infinite; }
+.tutorial-world-marker { display: inline-block; width: max-content; max-width: min(220px,calc(100vw - 32px)); padding: 6px 10px; border: 1px solid rgba(236,198,113,.68); border-radius: 999px; background: rgba(45,57,45,.94); color: #f2cf7d; font: 1000 9px/1 'Nunito Sans',sans-serif; letter-spacing: .08em; white-space: nowrap; word-break: keep-all; writing-mode: horizontal-tb; box-shadow: 0 7px 18px rgba(8,12,9,.36); animation: tutorial-marker-float 1.35s ease-in-out infinite; }
 @keyframes tutorial-marker-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
 .interface:has(.tutorial-card[data-tutorial-step="2"]) .shop-panel,
-.interface:has(.tutorial-card[data-tutorial-step="7"]) .food-market-panel,
-.interface:has(.tutorial-card[data-tutorial-step="8"]) .stocks-panel,
-.interface:has(.tutorial-card[data-tutorial-step="9"]) .enhancement-panel,
-.interface:has(.tutorial-card[data-tutorial-step="6"]) .cookbook-panel { outline: 2px solid rgba(228,187,97,.38); outline-offset: 3px; }
+.interface:has(.tutorial-card[data-tutorial-step="4"]) .shop-panel,
+.interface:has(.tutorial-card[data-tutorial-step="5"]) .shop-panel,
+.interface:has(.tutorial-card[data-tutorial-step="8"]) .food-market-panel,
+.interface:has(.tutorial-card[data-tutorial-step="9"]) .stocks-panel,
+.interface:has(.tutorial-card[data-tutorial-step="10"]) .enhancement-panel,
+.interface:has(.tutorial-card[data-tutorial-step="7"]) .cookbook-panel { outline: 2px solid rgba(228,187,97,.38); outline-offset: 3px; }
 .shop-tile.tutorial-focus { border-color: rgba(239,198,107,.9); background: rgba(239,198,107,.14); box-shadow: 0 0 0 3px rgba(239,198,107,.12), 0 12px 28px rgba(11,17,12,.24); }
 @media (max-width: 760px) {
   .tutorial-card, .tutorial-card.with-modal { top: auto; right: 10px; bottom: 90px; left: auto; width: min(316px,calc(100vw - 20px)); max-height: min(43vh,360px); overflow-y: auto; }

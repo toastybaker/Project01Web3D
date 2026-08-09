@@ -1065,18 +1065,20 @@ function stockExchange(position = [-8, 0, 8], rotation = 0.18) {
 
 function farmGroundHeight(x, z) {
   const raw = Math.sin(x * 0.045) * 0.48 + Math.cos(z * 0.052) * 0.38 + Math.sin((x - z) * 0.085) * 0.15
-  let height = raw
-  farmParcels.forEach(([cx, cz], index) => {
-    const distance = Math.max(Math.abs(x - cx), Math.abs(z - cz))
-    const influence = 1 - smoothstep(8.2, 12.5, distance)
-    const terrace = Math.sin(cx * 0.045) * 0.48 + Math.cos(cz * 0.052) * 0.38 + (index > 3 ? -0.08 : 0.08)
-    height = THREE.MathUtils.lerp(height, terrace, influence)
-  })
   const westBank = Math.exp(-((x + 86) ** 2) / 260) * 5.5
   const eastBank = Math.exp(-((x - 88) ** 2) / 300) * 5.8
   const farBank = smoothstep(78, 108, -z) * 5.2
   const entryBank = smoothstep(55, 92, z) * 3.8
-  return height + westBank + eastBank + farBank + entryBank
+  let height = raw + westBank + eastBank + farBank + entryBank
+  farmParcels.forEach(([cx, cz], index) => {
+    const distance = Math.max(Math.abs(x - cx), Math.abs(z - cz))
+    const influence = 1 - smoothstep(8.2, 12.5, distance)
+    const terrace = Math.sin(cx * 0.045) * 0.48 + Math.cos(cz * 0.052) * 0.38 + Math.sin((cx - cz) * 0.085) * 0.15
+      + Math.exp(-((cx + 86) ** 2) / 260) * 5.5 + Math.exp(-((cx - 88) ** 2) / 300) * 5.8
+      + smoothstep(78, 108, -cz) * 5.2 + smoothstep(55, 92, cz) * 3.8 + (index > 3 ? -0.08 : 0.08)
+    height = THREE.MathUtils.lerp(height, terrace, influence)
+  })
+  return height
 }
 
 function hubGroundHeight(x, z) {
